@@ -673,9 +673,18 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         assert "高级规划" not in workbench.text
         assert "模型识别任务 · 服务端裁决权限" not in workbench.text
         assert "data-agent-note" not in workbench.text
+        assert "data-chapter-workflow" not in workbench.text
         assert 'class="studio-chat-input"' in workbench.text
         assert "studio-agent-switcher" not in workbench.text
         assert 'name="agent_role"' not in workbench.text
+        for tool_path in (
+            f"/novels/{project_id}#story-planner",
+            f"/novels/{project_id}/structure-health",
+            f"/novels/{project_id}/continuity",
+            f"/novels/{project_id}/editing-memory",
+            f"/novels/{project_id}/export.txt",
+        ):
+            assert f'href="{tool_path}"' in workbench.text
         assert (
             'name="title" maxlength="120" required'
             not in workbench.text
@@ -695,6 +704,20 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
 
         chapter_page = client.get(response.headers["location"])
         assert "第1章 · 未命名章节" in chapter_page.text
+        assert "data-chapter-workflow" in chapter_page.text
+        assert "章节创作流程" in chapter_page.text
+        assert "确认任务卡" in chapter_page.text
+        assert "形成正文候选" in chapter_page.text
+        assert (
+            f'href="/novels/{project_id}/chapters/{chapter_id}/task-card"'
+            in chapter_page.text
+        )
+        assert (
+            f'href="/novels/{project_id}/chapters/{chapter_id}/scenes"'
+            in chapter_page.text
+        )
+        assert "data-save-before-navigation" in chapter_page.text
+        assert "data-save-before-submit" in chapter_page.text
         chapter = application.state.database.get_novel_chapter(
             application.state.database.get_user_by_username("工作台作者")[
                 "id"
@@ -757,6 +780,35 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
             project_id,
         )
         assert project["ai_instructions"] == "本书让人物先行动，再解释。"
+
+        logout = client.post(
+            "/logout",
+            data={"csrf": csrf_from(settings_page.text)},
+            follow_redirects=False,
+        )
+        assert logout.status_code == 303
+        register = client.get("/register")
+        other_user = client.post(
+            "/register",
+            data={
+                "username": "其他工作台作者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert other_user.status_code == 303
+        for owner_scoped_path in (
+            f"/novels/{project_id}/workbench",
+            f"/novels/{project_id}/structure-health",
+            f"/novels/{project_id}/continuity",
+            f"/novels/{project_id}/editing-memory",
+            f"/novels/{project_id}/export.txt",
+            f"/novels/{project_id}/chapters/{chapter_id}/task-card",
+            f"/novels/{project_id}/chapters/{chapter_id}/scenes",
+        ):
+            assert client.get(owner_scoped_path).status_code == 404
 
 
 def test_zero_input_project_enters_settings_and_applies_ai_candidate(

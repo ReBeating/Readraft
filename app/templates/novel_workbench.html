@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260725-11">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-1">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -21,7 +21,7 @@
   >
     <header class="studio-workbench-toolbar">
       <div class="studio-toolbar-side">
-        <a class="studio-icon-button" href="/dashboard" aria-label="返回书库">
+        <a class="studio-icon-button" href="/dashboard" aria-label="返回书库" data-save-before-navigation>
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m15 18-6-6 6-6"></path>
           </svg>
@@ -61,9 +61,31 @@
         </div>
 
         <p class="studio-section-label">作品资料</p>
-        <a class="studio-directory-link {% if view == 'settings' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=settings{% if chapter %}&chapter_id={{ chapter.id }}{% endif %}">
+        <a class="studio-directory-link {% if view == 'settings' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=settings{% if chapter %}&chapter_id={{ chapter.id }}{% endif %}" data-save-before-navigation>
           <span>设定</span>
           <small>›</small>
+        </a>
+
+        <p class="studio-section-label">创作系统</p>
+        <a class="studio-directory-link" href="/novels/{{ project.id }}#story-planner" data-save-before-navigation>
+          <span>全书规划</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link" href="/novels/{{ project.id }}/structure-health" data-save-before-navigation>
+          <span>结构体检</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link" href="/novels/{{ project.id }}/continuity" data-save-before-navigation>
+          <span>连续性</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link" href="/novels/{{ project.id }}/editing-memory" data-save-before-navigation>
+          <span>编辑记忆</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link" href="/novels/{{ project.id }}/export.txt" data-save-before-navigation>
+          <span>导出正文</span>
+          <small>⇩</small>
         </a>
 
         <p class="studio-section-label">章节</p>
@@ -72,6 +94,7 @@
             <a
               class="studio-chapter-link {% if chapter and chapter.id == item.id and view == 'body' %}active{% endif %}"
               href="/novels/{{ project.id }}/workbench?chapter_id={{ item.id }}"
+              data-save-before-navigation
             >
               <span>第{{ item.position }}章 · {{ item.title or '未命名章节' }}</span>
             </a>
@@ -82,7 +105,7 @@
 
         <details class="studio-new-chapter">
           <summary>＋ 新建章节</summary>
-          <form method="post" action="/novels/{{ project.id }}/chapters">
+          <form method="post" action="/novels/{{ project.id }}/chapters" data-save-before-submit>
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <input type="hidden" name="return_to_workbench" value="1">
             <label>
@@ -334,6 +357,71 @@
               <small>第{{ chapter.position }}章</small>
               <h1>{{ chapter.title or '未命名章节' }}</h1>
             </div>
+            {% if chapter_workflow %}
+              <section
+                class="studio-workflow-strip stage-{{ chapter_workflow.stage }}"
+                data-chapter-workflow
+              >
+                <div class="studio-workflow-progress" aria-label="章节创作流程进度">
+                  <strong>{{ chapter_workflow.completed_count }}/{{ chapter_workflow.step_count }}</strong>
+                  <span>
+                    <i style="width: {{ chapter_workflow.progress_percent }}%"></i>
+                  </span>
+                </div>
+                <div class="studio-workflow-copy">
+                  <small>{% if chapter_workflow.complete %}创作闭环{% else %}建议下一步{% endif %}</small>
+                  <strong>{{ chapter_workflow.headline }}</strong>
+                  <span>{{ chapter_workflow.explanation }}</span>
+                </div>
+                <div class="studio-workflow-actions">
+                  {% if chapter_workflow.primary_action.method == 'post' %}
+                    <form
+                      method="post"
+                      action="{{ chapter_workflow.primary_action.url }}"
+                      data-save-before-submit
+                    >
+                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                      <button class="studio-button primary" type="submit">
+                        {{ chapter_workflow.primary_action.label }}
+                      </button>
+                    </form>
+                  {% else %}
+                    <a
+                      class="studio-button primary"
+                      href="{{ chapter_workflow.primary_action.url }}"
+                      data-save-before-navigation
+                    >{{ chapter_workflow.primary_action.label }}</a>
+                  {% endif %}
+                  <details class="studio-workflow-menu">
+                    <summary aria-label="查看全部章节流程" title="全部流程">•••</summary>
+                    <div>
+                      <header>
+                        <strong>章节创作流程</strong>
+                        <span>{{ chapter_workflow.progress_percent }}%</span>
+                      </header>
+                      <nav class="studio-workflow-shortcuts" aria-label="章节工具">
+                        <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}/task-card" data-save-before-navigation>任务卡</a>
+                        <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}/scenes" data-save-before-navigation>场景工坊</a>
+                        <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}" data-save-before-navigation>完整章节页</a>
+                      </nav>
+                      {% for step in chapter_workflow.steps %}
+                        <a
+                          class="status-{{ step.status }}"
+                          href="{{ step.url }}"
+                          data-save-before-navigation
+                        >
+                          <span>{{ loop.index }}</span>
+                          <div>
+                            <strong>{{ step.label }}</strong>
+                            <small>{{ step.detail }}</small>
+                          </div>
+                        </a>
+                      {% endfor %}
+                    </div>
+                  </details>
+                </div>
+              </section>
+            {% endif %}
             <form
               method="post"
               action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/save"
@@ -385,7 +473,7 @@
                 <div class="studio-chat-history-list">
                   {% for item in conversations %}
                     <article class="{% if active_conversation and active_conversation.id == item.id %}active{% endif %}">
-                      <a href="/novels/{{ project.id }}/workbench?conversation_id={{ item.id }}{% if item.novel_chapter_id %}&chapter_id={{ item.novel_chapter_id }}{% else %}&view=settings{% endif %}">
+                      <a href="/novels/{{ project.id }}/workbench?conversation_id={{ item.id }}{% if item.novel_chapter_id %}&chapter_id={{ item.novel_chapter_id }}{% else %}&view=settings{% endif %}" data-save-before-navigation>
                         <strong>{{ item.title }}</strong>
                         <small>
                           {% if item.novel_chapter_id %}
@@ -425,7 +513,7 @@
                 <footer>修改消息或重新生成会建立新分支，原记录不会被覆盖。</footer>
               </section>
             </details>
-            <form method="post" action="/novels/{{ project.id }}/assistant/new" class="studio-new-chat-form">
+            <form method="post" action="/novels/{{ project.id }}/assistant/new" class="studio-new-chat-form" data-save-before-submit>
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <input type="hidden" name="chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
               <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
@@ -473,7 +561,7 @@
                         {% endfor %}
                       </dl>
                       {% if message.response.settings_patch_status != 'applied' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
                           <button class="studio-button primary" type="submit">应用到设定</button>
@@ -512,7 +600,7 @@
                       </dl>
                       <p>{{ message.response.story_plan.rationale }}</p>
                       {% if message.response.story_plan_status != 'applied' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-story-plan">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-story-plan" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <button class="studio-button primary" type="submit">采用为故事规划</button>
                         </form>
@@ -523,7 +611,7 @@
                     <section class="studio-chat-citations">
                       <strong>回答依据</strong>
                       {% for citation in message.response.citations %}
-                        <a href="{{ citation.url }}">
+                        <a href="{{ citation.url }}" data-save-before-navigation>
                           <span>{{ citation.label }}</span>
                           <q>{{ citation.quote }}</q>
                           {% if citation.note %}<small>{{ citation.note }}</small>{% endif %}
@@ -554,12 +642,12 @@
                         <p class="studio-commit-error">{{ auto_commit.get('error') }}</p>
                       {% endif %}
                       {% if auto_commit.get('status') == 'applied' and message.applied_version_id %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <button class="studio-button" type="submit">撤回这次提交</button>
                         </form>
                       {% elif not message.applied_version_id and auto_commit.get('status') != 'reverted' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/save-draft">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/save-draft" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
                           <button class="studio-button primary" type="submit">提交到工作稿</button>
@@ -591,12 +679,12 @@
                         <p class="studio-commit-error">{{ auto_commit.get('error') }}</p>
                       {% endif %}
                       {% if auto_commit.get('status') == 'applied' and message.applied_version_id %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <button class="studio-button" type="submit">撤回这次提交</button>
                         </form>
                       {% elif not message.applied_version_id and auto_commit.get('status') != 'reverted' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/save-rewrite">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/save-rewrite" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
                           <button class="studio-button primary" type="submit">提交到工作稿</button>
@@ -655,7 +743,7 @@
                     {% if message.role == 'user' %}
                       <details class="studio-message-edit">
                         <summary>修改</summary>
-                        <form method="post" action="/assistant/messages/{{ message.id }}/branch">
+                        <form method="post" action="/assistant/messages/{{ message.id }}/branch" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
                           <label>
@@ -667,7 +755,7 @@
                         </form>
                       </details>
                     {% elif message.status in ['completed', 'failed'] %}
-                      <form method="post" action="/assistant/messages/{{ message.id }}/regenerate">
+                      <form method="post" action="/assistant/messages/{{ message.id }}/regenerate" data-save-before-submit>
                         <input type="hidden" name="csrf" value="{{ csrf_token }}">
                         <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
                         <button class="studio-message-action" type="submit" title="在新分支重新生成，不覆盖原回复">重新生成</button>
@@ -724,5 +812,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260725-5" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-1" defer></script>
 {% endblock %}

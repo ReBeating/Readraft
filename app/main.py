@@ -1612,6 +1612,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapter_target_chars = int(
             project.get("target_chapter_chars") or 3000
         )
+        chapter_workflow = None
         if selected_chapter:
             selected_index = next(
                 index
@@ -1667,6 +1668,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     ).hexdigest()
                 else:
                     working_version = None
+            chapter_workflow = workflow_service.get_state(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=str(selected_chapter["id"]),
+            )
 
         conversations = assistant_chat_service.list_project_conversations(
             user_id=user_id,
@@ -1759,6 +1765,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 working_version_hash=working_version_hash,
                 chapter_effective_chars=chapter_effective_chars,
                 chapter_target_chars=chapter_target_chars,
+                chapter_workflow=chapter_workflow,
                 view=effective_view,
                 setting_tabs=WORKBENCH_SETTING_TABS,
                 active_settings_tab=active_settings_tab,

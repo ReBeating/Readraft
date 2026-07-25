@@ -116,9 +116,9 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 cd novelAI
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 cp .env.example .env
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 打开 <http://127.0.0.1:8000>，注册或登录后：
@@ -130,7 +130,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 5. 正文会自动保存。选择一段文字后直接向 AI 提问，可以分析、局部修订或继续写作；引用依据会回到对应不可变版本。
 6. 不需要选择 Agent 或工作模式。服务端会结合当前页面、引用和明确要求，在交流想法、整理设定、创作正文、修改正文与分析作品之间调度。
 7. 可选：上传参考文本到只读参考书库，执行逐章拆解、和 AI 讨论结构与技法，并把抽象方法保存为技法卡。
-8. 主导航只展示日常工作台。全书规划、场景拆分、连续性、硬审计、正史和编辑记忆等高级能力仍保留在服务端与受测试覆盖的专用流程中，后续再逐步整合进统一工作台。
+8. 左侧“创作系统”可进入全书规划、结构体检、连续性、编辑记忆和正文导出；章节正文上方会按任务卡、正文候选、硬审计、文风审校、正史和故事记忆显示六步进度与下一项安全操作。离开编辑器进入这些流程前，会先保存尚未落盘的正文。
 
 管理员也可以在 `.env` 中设置共享 Key：
 
@@ -166,7 +166,7 @@ POST https://api.deepseek.com/chat/completions
 ## 测试
 
 ```bash
-pytest
+python -m pytest
 ```
 
 测试不会调用真实 DeepSeek。接口测试使用 `httpx.MockTransport`，

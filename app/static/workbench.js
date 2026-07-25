@@ -333,8 +333,14 @@
 
   async function saveManuscript(force = false) {
     if (!autosaveForm || !manuscript) return true;
-    if (!force && manuscript.value === lastSavedContent) return true;
-    if (savePromise) return savePromise;
+    if (manuscript.value === lastSavedContent) return true;
+    if (savePromise) {
+      const saved = await savePromise;
+      if (!saved) return false;
+      return manuscript.value === lastSavedContent
+        ? true
+        : saveManuscript(force);
+    }
 
     window.clearTimeout(autosaveTimer);
     setSaveStatus("保存中…", "saving");
@@ -387,7 +393,77 @@
         saveManuscript(true);
       }
     });
+
+    window.addEventListener("beforeunload", (event) => {
+      if (manuscript.value === lastSavedContent) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
   }
+
+  function manuscriptNeedsSave() {
+    return Boolean(
+      manuscript &&
+        autosaveForm &&
+        (savePromise || manuscript.value !== lastSavedContent),
+    );
+  }
+
+  workbench
+    .querySelectorAll("a[data-save-before-navigation]")
+    .forEach((anchor) => {
+      anchor.addEventListener("click", async (event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey ||
+          !manuscriptNeedsSave()
+        ) {
+          return;
+        }
+        event.preventDefault();
+        if (anchor.dataset.savePending === "true") return;
+        anchor.dataset.savePending = "true";
+        anchor.setAttribute("aria-disabled", "true");
+        const saved = await saveManuscript(true);
+        if (saved) {
+          window.location.assign(anchor.href);
+          return;
+        }
+        delete anchor.dataset.savePending;
+        anchor.removeAttribute("aria-disabled");
+      });
+    });
+
+  workbench
+    .querySelectorAll("form[data-save-before-submit]")
+    .forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        if (!manuscriptNeedsSave()) return;
+        event.preventDefault();
+        if (form.dataset.savePending === "true") return;
+        form.dataset.savePending = "true";
+        const submitter = event.submitter;
+        if (submitter) submitter.disabled = true;
+        const saved = await saveManuscript(true);
+        if (saved) {
+          if (submitter?.name) {
+            const submitterValue = document.createElement("input");
+            submitterValue.type = "hidden";
+            submitterValue.name = submitter.name;
+            submitterValue.value = submitter.value;
+            form.append(submitterValue);
+          }
+          HTMLFormElement.prototype.submit.call(form);
+          return;
+        }
+        delete form.dataset.savePending;
+        if (submitter) submitter.disabled = false;
+      });
+    });
 
   if (chatForm) {
     const chatInput = chatForm.querySelector('textarea[name="question"]');
@@ -528,8 +604,12 @@
       return;
     }
     chapterNavigationStarted = true;
-    saveManuscript(true).finally(() => {
-      window.location.assign(target);
+    saveManuscript(true).then((saved) => {
+      if (saved) {
+        window.location.assign(target);
+      } else {
+        chapterNavigationStarted = false;
+      }
     });
   }
 
