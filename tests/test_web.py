@@ -1064,6 +1064,68 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         assert not project_dir.exists()
 
 
+def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "作品迁移用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        dashboard = client.get("/dashboard")
+        assert "导入作品" in dashboard.text
+        assert "导入参考书" in dashboard.text
+        created = client.post(
+            "/novels/new/blank",
+            data={"csrf": csrf_from(dashboard.text)},
+            follow_redirects=False,
+        )
+        project_id = created.headers["location"].split("/")[2]
+        workbench = client.get(created.headers["location"])
+        assert "导出作品归档" in workbench.text
+
+        exported = client.get(
+            f"/novels/{project_id}/export.novelai.zip"
+        )
+        assert exported.status_code == 200
+        assert exported.headers["content-type"] == "application/zip"
+        assert ".novelai.zip" in exported.headers["content-disposition"]
+
+        import_page = client.get("/projects/import")
+        assert import_page.status_code == 200
+        imported = client.post(
+            "/projects/import",
+            data={"csrf": csrf_from(import_page.text)},
+            files={
+                "archive_file": (
+                    "book.novelai.zip",
+                    exported.content,
+                    "application/zip",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert imported.status_code == 303
+        assert imported.headers["location"].startswith(
+            "/dashboard?imported=true"
+        )
+        user = application.state.database.get_user_by_username(
+            "作品迁移用户"
+        )
+        projects = application.state.database.list_novel_projects(
+            user["id"]
+        )
+        assert len(projects) == 2
+
+
 def test_full_mock_novel_writing_workflow(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:

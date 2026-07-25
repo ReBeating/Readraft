@@ -7,6 +7,8 @@ import logging
 import os
 import secrets
 import shutil
+import sqlite3
+import tempfile
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -16,10 +18,17 @@ from typing import Any, Dict, Mapping, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.background import BackgroundTask
 
 from .assistant_chat import build_assistant_chat_model
 from .assistant_chat_service import (
@@ -74,6 +83,11 @@ from .preference_service import (
     PreferenceService,
 )
 from .process_lock import ProcessLock
+from .project_archive import (
+    ProjectArchiveError,
+    create_project_archive,
+    import_project_archive,
+)
 from .quality_audit import build_quality_auditor, effective_char_count
 from .reader_planner import build_reader_planner
 from .reader_service import ReaderDecisionService
@@ -1574,6 +1588,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         error: Optional[str] = None,
         deleted: bool = False,
+        imported: bool = False,
     ):
         user = _current_user(request)
         if not user:
@@ -1593,6 +1608,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 technique_count=technique_count,
                 error=error,
                 deleted=deleted,
+                imported=imported,
             ),
         )
 
@@ -7828,6 +7844,132 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             f"/novels/{delta['project_id']}/chapters/"
             f"{delta['chapter_id']}?canonical=true",
             status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.get("/projects/import", response_class=HTMLResponse)
+    async def project_import_page(request: Request):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        return render_template(
+            "project_import.html",
+            _template_context(
+                request,
+                user=user,
+                max_archive_mb=(
+                    app_settings.max_project_archive_bytes
+                    // 1024
+                    // 1024
+                ),
+            ),
+        )
+
+    @application.post("/projects/import", response_class=HTMLResponse)
+    async def import_novel_project(
+        request: Request,
+        archive_file: UploadFile = File(...),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        temporary = tempfile.NamedTemporaryFile(
+            prefix="novelai-project-upload-",
+            suffix=".zip",
+            delete=False,
+        )
+        temporary_path = Path(temporary.name)
+        total_bytes = 0
+        try:
+            while True:
+                chunk = await archive_file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > app_settings.max_project_archive_bytes:
+                    raise ProjectArchiveError(
+                        "作品归档文件超过允许大小"
+                    )
+                temporary.write(chunk)
+            temporary.close()
+            if total_bytes == 0:
+                raise ProjectArchiveError("请选择非空的作品归档")
+            imported = import_project_archive(
+                database=database,
+                novels_dir=app_settings.novels_dir,
+                user_id=int(user["id"]),
+                archive_path=temporary_path,
+                max_uncompressed_bytes=(
+                    app_settings.max_project_archive_bytes
+                ),
+            )
+        except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
+            logger.warning("project archive import rejected: %s", exc)
+            return render_template(
+                "project_import.html",
+                _template_context(
+                    request,
+                    user=user,
+                    error=str(exc),
+                    max_archive_mb=(
+                        app_settings.max_project_archive_bytes
+                        // 1024
+                        // 1024
+                    ),
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        finally:
+            temporary.close()
+            temporary_path.unlink(missing_ok=True)
+            await archive_file.close()
+        return RedirectResponse(
+            f"/dashboard?imported=true&project={imported.project_id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.get("/novels/{project_id}/export.novelai.zip")
+    async def export_novel_project_archive(
+        request: Request, project_id: str
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        project = database.get_novel_project(int(user["id"]), project_id)
+        if not project:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        file_descriptor, raw_path = tempfile.mkstemp(
+            prefix=f"novelai-project-{project_id[:8]}-",
+            suffix=".novelai.zip",
+        )
+        os.close(file_descriptor)
+        archive_path = Path(raw_path)
+        try:
+            create_project_archive(
+                database=database,
+                novels_dir=app_settings.novels_dir,
+                user_id=int(user["id"]),
+                project_id=project_id,
+                destination=archive_path,
+                max_uncompressed_bytes=(
+                    app_settings.max_project_archive_bytes
+                ),
+            )
+        except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
+            archive_path.unlink(missing_ok=True)
+            return RedirectResponse(
+                f"/novels/{project_id}/workbench?error={quote(str(exc))}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=f"novel-{project_id[:8]}.novelai.zip",
+            headers={"Cache-Control": "no-store"},
+            background=BackgroundTask(
+                archive_path.unlink, missing_ok=True
+            ),
         )
 
     @application.get("/novels/{project_id}/export.txt")

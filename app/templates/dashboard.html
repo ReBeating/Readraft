@@ -40,8 +40,8 @@
       <div class="studio-library-heading">
         <h1>我的书</h1>
         <div>
-          <a class="studio-button" href="/upload">
-            <span aria-hidden="true">⇧</span> 导入
+          <a class="studio-button" href="/projects/import">
+            <span aria-hidden="true">⇧</span> 导入作品
           </a>
           <form method="post" action="/novels/new/blank" class="studio-inline-form">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -54,6 +54,7 @@
 
       {% if error %}<div class="studio-alert error" role="alert">{{ error }}</div>{% endif %}
       {% if deleted %}<div class="studio-alert success" role="status">作品已删除。</div>{% endif %}
+      {% if imported %}<div class="studio-alert success" role="status">作品归档已验证并导入。</div>{% endif %}
 
       <section class="studio-library-section">
         <h2>创作中的作品</h2>
@@ -92,7 +93,10 @@
       </section>
 
       <section class="studio-library-section">
-        <h2>参考书库</h2>
+        <div class="studio-library-heading">
+          <h2>参考书库</h2>
+          <a class="studio-button" href="/upload">导入参考书</a>
+        </div>
         {% if documents %}
           <div class="studio-book-list">
             {% for document in documents %}
