@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ suggestion.project_id }}/structure-health#causal-suggestions">← 返回《{{ suggestion.project_title }}》结构体检</a>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=structure">← 返回《{{ suggestion.project_title }}》故事结构</a>
       <span class="eyebrow">CAUSALITY REVIEW · READ-ONLY PROPOSALS</span>
       <h1>跨章节因果建议</h1>
       <p>
@@ -30,7 +30,7 @@
   {% if suggestion.baseline_changed %}
     <div class="alert warning">
       这批建议生成后，正史、未来骨架、确认计划或现有因果链接发生了变化。
-      旧候选仍可查看和忽略，但不能采纳；请从结构体检页重新生成。
+      旧候选仍可查看和忽略，但不能采纳；请在新版故事结构流程重新生成。
     </div>
   {% endif %}
 
@@ -74,7 +74,7 @@
       <span class="section-kicker">REVIEW FAILED</span>
       <h2>这次没有得到通过边界校验的因果建议</h2>
       <p>{{ suggestion.error or '模型输出未通过 Schema、章节方向或冻结上下文校验。' }}</p>
-      <a class="button primary" href="/novels/{{ suggestion.project_id }}/structure-health#causal-suggestions">调整范围后重试</a>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=structure">返回故事结构</a>
     </section>
   {% elif suggestion.result %}
     <section class="causal-review-summary">

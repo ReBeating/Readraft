@@ -1887,10 +1887,11 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
-        workspace = client.get(project_url)
-        assert "和 AI 讨论创作" in workspace.text
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
+        project_url = f"/novels/{project_id}"
+        workspace = client.get(workbench_url)
+        assert "共创对话" in workspace.text
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -1901,8 +1902,9 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             },
             follow_redirects=False,
         )
-        chapter_url = response.headers["location"]
-        chapter_id = chapter_url.rsplit("/", 1)[-1]
+        chapter_location = response.headers["location"]
+        chapter_id = chapter_location.split("chapter_id=", 1)[1]
+        chapter_url = f"{project_url}/chapters/{chapter_id}"
         chapter_page = client.get(chapter_url)
         content = (
             "她立刻明白了一切。"

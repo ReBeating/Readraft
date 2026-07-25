@@ -1262,17 +1262,17 @@ def test_causal_suggestion_web_flow_is_read_only_until_acceptance(
             database=application.state.database,
             username="网页因果审查作者",
         )
-        health = client.get(
-            f"/novels/{project_id}/structure-health"
+        workbench = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=settings&settings_tab=structure"
         )
-        assert health.status_code == 200
-        assert "让模型比较跨章因果与替代解释" in health.text
+        assert workbench.status_code == 200
         response = client.post(
             f"/novels/{project_id}/causal-link-suggestions",
             data={
                 "chapter_limit": "20",
                 "instruction": "重点检查跨线反转。",
-                "csrf": _csrf(health.text),
+                "csrf": _csrf(workbench.text),
             },
             follow_redirects=False,
         )

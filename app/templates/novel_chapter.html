@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading chapter-heading">
     <div>
-      <a class="back-link" href="/novels/{{ chapter.project_id }}">← 返回《{{ chapter.project_title }}》</a>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/workbench?chapter_id={{ chapter.id }}">← 返回《{{ chapter.project_title }}》工作台</a>
       <span class="eyebrow">CHAPTER {{ "%03d"|format(chapter.position) }}</span>
       <h1>{{ chapter.title or '未命名章节' }}</h1>
       <p>
@@ -185,7 +185,7 @@
         <h2>AI 味编辑</h2>
         {% if not voice_profile or voice_profile.status != 'confirmed' %}
           <p>先把“冷峻、细腻”拆成可执行的句段、对话、意象和留白规则。</p>
-          <a class="button full" href="/novels/{{ chapter.project_id }}#voice">填写并确认作品声纹</a>
+          <a class="button full" href="/novels/{{ chapter.project_id }}/workbench?view=settings&settings_tab=style">填写并确认作品声纹</a>
         {% elif working_version %}
           <p>
             {% if working_version.style_status == 'pass' %}本版本未定位到明显问题。

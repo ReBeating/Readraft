@@ -431,56 +431,9 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
     )
     assert state["stage"] == "complete"
     assert state["completed_count"] == state["step_count"] == 6
-    assert workflow.get_next_project_state(
-        user_id=user_id, project_id=project_id
-    )["complete"]
 
 
-def test_empty_project_workflow_returns_renderable_kickoff(tmp_path: Path):
-    database = Database(tmp_path / "empty-workflow.db")
-    database.initialize()
-    user_id = database.create_user(
-        "kickoff-author", hash_password("password-123")
-    )
-    project_id = "kickoff-project"
-    database.create_novel_project(
-        user_id=user_id,
-        project_id=project_id,
-        title="雾港来信",
-        genre="悬疑",
-        premise="林岚收到一封日期异常的来信。",
-        world_setting="当代旧港。",
-        style_guide="克制具体。",
-        point_of_view="第三人称限知",
-        target_chapter_chars=3000,
-    )
-    workflow = ChapterWorkflowService(database)
-
-    state = workflow.get_next_project_state(
-        user_id=user_id, project_id=project_id
-    )
-
-    assert state
-    assert state["stage"] == "kickoff"
-    assert state["primary_action"]["url"] == "#new-chapter"
-    assert {
-        action["url"] for action in state["secondary_actions"]
-    } == {
-        f"/novels/{project_id}#story-planner",
-        f"/novels/{project_id}#voice",
-    }
-    assert state["completed_count"] == 0
-    assert state["step_count"] == 6
-    assert state["steps"][0]["status"] == "current"
-    assert all(
-        step["status"] == "locked" for step in state["steps"][1:]
-    )
-    assert workflow.get_next_project_state(
-        user_id=user_id + 1, project_id=project_id
-    ) is None
-
-
-def test_empty_project_workspace_shows_kickoff_after_stats(tmp_path: Path):
+def test_empty_project_opens_unified_settings_workbench(tmp_path: Path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         register_page = client.get("/register")
@@ -508,22 +461,15 @@ def test_empty_project_workspace_shows_kickoff_after_stats(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
+        workbench_url = response.headers["location"]
 
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
 
         assert workspace.status_code == 200
-        assert "STORY KICKOFF" in workspace.text
-        assert "先建立第一章，再进入创作闭环" in workspace.text
-        assert 'href="#new-chapter"' in workspace.text
-        assert f'href="{project_url}#story-planner"' in workspace.text
-        assert f'href="{project_url}#voice"' in workspace.text
-        stats_position = workspace.text.index('class="studio-stats"')
-        workflow_position = workspace.text.index('id="chapter-workflow"')
-        continuity_position = workspace.text.index(
-            "continuity-summary-card"
-        )
-        assert stats_position < workflow_position < continuity_position
+        assert workbench_url.endswith("/workbench")
+        assert "还没有章节。" in workspace.text
+        assert "＋ 新建章节" in workspace.text
+        assert 'class="studio-settings-view"' in workspace.text
 
 
 def test_workflow_ui_and_memory_retry_route(tmp_path: Path):
@@ -618,8 +564,11 @@ def test_workflow_ui_and_memory_retry_route(tmp_path: Path):
         )
         assert f'action="{extract_url}"' in page.text
 
-        workspace = client.get(f"/novels/{project_id}")
-        assert "NEXT CHAPTER · 001" in workspace.text
+        workspace = client.get(
+            f"/novels/{project_id}/workbench?chapter_id={chapter_id}"
+        )
+        assert workspace.status_code == 200
+        assert "data-chapter-workflow" in workspace.text
         assert "正史已确认，等待建立可检索记忆" in workspace.text
 
         response = client.post(

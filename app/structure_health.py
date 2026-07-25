@@ -79,11 +79,17 @@ def _chapter_action(project_id: str, chapter_id: str) -> str:
 
 
 def _volume_action(project_id: str, volume_id: str) -> str:
-    return f"/novels/{project_id}#volume-{volume_id}"
+    return (
+        f"/novels/{project_id}/workbench"
+        "?view=settings&settings_tab=structure"
+    )
 
 
 def _arc_action(project_id: str, arc_id: str) -> str:
-    return f"/novels/{project_id}#plot-arc-{arc_id}"
+    return (
+        f"/novels/{project_id}/workbench"
+        "?view=settings&settings_tab=structure"
+    )
 
 
 def _source_kind(application_id: str) -> str:
@@ -682,7 +688,10 @@ class StructureHealthService:
                     "冲突引擎、终局状态和必须兑现项，再继续扩展窗口。"
                 ),
                 evidence="当前项目没有 confirmed blueprint",
-                action_url=f"/novels/{project_id}#story-blueprint",
+                action_url=(
+                    f"/novels/{project_id}/workbench"
+                    "?view=settings&settings_tab=structure"
+                ),
                 action_label="检查全书蓝图",
             )
         active_main = [
@@ -702,7 +711,10 @@ class StructureHealthService:
                     "暂停、已兑现和已放弃的线不能充当新窗口发动机。"
                 ),
                 evidence="确认剧情线中未找到 planned / active main",
-                action_url=f"/novels/{project_id}#plot-arcs",
+                action_url=(
+                    f"/novels/{project_id}/workbench"
+                    "?view=settings&settings_tab=structure"
+                ),
                 action_label="检查规划剧情线",
             )
         duplicate_titles = [
@@ -721,7 +733,10 @@ class StructureHealthService:
                     "无法判断应该读取哪条承诺和目标回报。"
                 ),
                 evidence="重名：" + "、".join(duplicate_titles),
-                action_url=f"/novels/{project_id}#plot-arcs",
+                action_url=(
+                    f"/novels/{project_id}/workbench"
+                    "?view=settings&settings_tab=structure"
+                ),
                 action_label="为剧情线改成唯一标题",
             )
 
@@ -1425,7 +1440,8 @@ class StructureHealthService:
                     f"{chapter['role_label']}"
                 ),
                 action_url=(
-                    f"/novels/{project_id}/structure-health#causal-links"
+                    f"/novels/{project_id}/workbench"
+                    "?view=settings&settings_tab=structure"
                 ),
                 action_label="建立因果链接",
                 chapter_positions=[int(chapter["position"])],

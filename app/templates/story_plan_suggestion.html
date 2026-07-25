@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ suggestion.project_id }}#story-planner">← 返回《{{ suggestion.project_title }}》</a>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=structure">← 返回《{{ suggestion.project_title }}》故事结构</a>
       <span class="eyebrow">STORY PLANNER · {{ suggestion.planning_mode|story_planning_mode_label }}</span>
       <h1>三套全书结构提案</h1>
       <p>
@@ -62,7 +62,7 @@
       <span class="section-kicker">GENERATION FAILED</span>
       <h2>这次没有得到可安全比较的完整方案</h2>
       <p>{{ suggestion.error or '模型输出未通过完整性校验，请返回工作台重试。' }}</p>
-      <a class="button primary" href="/novels/{{ suggestion.project_id }}#story-planner">调整重点后重试</a>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=structure">返回故事结构</a>
     </section>
   {% elif suggestion.result %}
     <section class="story-plan-comparison-intro">

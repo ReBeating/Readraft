@@ -560,11 +560,13 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
-        workspace = client.get(project_url)
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
+        project_url = f"/novels/{project_id}"
+        workspace = client.get(
+            f"{workbench_url}?view=settings&settings_tab=structure"
+        )
         assert "全书蓝图" in workspace.text
-        assert "主线、支线与人物关系线" in workspace.text
 
         blueprint_data = {
             "central_question": "父亲为何仍在寄信？",
@@ -586,9 +588,12 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "blueprint_saved=true" in response.headers["location"]
+        assert (
+            "view=settings&settings_tab=structure&saved=true"
+            in response.headers["location"]
+        )
 
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
         arc_data = {
             "arc_type": "mystery",
             "title": "父亲失踪之谜",
@@ -611,7 +616,7 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
         )
         assert response.status_code == 303
 
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -622,7 +627,9 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
             },
             follow_redirects=False,
         )
-        chapter_url = response.headers["location"]
+        chapter_location = response.headers["location"]
+        chapter_id = chapter_location.split("chapter_id=", 1)[1]
+        chapter_url = f"{project_url}/chapters/{chapter_id}"
         task_url = f"{chapter_url}/task-card"
         task_page = client.get(task_url)
         assert 'value="父亲失踪之谜"' in task_page.text
@@ -656,7 +663,6 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
         assert response.status_code == 303
         database = application.state.database
         user = database.get_user_by_username("全书蓝图作者")
-        chapter_id = chapter_url.rsplit("/", 1)[-1]
         context = database.get_writing_context(int(user["id"]), chapter_id)
         assert context["task_card"]["plot_threads"] == ["父亲失踪之谜"]
         assert context["story_blueprint"]["central_question"] == (

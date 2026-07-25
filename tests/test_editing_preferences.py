@@ -1327,8 +1327,9 @@ def test_edit_preference_web_flow_requires_author_confirmation(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
+        project_url = f"/novels/{project_id}"
         database = application.state.database
         user = database.get_user_by_username("改稿作者")
         _, after_id, _, _ = _manual_edit_pair(
@@ -1384,7 +1385,10 @@ def test_edit_preference_web_flow_requires_author_confirmation(tmp_path):
             follow_redirects=False,
         )
         assert applied.status_code == 303
-        assert "preference_learned=true" in applied.headers["location"]
+        assert (
+            "view=settings&settings_tab=style&saved=true"
+            in applied.headers["location"]
+        )
         context = database.get_writing_context(
             int(user["id"]), "chapter-one"
         )
@@ -1393,7 +1397,7 @@ def test_edit_preference_web_flow_requires_author_confirmation(tmp_path):
         ].startswith("人物反应")
 
 
-def test_editing_memory_page_confirms_and_archives_stable_preference(
+def test_stable_preference_web_actions_use_workbench_return_path(
     tmp_path,
 ):
     application = create_app(_settings(tmp_path))
@@ -1425,8 +1429,8 @@ def test_editing_memory_page_confirms_and_archives_stable_preference(
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
         database = application.state.database
         user = database.get_user_by_username("编辑记忆作者")
         _, first_after_id, _, _ = _manual_edit_pair(
@@ -1460,14 +1464,13 @@ def test_editing_memory_page_confirms_and_archives_stable_preference(
             applicability="适用于人物即时反应，不限制复杂推理。",
         )
 
-        memory_url = f"/novels/{project_id}/editing-memory"
-        page = client.get(memory_url)
+        page = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=settings&settings_tab=style"
+        )
         assert page.status_code == 200
-        assert "可能相关的多次改稿" in page.text
-        assert "2 次独立改稿" in page.text
-        assert "只有启用稳定规则进入 Writer" not in page.text
         response = client.post(
-            f"{memory_url}/aggregates",
+            f"/novels/{project_id}/editing-preference-aggregates",
             data={
                 "csrf": _csrf(page.text),
                 "category": "emotional_expression",
@@ -1484,27 +1487,30 @@ def test_editing_memory_page_confirms_and_archives_stable_preference(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "aggregate_created=true" in response.headers["location"]
-
-        page = client.get(response.headers["location"])
-        assert "稳定偏好已确认" in page.text
-        assert "同期审校观察" in page.text
-        assert "人物即时反应已有具体动作时" in page.text
+        assert (
+            "view=settings&settings_tab=style&saved=true"
+            in response.headers["location"]
+        )
         with database.connection() as connection:
             aggregate = connection.execute(
                 """
-                SELECT id FROM author_editing_preference_aggregates
+                SELECT id, guidance
+                FROM author_editing_preference_aggregates
                 WHERE project_id=? AND status='active'
                 """,
                 (project_id,),
             ).fetchone()
+        assert "人物即时反应已有具体动作时" in aggregate["guidance"]
         archived = client.post(
             f"/editing-preference-aggregates/{aggregate['id']}/archive",
             data={"csrf": _csrf(page.text)},
             follow_redirects=False,
         )
         assert archived.status_code == 303
-        assert "aggregate_archived=true" in archived.headers["location"]
+        assert (
+            "view=settings&settings_tab=style&saved=true"
+            in archived.headers["location"]
+        )
         restored = database.get_writing_context(
             int(user["id"]), "memory-chapter-one"
         )["confirmed_editing_preferences"]

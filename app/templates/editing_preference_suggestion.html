@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ suggestion.project_id }}/editing-memory">← 返回编辑记忆</a>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">← 返回文风约束</a>
       <span class="eyebrow">EDITING PREFERENCE LEARNER</span>
       <h1>
         第 {{ suggestion.position }} 章《{{ suggestion.chapter_title }}》
@@ -42,21 +42,21 @@
       <h2>这次改稿没有形成可审核偏好</h2>
       <div class="alert error">{{ suggestion.error or '未知错误' }}</div>
       <p>现有作品声纹和确认偏好均未改变。</p>
-      <a class="button" href="/novels/{{ suggestion.project_id }}/editing-memory">返回编辑记忆</a>
+      <a class="button" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">返回文风约束</a>
     </section>
   {% elif suggestion.status == 'rejected' %}
     <section class="card">
       <span class="status">已放弃</span>
       <h2>这次归纳没有进入 Writer</h2>
       <p>差异与模型建议仍保留用于追溯，但不会影响后续写作或审校。</p>
-      <a class="button" href="/novels/{{ suggestion.project_id }}/editing-memory">返回编辑记忆</a>
+      <a class="button" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">返回文风约束</a>
     </section>
   {% elif suggestion.status == 'applied' %}
     <section class="card">
       <span class="status completed">已确认</span>
       <h2>{{ suggestion.applied_preference_ids|length }} 条偏好已由作者确认</h2>
       <p>后续整章 Writer、Scene Writer 与 AI 味审校只读取抽象规则和适用范围，不读取下方证据原文。</p>
-      <a class="button primary" href="/novels/{{ suggestion.project_id }}/editing-memory">查看并管理编辑记忆</a>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">查看文风约束</a>
     </section>
   {% elif suggestion.status == 'ready' %}
     <section class="card edit-preference-summary">

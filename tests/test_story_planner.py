@@ -663,10 +663,10 @@ def test_story_planner_web_flow_applies_only_unconfirmed_drafts(
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
-        workspace = client.get(project_url)
-        assert "生成三套可比较的全书方案" in workspace.text
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
+        project_url = f"/novels/{project_id}"
+        workspace = client.get(workbench_url)
         chapter_response = client.post(
             f"{project_url}/chapters",
             data={
@@ -677,9 +677,11 @@ def test_story_planner_web_flow_applies_only_unconfirmed_drafts(
             },
             follow_redirects=False,
         )
-        chapter_id = chapter_response.headers["location"].rsplit("/", 1)[-1]
+        chapter_id = chapter_response.headers["location"].split(
+            "chapter_id=", 1
+        )[1]
 
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
         response = client.post(
             f"{project_url}/story-plan-suggestions",
             data={
@@ -720,7 +722,10 @@ def test_story_planner_web_flow_applies_only_unconfirmed_drafts(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "story_plan_applied=true" in response.headers["location"]
+        assert (
+            "view=settings&settings_tab=structure&saved=true"
+            in response.headers["location"]
+        )
 
         database = application.state.database
         user = database.get_user_by_username("全书方案作者")
@@ -744,5 +749,5 @@ def test_story_planner_web_flow_applies_only_unconfirmed_drafts(
         assert writing_context["planned_plot_arcs"] == []
 
         workspace_after = client.get(response.headers["location"])
-        assert "所选全书方案已写入新的未确认草稿" in workspace_after.text
-        assert "草稿，不进入上下文" in workspace_after.text
+        assert "已保存" in workspace_after.text
+        assert "全书蓝图尚未确认" in workspace_after.text

@@ -492,9 +492,11 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
             database=database,
         )
 
-        page = client.get(f"/novels/{project_id}/structure-health")
+        page = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=settings&settings_tab=structure"
+        )
         assert page.status_code == 200
-        assert "未来章节因果骨架" in page.text
         response = client.post(
             f"/novels/{project_id}/structure-links",
             data={
@@ -509,11 +511,10 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "causal_saved=true" in response.headers["location"]
-
-        page = client.get(response.headers["location"])
-        assert "因果链接已保存" in page.text
-        assert "林岚公开编号" in page.text
+        assert (
+            "view=settings&settings_tab=structure&saved=true"
+            in response.headers["location"]
+        )
         target_page = client.get(
             f"/novels/{project_id}/chapters/{chapters[2]}/task-card"
         )
@@ -531,5 +532,16 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        archived_page = client.get(response.headers["location"])
-        assert "因果链接已归档" in archived_page.text
+        assert (
+            "view=settings&settings_tab=structure&saved=true"
+            in response.headers["location"]
+        )
+        assert not StructureLinkService(database).list_links(
+            user_id=user_id, project_id=project_id
+        )
+        archived = StructureLinkService(database).list_links(
+            user_id=user_id,
+            project_id=project_id,
+            include_archived=True,
+        )
+        assert archived[0]["status"] == "archived"

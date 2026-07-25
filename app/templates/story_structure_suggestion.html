@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ suggestion.project_id }}#rolling-structure">← 返回《{{ suggestion.project_title }}》</a>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=structure">← 返回《{{ suggestion.project_title }}》故事结构</a>
       <span class="eyebrow">STRUCTURE PLANNER · 未来 {{ suggestion.chapter_count }} 章</span>
       <h1>三套分卷与滚动章节骨架</h1>
       <p>先比较卷界、章节发动机和剧情线分配，再核对精确落库差异。</p>
@@ -72,7 +72,7 @@
       <span class="section-kicker">GENERATION FAILED</span>
       <h2>这次没有得到可安全应用的完整结构</h2>
       <p>{{ suggestion.error or '模型输出未通过卷界、章节数量或正史边界校验。' }}</p>
-      <a class="button primary" href="/novels/{{ suggestion.project_id }}#rolling-structure">调整重点后重试</a>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=structure">返回故事结构</a>
     </section>
   {% elif suggestion.result %}
     <section class="story-plan-comparison-intro">

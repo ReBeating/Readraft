@@ -45,6 +45,18 @@ def csrf_from(html: str) -> str:
     return match.group(1)
 
 
+def project_id_from_workbench(path: str) -> str:
+    assert path.startswith("/novels/")
+    assert "/workbench" in path
+    return path.split("/novels/", 1)[1].split("/", 1)[0]
+
+
+def chapter_id_from_workbench(path: str) -> str:
+    match = re.search(r"[?&]chapter_id=([^&]+)", path)
+    assert match
+    return match.group(1)
+
+
 def test_development_without_shared_key_never_uses_test_models(tmp_path):
     application = create_app(
         replace(make_settings(tmp_path), app_env="development")
@@ -199,9 +211,10 @@ def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
-        workspace = client.get(project_url)
+        workbench_url = response.headers["location"]
+        project_id = project_id_from_workbench(workbench_url)
+        project_url = f"/novels/{project_id}"
+        workspace = client.get(workbench_url)
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -212,8 +225,10 @@ def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
             },
             follow_redirects=False,
         )
-        chapter_url = response.headers["location"]
-        chapter_id = chapter_url.rsplit("/", 1)[-1]
+        chapter_id = chapter_id_from_workbench(
+            response.headers["location"]
+        )
+        chapter_url = f"{project_url}/chapters/{chapter_id}"
         task_url = f"{chapter_url}/task-card"
         task_page = client.get(task_url)
         response = client.post(
@@ -477,8 +492,9 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
+        workbench_url = response.headers["location"]
+        project_id = project_id_from_workbench(workbench_url)
+        project_url = f"/novels/{project_id}"
 
         technique_page = client.get(technique_url)
         response = client.post(
@@ -493,9 +509,7 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        workspace = client.get(project_url)
-        assert "本书启用的写作技法" in workspace.text
-        assert "让信息先影响行动、再补充解释" in workspace.text
+        workspace = client.get(workbench_url)
 
         response = client.post(
             f"{project_url}/chapters",
@@ -509,7 +523,10 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        chapter_url = response.headers["location"]
+        chapter_id = chapter_id_from_workbench(
+            response.headers["location"]
+        )
+        chapter_url = f"{project_url}/chapters/{chapter_id}"
         chapter_page = client.get(chapter_url)
         assert "本章实际使用的技法" in chapter_page.text
         assert "先让一项信息改变人物的目标或代价" in chapter_page.text
@@ -1265,9 +1282,11 @@ def test_full_mock_novel_writing_workflow(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
+        workbench_url = response.headers["location"]
+        project_id = project_id_from_workbench(workbench_url)
+        project_url = f"/novels/{project_id}"
 
-        page = client.get(project_url)
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/voice",
             data={
@@ -1286,9 +1305,12 @@ def test_full_mock_novel_writing_workflow(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "#voice" in response.headers["location"]
+        assert (
+            "view=settings&settings_tab=style&saved=true"
+            in response.headers["location"]
+        )
 
-        page = client.get(project_url)
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/characters",
             data={
@@ -1303,7 +1325,7 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         )
         assert response.status_code == 303
 
-        page = client.get(project_url)
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -1315,7 +1337,10 @@ def test_full_mock_novel_writing_workflow(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        chapter_url = response.headers["location"]
+        chapter_id = chapter_id_from_workbench(
+            response.headers["location"]
+        )
+        chapter_url = f"{project_url}/chapters/{chapter_id}"
 
         task_page = client.get(f"{chapter_url}/task-card")
         assert "章节职责与边界" in task_page.text
@@ -1667,7 +1692,6 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         canonical_page = client.get(response.headers["location"])
         assert "正史故事记忆已更新" in canonical_page.text
 
-        project_id = project_url.rsplit("/", 1)[-1]
         export = client.get(f"/novels/{project_id}/export.txt")
         assert export.status_code == 200
         assert "第一章 迟到的信" in export.text
@@ -1709,10 +1733,11 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
+        workbench_url = response.headers["location"]
+        project_id = project_id_from_workbench(workbench_url)
+        project_url = f"/novels/{project_id}"
 
-        page = client.get(project_url)
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -1723,9 +1748,11 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
             },
             follow_redirects=False,
         )
-        first_url = response.headers["location"]
-        first_id = first_url.rsplit("/", 1)[-1]
-        page = client.get(project_url)
+        first_id = chapter_id_from_workbench(
+            response.headers["location"]
+        )
+        first_url = f"{project_url}/chapters/{first_id}"
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -1736,7 +1763,9 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
             },
             follow_redirects=False,
         )
-        second_id = response.headers["location"].rsplit("/", 1)[-1]
+        second_id = chapter_id_from_workbench(
+            response.headers["location"]
+        )
 
         user = application.state.database.get_user_by_username(
             "剧情决策作者"
@@ -1778,8 +1807,7 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
             override_reason="测试环境作者确认第一版正史",
         )
 
-        page = client.get(project_url)
-        assert "读者意见与剧情调整" in page.text
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/reader-requests",
             data={
@@ -1924,10 +1952,11 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
+        workbench_url = response.headers["location"]
+        project_id = project_id_from_workbench(workbench_url)
+        project_url = f"/novels/{project_id}"
 
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
         response = client.post(
             f"{project_url}/chapters",
             data={
@@ -1938,8 +1967,10 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
             },
             follow_redirects=False,
         )
-        chapter_url = response.headers["location"]
-        chapter_id = chapter_url.rsplit("/", 1)[-1]
+        chapter_id = chapter_id_from_workbench(
+            response.headers["location"]
+        )
+        chapter_url = f"{project_url}/chapters/{chapter_id}"
 
         first_page = client.get(chapter_url)
         response = client.post(

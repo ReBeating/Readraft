@@ -970,10 +970,10 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
             },
             follow_redirects=False,
         )
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
-        workspace = client.get(project_url)
-        assert "先确认全书蓝图和至少一条可推进主线" in workspace.text
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
+        project_url = f"/novels/{project_id}"
+        workspace = client.get(workbench_url)
 
         blueprint_data = {
             **_blueprint().model_dump(mode="json"),
@@ -991,7 +991,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
         arc = _main_arc()
         response = client.post(
             f"{project_url}/plot-arcs",
@@ -1007,8 +1007,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        workspace = client.get(project_url)
-        assert "生成三套分卷与章节骨架" in workspace.text
+        workspace = client.get(workbench_url)
         response = client.post(
             f"{project_url}/story-structure-suggestions",
             data={
@@ -1053,7 +1052,10 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "structure_applied=true" in response.headers["location"]
+        assert (
+            "view=settings&settings_tab=structure&saved=true"
+            in response.headers["location"]
+        )
         database = application.state.database
         user = database.get_user_by_username("滚动结构作者")
         chapters = database.list_novel_chapters(
@@ -1105,8 +1107,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
         assert updated_task["status"] == "draft"
         assert updated_task["source"] == "manual"
 
-        workspace = client.get(project_url)
-        assert "编辑分卷目标" in workspace.text
+        workspace = client.get(workbench_url)
         volumes = PlanningService(database).list_volumes(
             user_id=int(user["id"]), project_id=project_id
         )
@@ -1124,7 +1125,10 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "volume_saved=true" in response.headers["location"]
+        assert (
+            "view=settings&settings_tab=structure&saved=true"
+            in response.headers["location"]
+        )
         assert PlanningService(database).list_volumes(
             user_id=int(user["id"]), project_id=project_id
         )[0]["title"] == "第一卷 作者修订卷名"

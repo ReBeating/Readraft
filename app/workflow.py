@@ -267,87 +267,6 @@ class ChapterWorkflowService:
             ),
         }
 
-    def get_next_project_state(
-        self, *, user_id: int, project_id: str
-    ) -> Optional[Dict[str, Any]]:
-        chapters = self.database.list_novel_chapters(user_id, project_id)
-        if not chapters:
-            project = self.database.get_novel_project(user_id, project_id)
-            if not project:
-                return None
-            return self._project_kickoff_state(project_id=project_id)
-        last_state: Optional[Dict[str, Any]] = None
-        for chapter in chapters:
-            state = self.get_state(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=str(chapter["id"]),
-            )
-            if not state:
-                continue
-            last_state = state
-            if not state["complete"]:
-                return state
-        return last_state
-
-    @staticmethod
-    def _project_kickoff_state(*, project_id: str) -> Dict[str, Any]:
-        project_url = f"/novels/{project_id}"
-        steps = [
-            _step(
-                key="task_card",
-                label="确认任务卡",
-                status="current",
-                detail="先创建第一章，再确认章节职责与至少两个场景节拍",
-                url="#new-chapter",
-            )
-        ]
-        for key, label in WORKFLOW_STEP_LABELS[1:]:
-            steps.append(
-                _step(
-                    key=key,
-                    label=label,
-                    status="locked",
-                    detail="创建并规划第一章后开放",
-                    url="#new-chapter",
-                )
-            )
-        return {
-            "project_id": project_id,
-            "chapter_id": "",
-            "chapter_title": "",
-            "chapter_position": 0,
-            "stage": "kickoff",
-            "headline": "先建立第一章，再进入创作闭环",
-            "explanation": (
-                "填写章节名和简短大纲即可开始；全书方案与作品声纹"
-                "可以按需要先补，创建章节后系统会继续提示下一步。"
-            ),
-            "primary_action": _action(
-                label="创建并规划第一章",
-                url="#new-chapter",
-            ),
-            "secondary_actions": [
-                _action(
-                    label="先比较三套全书方案",
-                    url=f"{project_url}#story-planner",
-                ),
-                _action(
-                    label="先建立作品声纹",
-                    url=f"{project_url}#voice",
-                ),
-            ],
-            "steps": steps,
-            "completed_count": 0,
-            "step_count": len(steps),
-            "progress_percent": 0,
-            "complete": False,
-            "active_job": None,
-            "working_version_id": "",
-            "canonical_version_id": "",
-            "canonical_delta_id": "",
-        }
-
     def _active_writing_job(
         self, *, user_id: int
     ) -> Optional[Dict[str, Any]]:
@@ -656,7 +575,7 @@ class ChapterWorkflowService:
                 "正文和 Story Delta 都已由作者确认；后续章节可以读取这份正史状态。",
                 _action(
                     label="返回作品工作台",
-                    url=f"/novels/{project_id}#rolling-plan",
+                    url=f"/novels/{project_id}/workbench",
                 ),
                 (
                     [
@@ -776,7 +695,10 @@ class ChapterWorkflowService:
                     "确认作品声纹后，审校器才能按你的叙述距离、句段节奏、对话和留白规则定位问题。",
                     _action(
                         label="填写并确认作品声纹",
-                        url=f"/novels/{project_id}#voice",
+                        url=(
+                            f"/novels/{project_id}/workbench"
+                            "?view=settings&settings_tab=style"
+                        ),
                     ),
                     [
                         _action(

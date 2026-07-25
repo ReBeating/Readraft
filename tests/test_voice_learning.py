@@ -588,8 +588,10 @@ def test_voice_learning_web_workflow_requires_rights_and_author_confirmation(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
-        page = client.get(project_url)
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
+        project_url = f"/novels/{project_id}"
+        page = client.get(workbench_url)
         rejected = client.post(
             f"{project_url}/voice/suggestions",
             data={
@@ -604,7 +606,7 @@ def test_voice_learning_web_workflow_requires_rights_and_author_confirmation(
         assert rejected.status_code == 303
         assert "error=" in rejected.headers["location"]
 
-        page = client.get(project_url)
+        page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/voice/suggestions",
             data={
@@ -647,8 +649,11 @@ def test_voice_learning_web_workflow_requires_rights_and_author_confirmation(
             follow_redirects=False,
         )
         assert apply_response.status_code == 303
-        assert "voice_learned=true" in apply_response.headers["location"]
+        assert (
+            "view=settings&settings_tab=style&saved=true"
+            in apply_response.headers["location"]
+        )
         workspace = client.get(apply_response.headers["location"])
-        assert "作者样章中的声纹建议已由你确认" in workspace.text
-        assert "已确认，可执行 AI 味审校" in workspace.text
-        assert "已应用" in workspace.text
+        assert "已保存" in workspace.text
+        assert "作品声纹" in workspace.text
+        assert "已确认" in workspace.text

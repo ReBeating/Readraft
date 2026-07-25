@@ -95,7 +95,6 @@
           <summary>＋ 新建章节</summary>
           <form method="post" action="/novels/{{ project.id }}/chapters" data-save-before-submit>
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
-            <input type="hidden" name="return_to_workbench" value="1">
             <label>
               <span>章节标题（可选）</span>
               <input name="title" maxlength="120" placeholder="可以留空，之后再和 AI 讨论">
@@ -133,7 +132,6 @@
 
             <form method="post" action="/novels/{{ project.id }}/settings" class="studio-settings-form">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="return_to_workbench" value="1">
               <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}" data-settings-tab-input>
 
               <section

@@ -694,15 +694,16 @@ def test_long_horizon_web_flow_renders_three_read_only_branches(
             database=application.state.database,
             username="网页长期因果作者",
         )
-        health = client.get(
-            f"/novels/{project_id}/structure-health"
+        workbench = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=settings&settings_tab=structure"
         )
         response = client.post(
             f"/novels/{project_id}/causal-link-suggestions",
             data={
                 "chapter_limit": "12",
                 "instruction": "重点检查跨线反转。",
-                "csrf": _csrf(health.text),
+                "csrf": _csrf(workbench.text),
             },
             follow_redirects=False,
         )

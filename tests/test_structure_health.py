@@ -435,7 +435,7 @@ def test_structure_health_rejects_a_future_window_that_skips_first_volume(
     }
 
 
-def test_structure_health_web_page_is_linked_and_owner_scoped(
+def test_removed_structure_health_page_is_not_routed(
     tmp_path: Path,
 ):
     application = create_app(_settings(tmp_path))
@@ -464,22 +464,19 @@ def test_structure_health_web_page_is_linked_and_owner_scoped(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        project_url = response.headers["location"]
-        project_id = project_url.rsplit("/", 1)[-1]
+        workbench_url = response.headers["location"]
+        project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
 
-        workspace = client.get(project_url)
+        workspace = client.get(workbench_url)
         assert workspace.status_code == 200
-        assert "全书结构体检与窗口衔接" in workspace.text
-        assert f"/novels/{project_id}/structure-health" in workspace.text
+        assert f"/novels/{project_id}/structure-health" not in workspace.text
 
         page = client.get(f"/novels/{project_id}/structure-health")
-        assert page.status_code == 200
-        assert "还没有可体检的未来章节骨架" in page.text
-        assert "这是确定性报告，不调用模型" in page.text
+        assert page.status_code == 404
 
         response = client.post(
             "/logout",
-            data={"csrf": _csrf(page.text)},
+            data={"csrf": _csrf(workspace.text)},
             follow_redirects=False,
         )
         assert response.status_code == 303

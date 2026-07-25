@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, status
 from fastapi.responses import (
@@ -108,7 +108,6 @@ from .story_planner import build_story_planner
 from .story_structure_planner import build_story_structure_planner
 from .story_structure_schema import AuthorChapterSkeleton
 from .story_structure_service import StoryStructureSuggestionService
-from .structure_health import StructureHealthService
 from .structure_link_service import StructureLinkService
 from .worker import AnalysisWorker
 from .style_editor import build_style_editor
@@ -236,6 +235,32 @@ def _safe_next(value: str) -> str:
     if value.startswith("/") and not value.startswith("//"):
         return value
     return "/"
+
+
+def _workbench_path(
+    project_id: str,
+    *,
+    settings_tab: Optional[str] = None,
+    chapter_id: Optional[str] = None,
+    **params: Any,
+) -> str:
+    query: list[tuple[str, str]] = []
+    if settings_tab:
+        query.extend(
+            (
+                ("view", "settings"),
+                ("settings_tab", settings_tab),
+            )
+        )
+    if chapter_id:
+        query.append(("chapter_id", chapter_id))
+    query.extend(
+        (key, str(value))
+        for key, value in params.items()
+        if value is not None
+    )
+    path = f"/novels/{quote(project_id, safe='')}/workbench"
+    return f"{path}?{urlencode(query)}" if query else path
 
 
 def _template_context(
@@ -826,7 +851,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     story_structure_suggestion_service = StoryStructureSuggestionService(
         database, app_settings.novels_dir
     )
-    structure_health_service = StructureHealthService(database)
     structure_link_service = StructureLinkService(database)
     causal_suggestion_service = CausalSuggestionService(database)
     causal_branch_service = CausalBranchSimulationService(database)
@@ -1137,7 +1161,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     application.state.settings = app_settings
     application.state.database = database
     application.state.workflow_service = workflow_service
-    application.state.structure_health_service = structure_health_service
     application.state.structure_link_service = structure_link_service
     application.state.causal_suggestion_service = causal_suggestion_service
     application.state.causal_branch_service = causal_branch_service
@@ -2246,7 +2269,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         point_of_view: str = Form("第三人称限知"),
         target_chapter_chars: int = Form(3000),
         planning_horizon: int = Form(20),
-        return_to_workbench: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -2338,198 +2360,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 + quote("创建小说项目失败，请稍后重试"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        destination = (
-            f"/novels/{project_id}/workbench"
-            if return_to_workbench
-            else f"/novels/{project_id}"
-        )
         return RedirectResponse(
-            destination, status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.get("/novels/{project_id}", response_class=HTMLResponse)
-    async def novel_workspace(
-        request: Request,
-        project_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        voice_learned: bool = False,
-        preference_learned: bool = False,
-        blueprint_saved: bool = False,
-        arc_saved: bool = False,
-        story_plan_applied: bool = False,
-        story_plan_baseline_changed: bool = False,
-        structure_applied: bool = False,
-        structure_baseline_changed: bool = False,
-        structure_reverted: bool = False,
-        volume_saved: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        project = database.get_novel_project(int(user["id"]), project_id)
-        if not project:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        characters = database.list_novel_characters(
-            int(user["id"]), project_id
-        )
-        chapters = database.list_novel_chapters(int(user["id"]), project_id)
-        volumes = planning_service.list_volumes(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        rolling_plan = planning_service.get_rolling_plan(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        story_blueprint = story_planning_service.get_blueprint(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        story_blueprint_versions = (
-            story_planning_service.list_blueprint_versions(
-                user_id=int(user["id"]), project_id=project_id, limit=6
-            )
-        )
-        planned_plot_arcs = story_planning_service.list_arcs(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        story_plan_suggestions = (
-            story_plan_suggestion_service.list_suggestions(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                limit=6,
-            )
-        )
-        story_structure_suggestions = (
-            story_structure_suggestion_service.list_suggestions(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                limit=6,
-            )
-        )
-        structure_ready = bool(
-            story_blueprint
-            and story_blueprint.get("confirmed")
-            and any(
-                arc.get("confirmed")
-                and str(
-                    arc["confirmed"].get("arc_type") or ""
-                )
-                == "main"
-                and str(
-                    arc["confirmed"].get("lifecycle_status") or ""
-                )
-                in {"planned", "active"}
-                for arc in planned_plot_arcs
-            )
-        )
-        voice_profile = style_service.get_voice_profile(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        style_preferences = style_service.list_preferences(
-            user_id=int(user["id"]), project_id=project_id, limit=5
-        )
-        voice_suggestions = style_service.list_voice_suggestions(
-            user_id=int(user["id"]), project_id=project_id, limit=6
-        )
-        editing_preference_suggestions = (
-            preference_service.list_suggestions(
-                user_id=int(user["id"]), project_id=project_id, limit=6
-            )
-        )
-        editing_preferences = preference_service.list_active_preferences(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            limit=12,
-            exclude_aggregated=True,
-        )
-        editing_memory_summary = preference_service.get_memory_summary(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        reader_requests = reader_service.list_requests(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        impact_reports = impact_service.list_reports(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        project_techniques = technique_service.list_project_bindings(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        continuity = continuity_service.get_dashboard(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        structure_health = structure_health_service.get_report(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        next_chapter_workflow = workflow_service.get_next_project_state(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        return render_template(
-            "novel_workspace.html",
-            _template_context(
-                request,
-                user=user,
-                project=project,
-                characters=characters,
-                chapters=chapters,
-                volumes=volumes,
-                rolling_plan=rolling_plan,
-                story_blueprint=story_blueprint,
-                story_blueprint_form=(
-                    story_blueprint["current"]
-                    if story_blueprint
-                    and story_blueprint["current"]
-                    else {}
-                ),
-                story_blueprint_versions=story_blueprint_versions,
-                planned_plot_arcs=planned_plot_arcs,
-                story_plan_suggestions=story_plan_suggestions,
-                story_structure_suggestions=(
-                    story_structure_suggestions
-                ),
-                structure_ready=structure_ready,
-                structure_default_chapter_count=max(
-                    10,
-                    min(30, int(project.get("planning_horizon") or 20)),
-                ),
-                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
-                story_arc_lifecycle_options=(
-                    STORY_ARC_LIFECYCLE_OPTIONS
-                ),
-                voice_profile=voice_profile,
-                style_preferences=style_preferences,
-                voice_suggestions=voice_suggestions,
-                editing_preference_suggestions=(
-                    editing_preference_suggestions
-                ),
-                editing_preferences=editing_preferences,
-                editing_memory_summary=editing_memory_summary,
-                reader_requests=reader_requests,
-                impact_reports=impact_reports,
-                project_techniques=project_techniques,
-                continuity=continuity,
-                structure_health=structure_health,
-                next_chapter_workflow=next_chapter_workflow,
-                pov_options=POV_OPTIONS,
-                error=error,
-                saved=saved,
-                voice_learned=voice_learned,
-                preference_learned=preference_learned,
-                blueprint_saved=blueprint_saved,
-                arc_saved=arc_saved,
-                story_plan_applied=story_plan_applied,
-                story_plan_baseline_changed=(
-                    story_plan_baseline_changed
-                ),
-                structure_applied=structure_applied,
-                structure_baseline_changed=(
-                    structure_baseline_changed
-                ),
-                structure_reverted=structure_reverted,
-                volume_saved=volume_saved,
-            ),
+            f"/novels/{project_id}/workbench",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/novels/{project_id}/story-plan-suggestions")
@@ -2554,8 +2387,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#story-planner",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         profile = api_profile(int(user["id"]))
@@ -2580,8 +2416,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#story-planner",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
@@ -2677,15 +2516,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        baseline_query = (
-            "&story_plan_baseline_changed=true"
-            if applied["baseline_changed"]
-            else ""
-        )
         return RedirectResponse(
-            f"/novels/{applied['project_id']}"
-            f"?story_plan_applied=true{baseline_query}"
-            "#story-blueprint",
+            _workbench_path(
+                str(applied["project_id"]),
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -2713,8 +2549,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#rolling-structure",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         profile = api_profile(int(user["id"]))
@@ -2741,8 +2580,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#rolling-structure",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
@@ -2849,15 +2691,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        baseline_query = (
-            "&structure_baseline_changed=true"
-            if applied_result["baseline_changed"]
-            else ""
-        )
         return RedirectResponse(
-            f"/novels/{applied_result['project_id']}"
-            f"?structure_applied=true{baseline_query}"
-            "#rolling-structure",
+            _workbench_path(
+                str(applied_result["project_id"]),
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -2897,62 +2736,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/novels/{project_id}/structure-health",
-        response_class=HTMLResponse,
-    )
-    async def structure_health_page(
-        request: Request,
-        project_id: str,
-        error: Optional[str] = None,
-        causal_saved: bool = False,
-        causal_archived: bool = False,
-        reset_task_cards: int = 0,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        report = structure_health_service.get_report(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        if not report:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        causal_suggestions = causal_suggestion_service.list_suggestions(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            limit=6,
-        )
-        return render_template(
-            "structure_health.html",
-            _template_context(
-                request,
-                user=user,
-                report=report,
-                error=error,
-                causal_saved=causal_saved,
-                causal_archived=causal_archived,
-                reset_task_cards=reset_task_cards,
-                causal_suggestions=causal_suggestions,
-                causal_suggestion_default_limit=min(
-                    80,
-                    max(
-                        20,
-                        int(
-                            report["project"].get(
-                                "planning_horizon", 20
-                            )
-                            or 20
-                        )
-                        * 2,
-                    ),
-                ),
-            ),
-        )
-
     @application.post(
         "/novels/{project_id}/causal-link-suggestions"
     )
@@ -2977,8 +2760,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/structure-health"
-                f"?error={quote(str(exc))}#causal-suggestions",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         profile = api_profile(int(user["id"]))
@@ -3001,8 +2787,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/structure-health"
-                f"?error={quote(str(exc))}#causal-suggestions",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
@@ -3591,7 +3380,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         form = await request.form()
         verify_csrf(request, str(form.get("csrf") or ""))
         try:
-            result = structure_link_service.create_link(
+            structure_link_service.create_link(
                 user_id=int(user["id"]),
                 project_id=project_id,
                 source_chapter_id=str(
@@ -3609,14 +3398,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/structure-health"
-                f"?error={quote(str(exc)[:1000])}#causal-links",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc)[:1000],
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}/structure-health"
-            "?causal_saved=true&reset_task_cards="
-            f"{int(result['reset_task_card_count'])}#causal-links",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -3634,58 +3428,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         form = await request.form()
         verify_csrf(request, str(form.get("csrf") or ""))
         try:
-            result = structure_link_service.archive_link(
+            structure_link_service.archive_link(
                 user_id=int(user["id"]),
                 project_id=project_id,
                 link_id=link_id,
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/structure-health"
-                f"?error={quote(str(exc)[:1000])}#causal-links",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc)[:1000],
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}/structure-health"
-            "?causal_archived=true&reset_task_cards="
-            f"{int(result['reset_task_card_count'])}#causal-links",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get(
-        "/novels/{project_id}/continuity", response_class=HTMLResponse
-    )
-    async def continuity_dashboard(
-        request: Request,
-        project_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        identity_saved: bool = False,
-        identity_removed: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        dashboard = continuity_service.get_dashboard(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        if not dashboard:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        return render_template(
-            "continuity.html",
-            _template_context(
-                request,
-                user=user,
-                dashboard=dashboard,
-                error=error,
-                saved=saved,
-                identity_saved=identity_saved,
-                identity_removed=identity_removed,
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
             ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/novels/{project_id}/memory-identities")
@@ -3719,13 +3482,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/continuity?error="
-                f"{quote(str(exc))}#identity-rules",
+                _workbench_path(
+                    project_id,
+                    settings_tab="world",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}/continuity?identity_saved=true"
-            "#identity-rules",
+            _workbench_path(
+                project_id,
+                settings_tab="world",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -3751,8 +3520,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not removed:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
-            f"/novels/{project_id}/continuity?identity_removed=true"
-            "#identity-rules",
+            _workbench_path(
+                project_id,
+                settings_tab="world",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -3784,11 +3556,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/continuity?error={quote(str(exc))}",
+                _workbench_path(
+                    project_id,
+                    settings_tab="world",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}/continuity?saved=true",
+            _workbench_path(
+                project_id,
+                settings_tab="world",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -3810,7 +3590,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         target_chapter_chars: int = Form(3000),
         planning_horizon: int = Form(20),
         settings_tab: str = Form("core"),
-        return_to_workbench: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -3883,28 +3662,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if not updated:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
         except ValueError as exc:
-            if return_to_workbench:
-                return RedirectResponse(
-                    f"/novels/{project_id}/workbench"
-                    "?view=settings"
-                    f"&settings_tab={clean_settings_tab}"
-                    f"&error={quote(str(exc))}",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        if return_to_workbench:
-            return RedirectResponse(
-                f"/novels/{project_id}/workbench"
-                "?view=settings"
-                f"&settings_tab={clean_settings_tab}"
-                "&saved=true",
+                _workbench_path(
+                    project_id,
+                    settings_tab=clean_settings_tab,
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?saved=true",
+            _workbench_path(
+                project_id,
+                settings_tab=clean_settings_tab,
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -3952,13 +3723,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#story-blueprint",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?blueprint_saved=true"
-            "#story-blueprint",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -3984,13 +3761,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#story-blueprint",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?blueprint_saved=true"
-            "#story-blueprint",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4040,12 +3823,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#plot-arcs",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?arc_saved=true#plot-arcs",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4097,12 +3887,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#plot-arcs",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?arc_saved=true#plot-arcs",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4130,12 +3927,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#plot-arcs",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?arc_saved=true#plot-arcs",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4160,12 +3964,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#plot-arcs",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?arc_saved=true#plot-arcs",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4206,8 +4017,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}"
-                "#reader-decisions",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -4360,7 +4174,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}#reader-decisions",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4402,7 +4219,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 raise ValueError("请确认样章是你有权用于分析的文本")
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}#voice-learning",
+                _workbench_path(
+                    project_id,
+                    settings_tab="style",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         profile = api_profile(int(user["id"]))
@@ -4426,7 +4247,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}#voice-learning",
+                _workbench_path(
+                    project_id,
+                    settings_tab="style",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
@@ -4623,7 +4448,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?voice_learned=true#voice",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4643,7 +4472,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not project_id:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
-            f"/novels/{project_id}#voice-learning",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4746,94 +4578,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
         )
 
-    @application.get(
-        "/novels/{project_id}/editing-memory",
-        response_class=HTMLResponse,
-    )
-    async def editing_memory_page(
-        request: Request,
-        project_id: str,
-        error: Optional[str] = None,
-        preference_learned: bool = False,
-        aggregate_created: bool = False,
-        aggregate_archived: bool = False,
-        preference_archived: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        project = database.get_novel_project(int(user["id"]), project_id)
-        if not project:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        aggregates = preference_service.list_aggregates(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            include_archived=True,
-            limit=40,
-        )
-        active_aggregates = [
-            item for item in aggregates if item["status"] == "active"
-        ]
-        archived_aggregates = [
-            item for item in aggregates if item["status"] == "archived"
-        ]
-        candidates = preference_service.list_aggregation_candidates(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        single_preferences = (
-            preference_service.list_active_preferences(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                limit=80,
-                exclude_aggregated=True,
-            )
-        )
-        suggestions = preference_service.list_suggestions(
-            user_id=int(user["id"]), project_id=project_id, limit=12
-        )
-        summary = preference_service.get_memory_summary(
-            user_id=int(user["id"]), project_id=project_id
-        ) or {
-            "stable_count": 0,
-            "single_count": 0,
-            "conflict_count": 0,
-        }
-        summary["candidate_count"] = len(candidates)
-        summary["awaiting_effect_count"] = sum(
-            1
-            for item in active_aggregates
-            if (
-                item.get("effect_observation")
-                and item["effect_observation"]["status"]
-                != "observable"
-            )
-        )
-        return render_template(
-            "editing_memory.html",
-            _template_context(
-                request,
-                user=user,
-                project=project,
-                active_aggregates=active_aggregates,
-                archived_aggregates=archived_aggregates,
-                aggregation_candidates=candidates,
-                single_preferences=single_preferences,
-                editing_preference_suggestions=suggestions,
-                editing_memory_summary=summary,
-                error=error,
-                preference_learned=preference_learned,
-                aggregate_created=aggregate_created,
-                aggregate_archived=aggregate_archived,
-                preference_archived=preference_archived,
-            ),
-        )
-
     @application.post(
-        "/novels/{project_id}/editing-memory/aggregates"
+        "/novels/{project_id}/editing-preference-aggregates"
     )
     async def create_editing_preference_aggregate(
         request: Request, project_id: str
@@ -4896,13 +4642,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/editing-memory"
-                f"?error={quote(str(exc))}",
+                _workbench_path(
+                    project_id,
+                    settings_tab="style",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}/editing-memory"
-            "?aggregate_created=true",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5037,8 +4789,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}/editing-memory"
-            "?preference_learned=true",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5080,8 +4835,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not project_id:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
-            f"/novels/{project_id}/editing-memory"
-            "?preference_archived=true",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5103,8 +4861,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not project_id:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
-            f"/novels/{project_id}/editing-memory"
-            "?aggregate_archived=true",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5180,11 +4941,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}#voice",
+                _workbench_path(
+                    project_id,
+                    settings_tab="style",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?saved=true#voice",
+            _workbench_path(
+                project_id,
+                settings_tab="style",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5227,11 +4996,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}#volumes",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}#volumes",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5276,11 +5053,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}#volumes",
+                _workbench_path(
+                    project_id,
+                    settings_tab="structure",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}?volume_saved=true#volumes",
+            _workbench_path(
+                project_id,
+                settings_tab="structure",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5316,7 +5101,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except ValueError as exc:
             message = str(exc)
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(message)}#characters",
+                _workbench_path(
+                    project_id,
+                    settings_tab="characters",
+                    error=message,
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception as exc:
@@ -5325,11 +5114,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 logger.exception("failed to add novel character")
             message = "该人物名已经存在" if duplicate else "添加人物失败"
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(message)}#characters",
+                _workbench_path(
+                    project_id,
+                    settings_tab="characters",
+                    error=message,
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/novels/{project_id}#characters",
+            _workbench_path(
+                project_id,
+                settings_tab="characters",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5350,7 +5147,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             int(user["id"]), project_id, character_id
         )
         return RedirectResponse(
-            f"/novels/{project_id}#characters",
+            _workbench_path(
+                project_id,
+                settings_tab="characters",
+                saved="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5362,7 +5163,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         outline: str = Form(""),
         key_points: str = Form(""),
         volume_id: str = Form(""),
-        return_to_workbench: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -5407,36 +5207,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             shutil.rmtree(chapter_dir, ignore_errors=True)
-            if return_to_workbench:
-                return RedirectResponse(
-                    f"/novels/{project_id}/workbench"
-                    f"?error={quote(str(exc))}",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote(str(exc))}#chapters",
+                _workbench_path(project_id, error=str(exc)),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception:
             shutil.rmtree(chapter_dir, ignore_errors=True)
             logger.exception("failed to add novel chapter")
-            if return_to_workbench:
-                return RedirectResponse(
-                    f"/novels/{project_id}/workbench"
-                    f"?error={quote('添加章节失败')}",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
             return RedirectResponse(
-                f"/novels/{project_id}?error={quote('添加章节失败')}#chapters",
+                _workbench_path(project_id, error="添加章节失败"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        destination = (
-            f"/novels/{project_id}/workbench?chapter_id={chapter_id}"
-            if return_to_workbench
-            else f"/novels/{project_id}/chapters/{chapter_id}"
-        )
         return RedirectResponse(
-            destination, status_code=status.HTTP_303_SEE_OTHER
+            _workbench_path(project_id, chapter_id=chapter_id),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.get(
@@ -6770,9 +6554,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         if profile["status"] != "confirmed":
             return RedirectResponse(
-                f"/novels/{project_id}?error="
-                + quote("请先填写并确认作品声纹")
-                + "#voice",
+                _workbench_path(
+                    project_id,
+                    settings_tab="style",
+                    error="请先填写并确认作品声纹",
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         api = api_profile(user_id)

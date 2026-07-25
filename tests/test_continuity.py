@@ -1199,7 +1199,7 @@ def _settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_continuity_page_is_owned_and_explains_empty_state(tmp_path: Path):
+def test_removed_continuity_page_is_not_routed(tmp_path: Path):
     application = create_app(_settings(tmp_path))
     with TestClient(application) as client:
         database = application.state.database
@@ -1232,13 +1232,11 @@ def test_continuity_page_is_owned_and_explains_empty_state(tmp_path: Path):
         page = client.get(
             "/novels/web-continuity-project/continuity"
         )
-        assert page.status_code == 200
-        assert "正史状态账本" in page.text
-        assert "还没有可回放的章节状态" in page.text
+        assert page.status_code == 404
         assert client.get("/novels/not-owned/continuity").status_code == 404
 
 
-def test_lifecycle_pages_render_plot_update_text(tmp_path: Path):
+def test_story_delta_page_renders_plot_update_text(tmp_path: Path):
     application = create_app(_settings(tmp_path))
     with TestClient(application) as client:
         database = application.state.database
@@ -1306,14 +1304,9 @@ def test_lifecycle_pages_render_plot_update_text(tmp_path: Path):
             },
         )
 
-        continuity_page = client.get(
-            f"/novels/{project_id}/continuity"
-        )
         delta_page = client.get(f"/story-deltas/{delta_id}")
         expected_update = "本章对失踪之谜执行 opened。"
-        assert expected_update in continuity_page.text
         assert expected_update in delta_page.text
-        assert "&lt;built-in method update" not in continuity_page.text
         assert "&lt;built-in method update" not in delta_page.text
 
 
@@ -1348,7 +1341,10 @@ def test_memory_identity_rule_web_workflow(tmp_path: Path):
                 "csrf": csrf,
             },
         )
-        page = client.get(f"/novels/{project_id}/continuity")
+        page = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=settings&settings_tab=world"
+        )
         page_csrf = page.text.split('name="csrf" value="', 1)[1].split(
             '"', 1
         )[0]
@@ -1363,32 +1359,44 @@ def test_memory_identity_rule_web_workflow(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        saved_page = client.get(response.headers["location"])
-        assert "归一规则已保存" in saved_page.text
-        assert "寄信人住在北塔" in saved_page.text
-        assert "来信者居于北塔" in saved_page.text
+        assert (
+            "view=settings&settings_tab=world&saved=true"
+            in response.headers["location"]
+        )
 
         with database.connection() as connection:
-            identity_id = str(
-                connection.execute(
-                    """
-                    SELECT id FROM memory_identities
-                    WHERE project_id=? AND identity_type='fact'
-                      AND source='author'
-                    """,
-                    (project_id,),
-                ).fetchone()["id"]
-            )
-        remove_csrf = saved_page.text.split(
-            'name="csrf" value="', 1
-        )[1].split('"', 1)[0]
+            identity = connection.execute(
+                """
+                SELECT id, canonical_text FROM memory_identities
+                WHERE project_id=? AND identity_type='fact'
+                  AND source='author'
+                """,
+                (project_id,),
+            ).fetchone()
+            identity_id = str(identity["id"])
+            assert identity["canonical_text"] == "寄信人住在北塔"
         response = client.post(
             f"/novels/{project_id}/memory-identities/"
             f"{identity_id}/delete",
-            data={"csrf": remove_csrf},
+            data={"csrf": page_csrf},
             follow_redirects=False,
         )
         assert response.status_code == 303
-        removed_page = client.get(response.headers["location"])
-        assert "归一规则已移除" in removed_page.text
-        assert "来信者居于北塔" not in removed_page.text
+        assert (
+            "view=settings&settings_tab=world&saved=true"
+            in response.headers["location"]
+        )
+        with database.connection() as connection:
+            remaining = connection.execute(
+                "SELECT source FROM memory_identities WHERE id=?",
+                (identity_id,),
+            ).fetchone()
+            aliases = connection.execute(
+                """
+                SELECT alias_key FROM memory_identity_aliases
+                WHERE identity_id=?
+                """,
+                (identity_id,),
+            ).fetchall()
+        assert remaining["source"] == "story_delta"
+        assert len(aliases) == 1
