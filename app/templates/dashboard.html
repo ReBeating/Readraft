@@ -110,9 +110,13 @@
         {% endif %}
       </section>
 
-      {% if using_mock or api_missing %}
+      {% if using_mock %}
         <p class="studio-local-note">
-          当前可使用本地模拟回复；配置个人 DeepSeek API Key 后即可测试真实模型。
+          当前为自动化测试模式，AI 输出来自确定性测试模型。
+        </p>
+      {% elif api_missing %}
+        <p class="studio-local-note">
+          尚未配置 DeepSeek API Key；完成配置后才能开始 AI 创作与分析。
         </p>
       {% endif %}
     </main>

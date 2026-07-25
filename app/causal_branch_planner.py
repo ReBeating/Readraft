@@ -768,7 +768,7 @@ class DeepSeekCausalBranchPlanner(BaseCausalBranchPlanner):
 def build_causal_branch_planner(
     settings: Settings,
 ) -> BaseCausalBranchPlanner:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockCausalBranchPlanner()
     return DeepSeekCausalBranchPlanner(settings)
 

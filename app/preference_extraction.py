@@ -427,7 +427,7 @@ def locate_edit_preference_evidence(
 def build_edit_preference_extractor(
     settings: Settings,
 ) -> BaseEditPreferenceExtractor:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockEditPreferenceExtractor()
     return DeepSeekEditPreferenceExtractor(settings)
 

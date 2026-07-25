@@ -10,7 +10,7 @@ def test_process_lock_rejects_second_instance(tmp_path: Path):
     second = ProcessLock(tmp_path / ".worker.lock")
     first.acquire()
     try:
-        with pytest.raises(RuntimeError, match="另一个叙枢进程"):
+        with pytest.raises(RuntimeError, match="另一个 novelAI 进程"):
             second.acquire()
     finally:
         first.release()

@@ -22,7 +22,7 @@ class ProcessLock:
         except BlockingIOError as exc:
             handle.close()
             raise RuntimeError(
-                "检测到另一个叙枢进程正在使用同一数据目录；"
+                "检测到另一个 novelAI 进程正在使用同一数据目录；"
                 "SQLite 队列模式只能启动一个应用进程"
             ) from exc
         handle.seek(0)

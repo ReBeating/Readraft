@@ -341,6 +341,6 @@ class DeepSeekReaderPlanner(BaseReaderPlanner):
 
 
 def build_reader_planner(settings: Settings) -> BaseReaderPlanner:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockReaderPlanner()
     return DeepSeekReaderPlanner(settings)

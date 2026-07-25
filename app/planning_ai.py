@@ -611,6 +611,6 @@ class DeepSeekChapterPlanner(BaseChapterPlanner):
 
 
 def build_chapter_planner(settings: Settings) -> BaseChapterPlanner:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockChapterPlanner()
     return DeepSeekChapterPlanner(settings)

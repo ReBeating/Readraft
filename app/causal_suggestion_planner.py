@@ -715,7 +715,7 @@ class DeepSeekCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
 def build_causal_suggestion_planner(
     settings: Settings,
 ) -> BaseCausalSuggestionPlanner:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockCausalSuggestionPlanner()
     return DeepSeekCausalSuggestionPlanner(settings)
 

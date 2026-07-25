@@ -45,6 +45,69 @@ def csrf_from(html: str) -> str:
     return match.group(1)
 
 
+def test_development_without_shared_key_never_uses_test_models(tmp_path):
+    application = create_app(
+        replace(make_settings(tmp_path), app_env="development")
+    )
+    with TestClient(application) as client:
+        health = client.get("/healthz")
+        assert health.status_code == 200
+        assert health.json()["analyzer"] == "personal-key-only"
+        assert application.state.analyzer is None
+        assert application.state.writer is None
+
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "真实模型作者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        dashboard = client.get("/dashboard")
+        assert "尚未配置 DeepSeek API Key" in dashboard.text
+        assert "本地模拟回复" not in dashboard.text
+        assert "本地演示模式" not in dashboard.text
+
+        upload = client.get("/upload")
+        imported = client.post(
+            "/upload",
+            data={
+                "title": "无 Key 参考文本",
+                "csrf": csrf_from(upload.text),
+            },
+            files={
+                "source_file": (
+                    "reference.txt",
+                    "第一章\n这段内容不能由测试模型分析。".encode(),
+                    "text/plain",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert imported.status_code == 303
+        document_url = imported.headers["location"]
+        document = client.get(document_url)
+        analyze = client.post(
+            f"{document_url}/analyze",
+            data={"csrf": csrf_from(document.text)},
+            follow_redirects=False,
+        )
+        assert analyze.status_code == 303
+        assert analyze.headers["location"].startswith("/settings/api?error=")
+        with application.state.database.connection() as connection:
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM analysis_jobs"
+                ).fetchone()[0]
+                == 0
+            )
+
+
 def test_full_mock_workflow(tmp_path):
     with TestClient(create_app(make_settings(tmp_path))) as client:
         page = client.get("/register")

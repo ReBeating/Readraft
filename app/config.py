@@ -75,8 +75,17 @@ class Settings:
         return self.data_dir / "novels"
 
     @property
-    def uses_mock_analyzer(self) -> bool:
-        return not bool(self.deepseek_api_key)
+    def uses_test_models(self) -> bool:
+        """Return whether deterministic AI doubles may be used.
+
+        Test doubles are deliberately restricted to the test environment. A
+        development instance without a shared key must stay usable for account
+        and personal-key setup, but it must never generate simulated creative
+        output.
+        """
+        return self.app_env.lower() == "test" and not bool(
+            self.deepseek_api_key
+        )
 
     @property
     def credential_secret(self) -> str:
@@ -86,10 +95,10 @@ class Settings:
     def from_env(cls) -> "Settings":
         data_dir = _path_from_env("APP_DATA_DIR", PROJECT_ROOT / "data")
         database_path = _path_from_env(
-            "APP_DATABASE_PATH", data_dir / "xushu.db"
+            "APP_DATABASE_PATH", data_dir / "novelai.db"
         )
         return cls(
-            app_name=os.getenv("APP_NAME", "叙枢"),
+            app_name=os.getenv("APP_NAME", "novelAI"),
             app_env=os.getenv("APP_ENV", "development"),
             secret_key=os.getenv(
                 "APP_SECRET_KEY", "dev-only-change-this-secret-before-deploy"

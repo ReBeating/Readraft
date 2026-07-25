@@ -308,7 +308,7 @@ def locate_voice_evidence(
 def build_voice_profile_extractor(
     settings: Settings,
 ) -> BaseVoiceProfileExtractor:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockVoiceProfileExtractor()
     return DeepSeekVoiceProfileExtractor(settings)
 

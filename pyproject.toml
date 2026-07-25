@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "xushu-studio"
+name = "novelai-studio"
 version = "0.1.0"
-description = "叙枢：面向长篇中文小说的 AI 辅助创作工作台。"
+description = "novelAI：面向长篇中文小说的 AI 辅助创作工作台。"
 requires-python = ">=3.9"
 dependencies = [
   "cryptography>=42,<47",
@@ -18,6 +18,9 @@ dependencies = [
   "pydantic>=2.7,<3",
   "uvicorn>=0.30,<1",
 ]
+
+[project.scripts]
+novelai-backup = "app.backup:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

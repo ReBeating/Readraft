@@ -1,6 +1,6 @@
-# 叙枢
+# novelAI
 
-叙枢（Xushu Studio）是一套面向长篇中文小说的轻量 Web 创作工作台。它把设定、全书规划、章节正文、故事记忆、编辑审校与 AI 共创组织在同一个创作空间中。用户登录后可以建立小说项目、确认全书蓝图与长期剧情线、维护设定和人物卡、规划分卷/章节/场景，并使用自己的 DeepSeek API Key 生成初稿、续写、重写或润色正文。
+novelAI 是一套面向长篇中文小说的轻量 Web 创作工作台。它把设定、全书规划、章节正文、故事记忆、编辑审校与 AI 共创组织在同一个创作空间中。用户登录后可以建立小说项目、确认全书蓝图与长期剧情线、维护设定和人物卡、规划分卷/章节/场景，并使用自己的 DeepSeek API Key 生成初稿、续写、重写或润色正文。
 
 Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章分析可以提取可迁移技法，作者保存、改造并主动绑定后，系统才会在对应的规划、正文创作或审校任务中读取这些抽象规则。
 
@@ -8,8 +8,8 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 [《产品定义、当前状态与实现路线》](docs/product-definition-and-roadmap.md)。
 核心写作的数据模型、工作流和实施顺序见
 [《长篇小说创作核心：技术实现计划》](docs/core-writing-implementation-plan.md)。
-品牌候选、竞争定位与现阶段优势边界见
-[《命名候选与竞争定位》](docs/naming-and-competitive-positioning.md)。
+当前竞争定位、实现差异与优势边界见
+[《竞争定位与优势边界》](docs/competitive-positioning.md)。
 
 ## 已实现
 
@@ -113,7 +113,7 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 需要 Python 3.9+。
 
 ```bash
-cd xushu-studio
+cd novelAI
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
@@ -139,7 +139,10 @@ DEEPSEEK_API_KEY=你的_api_key
 DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
-调用顺序为：个人 Key 优先、服务器共享 Key 次之、开发环境 mock 最后。生产环境如果没有可用 Key，会要求用户先进入 API 设置，不会生成假正文。
+调用顺序为：个人 Key 优先、服务器共享 Key 次之。没有可用 Key
+时，应用仍可启动并完成账号和作品设置，但会明确要求先进入 API
+设置，不会生成演示正文或假审计结果。确定性 mock 只在
+`APP_ENV=test` 的自动化测试中启用。
 
 ## DeepSeek 写作行为
 
@@ -166,7 +169,27 @@ POST https://api.deepseek.com/chat/completions
 pytest
 ```
 
-测试不会调用真实 DeepSeek。接口测试使用 `httpx.MockTransport`，端到端流程使用 mock 写作器和 mock 分析器。
+测试不会调用真实 DeepSeek。接口测试使用 `httpx.MockTransport`，
+端到端流程在 `APP_ENV=test` 下使用确定性测试模型；开发和生产环境
+均不会回退到这些模型。
+
+## 完整备份与恢复
+
+TXT 导出只用于阅读，不能恢复作品状态。完整备份会保存一致的 SQLite
+快照、章节正文、全部不可变版本和参考资料，并使用清单与 SHA-256
+逐文件校验。为避免恢复期间仍有任务写入，以下命令要求先停止 Web
+应用：
+
+```bash
+.venv/bin/python -m app.backup create /安全目录/novelai-backup.zip
+.venv/bin/python -m app.backup verify /安全目录/novelai-backup.zip
+.venv/bin/python -m app.backup restore /安全目录/novelai-backup.zip --replace
+```
+
+备份必须保存在 `APP_DATA_DIR` 之外。恢复会先在备份文件旁创建
+`novelai-pre-restore-*.zip`，校验成功后才替换当前数据库和正文目录。
+完整备份含账号、正文和加密后的个人 API Key，仍应按敏感文件保存；
+`.env` 与加密密钥不会写入归档，需要另行安全保管。
 
 ## Azure 部署
 
@@ -179,7 +202,7 @@ pytest
 
 示例文件：
 
-- `deploy/xushu-studio.service`
+- `deploy/novelai.service`
 - `deploy/nginx.conf`
 
 生产环境至少设置：
@@ -197,10 +220,10 @@ DEEPSEEK_API_KEY=
 部署前创建专用账号和数据目录：
 
 ```bash
-sudo useradd --system --home /opt/xushu-studio --shell /usr/sbin/nologin xushu
-sudo install -d -o xushu -g xushu -m 700 /opt/xushu-studio/data
-sudo chown root:xushu /opt/xushu-studio/.env
-sudo chmod 640 /opt/xushu-studio/.env
+sudo useradd --system --home /opt/novelai --shell /usr/sbin/nologin novelai
+sudo install -d -o novelai -g novelai -m 700 /opt/novelai/data
+sudo chown root:novelai /opt/novelai/.env
+sudo chmod 640 /opt/novelai/.env
 ```
 
 后台队列与 Web 服务同进程，因此只能启动一个 Uvicorn worker。进程锁会拒绝第二个实例，避免同一生成任务被重复执行和计费。

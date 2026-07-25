@@ -15,6 +15,7 @@ from app.planning_schema import (
     allocate_scene_requirement_refs,
 )
 from app.planning_service import PlanningService
+from app.quality_audit import MockQualityAuditor
 from app.scene_service import SceneService
 from app.security import hash_password
 from app.worker import AnalysisWorker
@@ -211,6 +212,7 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
         project_id=project_id,
         chapter_id=chapter_id,
     )
+
     async def process(claimed):
         worker = AnalysisWorker(
             database,
@@ -219,6 +221,7 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
+            quality_auditor=MockQualityAuditor(),
             poll_seconds=0.01,
         )
         await worker._process_generation(claimed)
@@ -379,6 +382,7 @@ def test_manual_scene_requires_audit_and_author_can_record_override(
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
+            quality_auditor=MockQualityAuditor(),
             poll_seconds=0.01,
         )
         await worker._process_generation(claimed)

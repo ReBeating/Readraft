@@ -11,20 +11,17 @@ from pathlib import Path
 from .assistant_chat import (
     BaseAssistantChatModel,
     DeepSeekAssistantChatModel,
-    MockAssistantChatModel,
 )
 from .agent_orchestrator import AssistantAgentOrchestrator
 from .assistant_chat_service import AssistantChatService
 from .causal_branch_planner import (
     BaseCausalBranchPlanner,
     DeepSeekCausalBranchPlanner,
-    MockCausalBranchPlanner,
 )
 from .causal_branch_service import CausalBranchSimulationService
 from .causal_suggestion_planner import (
     BaseCausalSuggestionPlanner,
     DeepSeekCausalSuggestionPlanner,
-    MockCausalSuggestionPlanner,
 )
 from .causal_suggestion_service import CausalSuggestionService
 from .config import Settings
@@ -42,13 +39,11 @@ from .deepseek import AnalyzerError, BaseAnalyzer, DeepSeekAnalyzer
 from .memory_extraction import (
     BaseMemoryExtractor,
     DeepSeekMemoryExtractor,
-    MockMemoryExtractor,
 )
 from .memory_service import MemoryService
 from .planning_ai import (
     BaseChapterPlanner,
     DeepSeekChapterPlanner,
-    MockChapterPlanner,
 )
 from .planning_schema import (
     ChapterTaskCard,
@@ -59,21 +54,18 @@ from .planning_service import PlanningService
 from .preference_extraction import (
     BaseEditPreferenceExtractor,
     DeepSeekEditPreferenceExtractor,
-    MockEditPreferenceExtractor,
     locate_edit_preference_evidence,
 )
 from .preference_service import PreferenceService
 from .quality_audit import (
     BaseQualityAuditor,
     DeepSeekQualityAuditor,
-    MockQualityAuditor,
     effective_char_count,
     finalize_hard_audit,
 )
 from .reader_planner import (
     BaseReaderPlanner,
     DeepSeekReaderPlanner,
-    MockReaderPlanner,
 )
 from .reader_service import ReaderDecisionService
 from .security import stable_provider_user_id
@@ -81,7 +73,6 @@ from .scene_service import SceneService
 from .style_editor import (
     BaseStyleEditor,
     DeepSeekStyleEditor,
-    MockStyleEditor,
     locate_style_issues,
     surrounding_excerpt,
 )
@@ -90,18 +81,15 @@ from .story_plan_suggestion_service import StoryPlanSuggestionService
 from .story_planner import (
     BaseStoryPlanner,
     DeepSeekStoryPlanner,
-    MockStoryPlanner,
 )
 from .story_structure_planner import (
     BaseStoryStructurePlanner,
     DeepSeekStoryStructurePlanner,
-    MockStoryStructurePlanner,
 )
 from .story_structure_service import StoryStructureSuggestionService
 from .voice_extraction import (
     BaseVoiceProfileExtractor,
     DeepSeekVoiceProfileExtractor,
-    MockVoiceProfileExtractor,
     locate_voice_evidence,
 )
 from .writing import BaseWriter, DeepSeekWriter
@@ -114,8 +102,8 @@ class AnalysisWorker:
     def __init__(
         self,
         database: Database,
-        analyzer: BaseAnalyzer,
-        writer: BaseWriter,
+        analyzer: BaseAnalyzer | None,
+        writer: BaseWriter | None,
         provider_user_secret: str,
         settings: Settings,
         credential_cipher: CredentialCipher,
@@ -141,31 +129,19 @@ class AnalysisWorker:
         self.provider_user_secret = provider_user_secret
         self.settings = settings
         self.credential_cipher = credential_cipher
-        self.memory_extractor = memory_extractor or MockMemoryExtractor()
+        self.memory_extractor = memory_extractor
         self.memory_service = MemoryService(database)
-        self.chapter_planner = chapter_planner or MockChapterPlanner()
-        self.quality_auditor = quality_auditor or MockQualityAuditor()
-        self.style_editor = style_editor or MockStyleEditor()
-        self.reader_planner = reader_planner or MockReaderPlanner()
-        self.voice_profile_extractor = (
-            voice_profile_extractor or MockVoiceProfileExtractor()
-        )
-        self.edit_preference_extractor = (
-            edit_preference_extractor or MockEditPreferenceExtractor()
-        )
-        self.story_planner = story_planner or MockStoryPlanner()
-        self.story_structure_planner = (
-            story_structure_planner or MockStoryStructurePlanner()
-        )
-        self.causal_suggestion_planner = (
-            causal_suggestion_planner or MockCausalSuggestionPlanner()
-        )
-        self.causal_branch_planner = (
-            causal_branch_planner or MockCausalBranchPlanner()
-        )
-        self.assistant_chat_model = (
-            assistant_chat_model or MockAssistantChatModel()
-        )
+        self.chapter_planner = chapter_planner
+        self.quality_auditor = quality_auditor
+        self.style_editor = style_editor
+        self.reader_planner = reader_planner
+        self.voice_profile_extractor = voice_profile_extractor
+        self.edit_preference_extractor = edit_preference_extractor
+        self.story_planner = story_planner
+        self.story_structure_planner = story_structure_planner
+        self.causal_suggestion_planner = causal_suggestion_planner
+        self.causal_branch_planner = causal_branch_planner
+        self.assistant_chat_model = assistant_chat_model
         self.assistant_chat_service = AssistantChatService(
             database,
             settings.novels_dir,
@@ -210,10 +186,10 @@ class AnalysisWorker:
     async def run(self) -> None:
         logger.info(
             "AI worker started analyzer=%s/%s writer=%s/%s",
-            self.analyzer.provider,
-            self.analyzer.model,
-            self.writer.provider,
-            self.writer.model,
+            self.analyzer.provider if self.analyzer else "unconfigured",
+            self.analyzer.model if self.analyzer else "unconfigured",
+            self.writer.provider if self.writer else "unconfigured",
+            self.writer.model if self.writer else "unconfigured",
         )
         while not self._stopping:
             item = None
@@ -2111,7 +2087,9 @@ class AnalysisWorker:
             )
             writer = DeepSeekWriter(personal_settings)
             close_writer = True
-        elif str(item["provider"]) != self.writer.provider:
+        elif self.writer is None or (
+            str(item["provider"]) != self.writer.provider
+        ):
             raise AnalyzerError("任务所需的服务器 DeepSeek API Key 当前未配置")
 
         try:
@@ -2168,7 +2146,9 @@ class AnalysisWorker:
             )
             extractor = DeepSeekMemoryExtractor(personal_settings)
             close_extractor = True
-        elif str(item["provider"]) != self.memory_extractor.provider:
+        elif self.memory_extractor is None or (
+            str(item["provider"]) != self.memory_extractor.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2219,7 +2199,9 @@ class AnalysisWorker:
             )
             planner = DeepSeekChapterPlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.chapter_planner.provider:
+        elif self.chapter_planner is None or (
+            str(item["provider"]) != self.chapter_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2271,7 +2253,9 @@ class AnalysisWorker:
             )
             planner = DeepSeekChapterPlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.chapter_planner.provider:
+        elif self.chapter_planner is None or (
+            str(item["provider"]) != self.chapter_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2323,7 +2307,9 @@ class AnalysisWorker:
             )
             planner = DeepSeekStoryPlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.story_planner.provider:
+        elif self.story_planner is None or (
+            str(item["provider"]) != self.story_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2375,7 +2361,10 @@ class AnalysisWorker:
             )
             planner = DeepSeekStoryStructurePlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.story_structure_planner.provider:
+        elif self.story_structure_planner is None or (
+            str(item["provider"])
+            != self.story_structure_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2426,7 +2415,10 @@ class AnalysisWorker:
             )
             planner = DeepSeekCausalSuggestionPlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.causal_suggestion_planner.provider:
+        elif self.causal_suggestion_planner is None or (
+            str(item["provider"])
+            != self.causal_suggestion_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2479,7 +2471,9 @@ class AnalysisWorker:
             )
             planner = DeepSeekCausalBranchPlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.causal_branch_planner.provider:
+        elif self.causal_branch_planner is None or (
+            str(item["provider"]) != self.causal_branch_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2530,7 +2524,9 @@ class AnalysisWorker:
             )
             planner = DeepSeekReaderPlanner(personal_settings)
             close_planner = True
-        elif str(item["provider"]) != self.reader_planner.provider:
+        elif self.reader_planner is None or (
+            str(item["provider"]) != self.reader_planner.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2582,7 +2578,9 @@ class AnalysisWorker:
             )
             auditor = DeepSeekQualityAuditor(personal_settings)
             close_auditor = True
-        elif str(item["provider"]) != self.quality_auditor.provider:
+        elif self.quality_auditor is None or (
+            str(item["provider"]) != self.quality_auditor.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2679,7 +2677,10 @@ class AnalysisWorker:
             )
             extractor = DeepSeekVoiceProfileExtractor(personal_settings)
             close_extractor = True
-        elif str(item["provider"]) != self.voice_profile_extractor.provider:
+        elif self.voice_profile_extractor is None or (
+            str(item["provider"])
+            != self.voice_profile_extractor.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2735,7 +2736,10 @@ class AnalysisWorker:
             )
             extractor = DeepSeekEditPreferenceExtractor(personal_settings)
             close_extractor = True
-        elif str(item["provider"]) != self.edit_preference_extractor.provider:
+        elif self.edit_preference_extractor is None or (
+            str(item["provider"])
+            != self.edit_preference_extractor.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2792,7 +2796,9 @@ class AnalysisWorker:
                 ),
             )
             return DeepSeekStyleEditor(personal_settings), True
-        if str(item["provider"]) != self.style_editor.provider:
+        if self.style_editor is None or (
+            str(item["provider"]) != self.style_editor.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2804,7 +2810,9 @@ class AnalysisWorker:
             user_id, self.provider_user_secret
         )
         if item.get("credential_source") != "personal":
-            if str(item["provider"]) != self.analyzer.provider:
+            if self.analyzer is None or (
+                str(item["provider"]) != self.analyzer.provider
+            ):
                 raise AnalyzerError(
                     "任务所需的服务器 DeepSeek API Key 当前未配置"
                 )
@@ -2878,7 +2886,9 @@ class AnalysisWorker:
             )
             model = DeepSeekAssistantChatModel(personal_settings)
             close_model = True
-        elif str(item["provider"]) != self.assistant_chat_model.provider:
+        elif self.assistant_chat_model is None or (
+            str(item["provider"]) != self.assistant_chat_model.provider
+        ):
             raise AnalyzerError(
                 "任务所需的服务器 DeepSeek API Key 当前未配置"
             )
@@ -2905,17 +2915,22 @@ class AnalysisWorker:
     async def stop(self) -> None:
         self._stopping = True
         self._wake.set()
-        await self.analyzer.close()
-        await self.writer.close()
-        await self.memory_extractor.close()
-        await self.chapter_planner.close()
-        await self.quality_auditor.close()
-        await self.style_editor.close()
-        await self.reader_planner.close()
-        await self.story_planner.close()
-        await self.story_structure_planner.close()
-        await self.causal_suggestion_planner.close()
-        await self.causal_branch_planner.close()
-        await self.voice_profile_extractor.close()
-        await self.edit_preference_extractor.close()
-        await self.assistant_chat_model.close()
+        providers = (
+            self.analyzer,
+            self.writer,
+            self.memory_extractor,
+            self.chapter_planner,
+            self.quality_auditor,
+            self.style_editor,
+            self.reader_planner,
+            self.story_planner,
+            self.story_structure_planner,
+            self.causal_suggestion_planner,
+            self.causal_branch_planner,
+            self.voice_profile_extractor,
+            self.edit_preference_extractor,
+            self.assistant_chat_model,
+        )
+        for provider in providers:
+            if provider is not None:
+                await provider.close()

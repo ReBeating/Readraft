@@ -531,6 +531,6 @@ def _sentence_containing(text: str, trigger: str) -> str:
 
 
 def build_style_editor(settings: Settings) -> BaseStyleEditor:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockStyleEditor()
     return DeepSeekStyleEditor(settings)

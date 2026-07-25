@@ -8,9 +8,12 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+# This protocol namespace predates the display-name change. It is intentionally
+# stable: changing it would make every stored encrypted API key unreadable.
+CREDENTIAL_KDF_NAMESPACE = b"xushu:credential:v1\0"
 
 DEFAULT_SYSTEM_PROMPT = (
-    "你是叙枢中的模型执行层，只依据当前请求、应用提供的上下文"
+    "你是 novelAI 中的模型执行层，只依据当前请求、应用提供的上下文"
     "和实际可用能力完成任务。不得声称读取了未提供的内容、调用了未调用"
     "的工具或完成了未经确认的写入。遇到信息、上下文、输出容量、工具"
     "权限或平台边界时，准确说明具体限制，继续完成可执行部分，并给出"
@@ -32,7 +35,7 @@ class CredentialCipher:
         if len(secret) < 16:
             raise ValueError("凭据加密密钥至少需要 16 个字符")
         derived = hashlib.sha256(
-            b"xushu:credential:v1\0" + secret.encode("utf-8")
+            CREDENTIAL_KDF_NAMESPACE + secret.encode("utf-8")
         ).digest()
         self._fernet = Fernet(base64.urlsafe_b64encode(derived))
 

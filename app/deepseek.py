@@ -403,6 +403,6 @@ class DeepSeekAnalyzer(BaseAnalyzer):
 
 
 def build_analyzer(settings: Settings) -> BaseAnalyzer:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockAnalyzer()
     return DeepSeekAnalyzer(settings)

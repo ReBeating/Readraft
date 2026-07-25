@@ -446,6 +446,6 @@ def finalize_hard_audit(
 
 
 def build_quality_auditor(settings: Settings) -> BaseQualityAuditor:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockQualityAuditor()
     return DeepSeekQualityAuditor(settings)

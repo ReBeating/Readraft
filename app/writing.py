@@ -811,6 +811,6 @@ class DeepSeekWriter(BaseWriter):
 
 
 def build_default_writer(settings: Settings) -> BaseWriter:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockWriter()
     return DeepSeekWriter(settings)

@@ -1,17 +1,17 @@
 [Unit]
-Description=Xushu Studio FastAPI service
+Description=novelAI FastAPI service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=xushu
-Group=xushu
+User=novelai
+Group=novelai
 UMask=0077
-WorkingDirectory=/opt/xushu-studio
-EnvironmentFile=/opt/xushu-studio/.env
+WorkingDirectory=/opt/novelai
+EnvironmentFile=/opt/novelai/.env
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/xushu-studio/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1
+ExecStart=/opt/novelai/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=30
@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/xushu-studio/data
+ReadWritePaths=/opt/novelai/data
 MemoryHigh=450M
 MemoryMax=600M
 

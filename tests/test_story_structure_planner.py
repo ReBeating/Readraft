@@ -38,7 +38,7 @@ from app.story_structure_service import StoryStructureSuggestionService
 
 def _settings(tmp_path: Path, *, api_key: str | None = None) -> Settings:
     return Settings(
-        app_name="测试叙枢",
+        app_name="novelAI 测试",
         app_env="test",
         secret_key="test-secret-long-enough",
         data_dir=tmp_path,

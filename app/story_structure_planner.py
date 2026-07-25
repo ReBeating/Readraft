@@ -475,6 +475,6 @@ class DeepSeekStoryStructurePlanner(BaseStoryStructurePlanner):
 def build_story_structure_planner(
     settings: Settings,
 ) -> BaseStoryStructurePlanner:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockStoryStructurePlanner()
     return DeepSeekStoryStructurePlanner(settings)

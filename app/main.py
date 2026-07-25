@@ -229,11 +229,10 @@ def _template_context(
     if user:
         database: Database = request.app.state.database
         personal_api_configured = database.has_api_credential(int(user["id"]))
-    mock_allowed = settings.app_env.lower() in {"development", "test"}
     using_mock = (
         not personal_api_configured
         and not settings.deepseek_api_key
-        and mock_allowed
+        and settings.uses_test_models
     )
     return {
         "request": request,
@@ -244,7 +243,7 @@ def _template_context(
         "api_missing": (
             not personal_api_configured
             and not settings.deepseek_api_key
-            and not mock_allowed
+            and not using_mock
         ),
         "personal_api_configured": personal_api_configured,
         **extra,
@@ -918,7 +917,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "model": app_settings.deepseek_model,
                 "credential_source": "default",
             }
-        if app_settings.app_env.lower() in {"development", "test"}:
+        if app_settings.uses_test_models:
             return {
                 "provider": "mock",
                 "model": "mock-novel-writer",
@@ -1001,32 +1000,51 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             process_lock.acquire()
             database.initialize()
             app_settings.ensure_directories()
-            analyzer = build_analyzer(app_settings)
-            writer = build_default_writer(app_settings)
-            memory_extractor = build_memory_extractor(app_settings)
-            chapter_planner = build_chapter_planner(app_settings)
-            quality_auditor = build_quality_auditor(app_settings)
-            style_editor = build_style_editor(app_settings)
-            reader_planner = build_reader_planner(app_settings)
-            story_planner = build_story_planner(app_settings)
-            story_structure_planner = build_story_structure_planner(
-                app_settings
-            )
-            causal_suggestion_planner = build_causal_suggestion_planner(
-                app_settings
-            )
-            causal_branch_planner = build_causal_branch_planner(
-                app_settings
-            )
-            voice_profile_extractor = build_voice_profile_extractor(
-                app_settings
-            )
-            edit_preference_extractor = build_edit_preference_extractor(
-                app_settings
-            )
-            assistant_chat_model = build_assistant_chat_model(
-                app_settings
-            )
+            default_provider_configured = bool(
+                app_settings.deepseek_api_key
+            ) or app_settings.uses_test_models
+            if default_provider_configured:
+                analyzer = build_analyzer(app_settings)
+                writer = build_default_writer(app_settings)
+                memory_extractor = build_memory_extractor(app_settings)
+                chapter_planner = build_chapter_planner(app_settings)
+                quality_auditor = build_quality_auditor(app_settings)
+                style_editor = build_style_editor(app_settings)
+                reader_planner = build_reader_planner(app_settings)
+                story_planner = build_story_planner(app_settings)
+                story_structure_planner = (
+                    build_story_structure_planner(app_settings)
+                )
+                causal_suggestion_planner = (
+                    build_causal_suggestion_planner(app_settings)
+                )
+                causal_branch_planner = build_causal_branch_planner(
+                    app_settings
+                )
+                voice_profile_extractor = (
+                    build_voice_profile_extractor(app_settings)
+                )
+                edit_preference_extractor = (
+                    build_edit_preference_extractor(app_settings)
+                )
+                assistant_chat_model = build_assistant_chat_model(
+                    app_settings
+                )
+            else:
+                analyzer = None
+                writer = None
+                memory_extractor = None
+                chapter_planner = None
+                quality_auditor = None
+                style_editor = None
+                reader_planner = None
+                story_planner = None
+                story_structure_planner = None
+                causal_suggestion_planner = None
+                causal_branch_planner = None
+                voice_profile_extractor = None
+                edit_preference_extractor = None
+                assistant_chat_model = None
             worker = AnalysisWorker(
                 database,
                 analyzer,
@@ -1138,7 +1156,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             {
                 "status": "ok" if healthy else "unhealthy",
                 "analyzer": (
-                    "mock" if app_settings.uses_mock_analyzer else "deepseek"
+                    "mock"
+                    if app_settings.uses_test_models
+                    else (
+                        "deepseek"
+                        if app_settings.deepseek_api_key
+                        else "personal-key-only"
+                    )
                 ),
                 "database": "ok" if database_ok else "unavailable",
                 "worker": "ok" if worker_ok else "unavailable",
@@ -9219,7 +9243,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             provider = analyzer.provider
             model = analyzer.model
             credential_source = "default"
-        elif app_settings.app_env.lower() in {"development", "test"}:
+        elif app_settings.uses_test_models:
             provider = analyzer.provider
             model = analyzer.model
             credential_source = "default"

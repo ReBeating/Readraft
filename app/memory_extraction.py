@@ -416,6 +416,6 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
 
 
 def build_memory_extractor(settings: Settings) -> BaseMemoryExtractor:
-    if settings.uses_mock_analyzer:
+    if settings.uses_test_models:
         return MockMemoryExtractor()
     return DeepSeekMemoryExtractor(settings)
