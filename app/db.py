@@ -231,6 +231,93 @@ CREATE INDEX IF NOT EXISTS idx_analysis_queue
 """
 
 
+def has_active_user_ai_task(
+    connection: sqlite3.Connection, user_id: int
+) -> bool:
+    """Return whether changing this user's model credentials is unsafe."""
+    row = connection.execute(
+        """
+        SELECT 1
+        WHERE EXISTS(
+            SELECT 1 FROM analysis_jobs
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM generation_jobs
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM story_plan_suggestions
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM story_structure_suggestions
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM novel_causal_link_suggestions
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM novel_causal_branch_simulations
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM voice_profile_suggestions
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM editing_preference_suggestions
+            WHERE user_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1
+            FROM assistant_messages m
+            JOIN assistant_conversations c ON c.id=m.conversation_id
+            WHERE c.user_id=?
+              AND m.role='assistant'
+              AND m.status IN ('queued', 'running')
+        )
+        """,
+        (user_id,) * 9,
+    ).fetchone()
+    return row is not None
+
+
+def has_active_project_ai_task(
+    connection: sqlite3.Connection, *, user_id: int, project_id: str
+) -> bool:
+    """Return whether exporting or deleting this project is unsafe."""
+    row = connection.execute(
+        """
+        SELECT 1
+        WHERE EXISTS(
+            SELECT 1 FROM generation_jobs
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM story_plan_suggestions
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM story_structure_suggestions
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM novel_causal_link_suggestions
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM novel_causal_branch_simulations
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM voice_profile_suggestions
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1 FROM editing_preference_suggestions
+            WHERE project_id=? AND status IN ('queued', 'running')
+        ) OR EXISTS(
+            SELECT 1
+            FROM assistant_messages m
+            JOIN assistant_conversations c ON c.id=m.conversation_id
+            WHERE c.project_id=? AND c.user_id=?
+              AND m.role='assistant'
+              AND m.status IN ('queued', 'running')
+        )
+        """,
+        (project_id,) * 8 + (user_id,),
+    ).fetchone()
+    return row is not None
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
@@ -443,48 +530,7 @@ class Database:
         now = utc_now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            active = connection.execute(
-                """
-                SELECT 1
-                WHERE EXISTS(
-                    SELECT 1 FROM analysis_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM generation_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM story_plan_suggestions
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM story_structure_suggestions
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM novel_causal_link_suggestions
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM novel_causal_branch_simulations
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1
-                    FROM assistant_messages m
-                    JOIN assistant_conversations c
-                      ON c.id=m.conversation_id
-                    WHERE c.user_id=?
-                      AND m.role='assistant'
-                      AND m.status IN ('queued', 'running')
-                )
-                """,
-                (
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                ),
-            ).fetchone()
-            if active:
+            if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
                 raise ValueError(
                     "有 AI 任务正在运行，请在任务结束后再修改 API 设置"
@@ -524,48 +570,7 @@ class Database:
     def delete_api_credential(self, user_id: int) -> bool:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            active = connection.execute(
-                """
-                SELECT 1
-                WHERE EXISTS(
-                    SELECT 1 FROM analysis_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM generation_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM story_plan_suggestions
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM story_structure_suggestions
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM novel_causal_link_suggestions
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM novel_causal_branch_simulations
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1
-                    FROM assistant_messages m
-                    JOIN assistant_conversations c
-                      ON c.id=m.conversation_id
-                    WHERE c.user_id=?
-                      AND m.role='assistant'
-                      AND m.status IN ('queued', 'running')
-                )
-                """,
-                (
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                    user_id,
-                ),
-            ).fetchone()
-            if active:
+            if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
                 raise ValueError(
                     "有 AI 任务正在运行，请在任务结束后再删除 API Key"
@@ -694,45 +699,9 @@ class Database:
             if not project:
                 connection.rollback()
                 return False
-            active = connection.execute(
-                """
-                SELECT 1
-                WHERE EXISTS(
-                    SELECT 1 FROM generation_jobs
-                    WHERE project_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM story_plan_suggestions
-                    WHERE project_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM story_structure_suggestions
-                    WHERE project_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM novel_causal_link_suggestions
-                    WHERE project_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM novel_causal_branch_simulations
-                    WHERE project_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1
-                    FROM assistant_messages m
-                    JOIN assistant_conversations c
-                      ON c.id=m.conversation_id
-                    WHERE c.project_id=? AND c.user_id=?
-                      AND m.role='assistant'
-                      AND m.status IN ('queued', 'running')
-                )
-                """,
-                (
-                    project_id,
-                    project_id,
-                    project_id,
-                    project_id,
-                    project_id,
-                    project_id,
-                    user_id,
-                ),
-            ).fetchone()
-            if active:
+            if has_active_project_ai_task(
+                connection, user_id=user_id, project_id=project_id
+            ):
                 connection.rollback()
                 raise ValueError(
                     "作品有 AI 任务正在排队或运行，请完成后再删除"

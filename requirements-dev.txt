@@ -1,3 +1,6 @@
 -r requirements.txt
-pytest>=8,<9
-
+detect-secrets>=1.5,<2
+httpx2>=2.9,<3
+pip-audit>=2.10,<2.11
+pytest>=8.4,<9
+ruff>=0.16,<0.17

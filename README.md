@@ -111,13 +111,14 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 
 ## 本地运行
 
-需要 Python 3.9+。
+需要 Python 3.12+。项目根目录的 `.python-version` 固定本地基线，
+`requirements*.lock` 固定并校验全部依赖及其下载哈希。
 
 ```bash
 cd novelAI
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.lock
 cp .env.example .env
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
@@ -171,12 +172,27 @@ Ollama    http://127.0.0.1:11434/v1/chat/completions
 ## 测试
 
 ```bash
+python -m ruff check app tests
 python -m pytest
+python -m pip_audit --disable-pip -r requirements.lock
+git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
 ```
 
 测试不会调用真实模型服务。接口测试使用 `httpx.MockTransport`，
 端到端流程在 `APP_ENV=test` 下使用确定性测试模型；开发和生产环境
 均不会回退到这些模型。
+
+GitHub Actions 会在 Python 3.12、3.13 和 3.14 上安装带哈希的锁定
+依赖并执行静态检查与全量测试，同时独立执行运行依赖漏洞审计和已跟踪
+文件的密钥扫描。调整 `requirements.txt` 或 `requirements-dev.txt`
+后，使用 Python 3.12 和 `pip-tools` 重新生成两个锁文件：
+
+```bash
+python -m piptools compile --generate-hashes --strip-extras \
+  --output-file=requirements.lock requirements.txt
+python -m piptools compile --generate-hashes --strip-extras --allow-unsafe \
+  --output-file=requirements-dev.lock requirements-dev.txt
+```
 
 如需验证真实个人模型，可运行只使用内置合成材料的冒烟命令。它不读取
 作品正文，也不会打印 API Key 或模型生成内容：

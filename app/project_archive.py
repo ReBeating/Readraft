@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from .db import Database
+from .db import Database, has_active_project_ai_task
 
 
 ARCHIVE_FORMAT = "novelai-project"
@@ -258,57 +258,6 @@ def _add_rows(
     return changed
 
 
-def _active_project_task_exists(
-    connection: sqlite3.Connection, project_id: str, user_id: int
-) -> bool:
-    row = connection.execute(
-        """
-        SELECT 1
-        WHERE EXISTS(
-            SELECT 1 FROM generation_jobs
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1 FROM story_plan_suggestions
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1 FROM story_structure_suggestions
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1 FROM novel_causal_link_suggestions
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1 FROM novel_causal_branch_simulations
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1 FROM voice_profile_suggestions
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1 FROM editing_preference_suggestions
-            WHERE project_id=? AND status IN ('queued', 'running')
-        ) OR EXISTS(
-            SELECT 1
-            FROM assistant_messages m
-            JOIN assistant_conversations c ON c.id=m.conversation_id
-            WHERE c.project_id=? AND c.user_id=?
-              AND m.role='assistant'
-              AND m.status IN ('queued', 'running')
-        )
-        """,
-        (
-            project_id,
-            project_id,
-            project_id,
-            project_id,
-            project_id,
-            project_id,
-            project_id,
-            project_id,
-            user_id,
-        ),
-    ).fetchone()
-    return row is not None
-
-
 def _select_project_rows(
     connection: sqlite3.Connection,
     *,
@@ -325,7 +274,9 @@ def _select_project_rows(
     ).fetchone()
     if not project:
         raise ProjectArchiveError("作品不存在或不属于当前账号")
-    if _active_project_task_exists(connection, project_id, user_id):
+    if has_active_project_ai_task(
+        connection, user_id=user_id, project_id=project_id
+    ):
         raise ProjectArchiveError(
             "作品有 AI 任务正在排队或运行，请完成后再导出"
         )
