@@ -13,6 +13,12 @@ from pydantic import ValidationError
 from .config import Settings
 from .deepseek import AnalyzerError
 from .memory_schema import StoryDelta
+from .model_provider import (
+    ProviderConfigError,
+    build_chat_payload,
+    build_provider_headers,
+    get_provider,
+)
 
 
 MEMORY_SYSTEM_PROMPT = f"""
@@ -140,17 +146,16 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
         transport: Optional[httpx.AsyncBaseTransport] = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
-        if not settings.deepseek_api_key:
-            raise ValueError("DEEPSEEK_API_KEY 未配置")
         self.settings = settings
+        self.provider = settings.model_provider
+        self._provider_spec = get_provider(self.provider)
         self.model = settings.deepseek_model
         self._sleep = sleep
         self._client = httpx.AsyncClient(
-            base_url=settings.deepseek_base_url,
-            headers={
-                "Authorization": f"Bearer {settings.deepseek_api_key}",
-                "Content-Type": "application/json",
-            },
+            base_url=settings.deepseek_base_url.rstrip("/") + "/",
+            headers=build_provider_headers(
+                self._provider_spec, settings.deepseek_api_key
+            ),
             timeout=httpx.Timeout(
                 connect=settings.deepseek_connect_timeout_seconds,
                 read=settings.deepseek_read_timeout_seconds,
@@ -169,28 +174,17 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
         provider_user_id: str,
         max_tokens: int,
     ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "response_format": {"type": "json_object"},
-            "max_tokens": max_tokens,
-            "stream": False,
-            "user_id": provider_user_id,
-            "thinking": {
-                "type": (
-                    "enabled"
-                    if self.settings.deepseek_thinking
-                    else "disabled"
-                )
-            },
-        }
-        if self.settings.deepseek_thinking:
-            payload["reasoning_effort"] = (
-                self.settings.deepseek_reasoning_effort
+        try:
+            return build_chat_payload(
+                settings=self.settings,
+                messages=messages,
+                provider_user_id=provider_user_id,
+                max_tokens=max_tokens,
+                json_object=True,
+                temperature=0.1,
             )
-        else:
-            payload["temperature"] = 0.1
-        return payload
+        except ProviderConfigError as exc:
+            raise AnalyzerError(str(exc)) from exc
 
     async def _post(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         total_attempts = self.settings.deepseek_max_retries + 1
@@ -207,16 +201,18 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
                         response=response,
                     )
                 if response.status_code >= 400:
+                    label = self._provider_spec.label
                     messages = {
-                        400: "DeepSeek 故事记忆请求格式不正确",
-                        401: "DeepSeek API Key 无效",
-                        402: "DeepSeek 账户余额不足",
-                        422: "DeepSeek 故事记忆请求参数无效",
+                        400: f"{label} 故事记忆请求格式不正确",
+                        401: f"{label} API Key 无效",
+                        402: f"{label} 账户余额不足",
+                        403: f"{label} API Key 无权执行此请求",
+                        422: f"{label} 故事记忆请求参数无效",
                     }
                     raise AnalyzerError(
                         messages.get(
                             response.status_code,
-                            "DeepSeek 故事记忆请求失败"
+                            f"{label} 故事记忆请求失败"
                             f"（HTTP {response.status_code}）",
                         )
                     )
@@ -240,7 +236,7 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
                     min(8.0, 2**attempt) + random.uniform(0, 0.25)
                 )
         raise AnalyzerError(
-            f"DeepSeek 连接失败，已重试 "
+            f"{self._provider_spec.label} 连接失败，已重试 "
             f"{self.settings.deepseek_max_retries} 次"
         ) from last_error
 

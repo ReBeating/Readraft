@@ -438,6 +438,7 @@ class Database:
         thinking: bool,
         reasoning_effort: str,
         system_prompt: str = "",
+        provider: str = "deepseek",
     ) -> None:
         now = utc_now()
         with self.connection() as connection:
@@ -494,7 +495,7 @@ class Database:
                     user_id, provider, encrypted_key, key_hint, model,
                     thinking, reasoning_effort, system_prompt,
                     created_at, updated_at
-                ) VALUES (?, 'deepseek', ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     provider=excluded.provider,
                     encrypted_key=excluded.encrypted_key,
@@ -507,6 +508,7 @@ class Database:
                 """,
                 (
                     user_id,
+                    provider,
                     encrypted_key,
                     key_hint,
                     model,

@@ -2026,6 +2026,10 @@ body.studio-surface .studio-api-form textarea {
   gap: 14px;
 }
 
+.studio-api-options[hidden] {
+  display: none;
+}
+
 .studio-api-options .studio-check {
   display: flex;
   min-height: 46px;

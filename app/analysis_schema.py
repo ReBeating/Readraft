@@ -94,7 +94,13 @@ ANALYSIS_JSON_EXAMPLE = {
     "key_events": [
         {"event": "林川发现旧案徽记", "impact": "推动他开始调查父亲死亡真相"}
     ],
-    "foreshadowing": [],
+    "foreshadowing": [
+        {
+            "type": "setup",
+            "clue": "受伤女子携带与林川父亲旧案有关的徽记",
+            "interpretation": "徽记的来源与女子身份仍待后续解释",
+        }
+    ],
     "conflicts": [
         {
             "parties": ["林川", "受伤女子"],

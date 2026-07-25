@@ -65,6 +65,7 @@ class Settings:
     max_jobs_per_day: int = 10
     credential_encryption_key: str | None = None
     deepseek_system_prompt: str = ""
+    model_provider: str = "deepseek"
 
     @property
     def documents_dir(self) -> Path:
@@ -139,9 +140,12 @@ class Settings:
             deepseek_system_prompt=os.getenv(
                 "DEEPSEEK_SYSTEM_PROMPT", ""
             ).strip(),
+            model_provider=os.getenv("MODEL_PROVIDER", "deepseek"),
         )
 
     def validate(self) -> None:
+        from .model_provider import get_provider
+
         positive_values = {
             "APP_MAX_UPLOAD_BYTES": self.max_upload_bytes,
             "APP_MAX_TEXT_CHARS": self.max_text_chars,
@@ -167,6 +171,13 @@ class Settings:
             raise ValueError("DEEPSEEK_REASONING_EFFORT 目前仅支持 high 或 max")
         if not self.deepseek_model.strip():
             raise ValueError("DEEPSEEK_MODEL 不能为空")
+        if not self.model_provider.strip():
+            raise ValueError("MODEL_PROVIDER 不能为空")
+        provider = get_provider(self.model_provider)
+        if self.deepseek_thinking and not provider.capabilities.thinking:
+            raise ValueError(
+                f"{provider.label} 暂不支持 novelAI 的思考模式"
+            )
         if len(self.deepseek_system_prompt) > 20_000:
             raise ValueError("DEEPSEEK_SYSTEM_PROMPT 不能超过 20000 个字符")
         if len(self.credential_secret) < 16:

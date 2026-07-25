@@ -69,7 +69,7 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
         )
         assert response.status_code == 303
         dashboard = client.get("/dashboard")
-        assert "尚未配置 DeepSeek API Key" in dashboard.text
+        assert "尚未配置模型服务" in dashboard.text
         assert "本地模拟回复" not in dashboard.text
         assert "本地演示模式" not in dashboard.text
 
@@ -597,7 +597,7 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert response.headers["location"] == "/settings/api?saved=true"
 
         saved_page = client.get(response.headers["location"])
-        assert "个人 Key 已配置" in saved_page.text
+        assert "个人模型已配置" in saved_page.text
         assert "sk-••••5678" in saved_page.text
         assert raw_key not in saved_page.text
 
@@ -618,6 +618,100 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         )
         assert response.status_code == 303
         assert application.state.database.get_api_credential(user["id"]) is None
+
+
+def test_user_can_select_ollama_without_api_key(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "本机模型用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        page = client.get("/settings/api")
+        assert "Google Gemini" in page.text
+        assert "Ollama（本机）" in page.text
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "ollama",
+                "api_key": "",
+                "model": "qwen3:8b",
+                "reasoning_effort": "high",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        user = application.state.database.get_user_by_username(
+            "本机模型用户"
+        )
+        credential = application.state.database.get_api_credential(
+            user["id"]
+        )
+        assert credential["provider"] == "ollama"
+        assert credential["model"] == "qwen3:8b"
+        assert credential["key_hint"] == "无需 Key"
+        assert (
+            application.state.credential_cipher.decrypt(
+                credential["encrypted_key"]
+            )
+            == ""
+        )
+
+
+def test_remote_provider_rejects_missing_key_and_thinking(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "远程模型用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        page = client.get("/settings/api")
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "openai",
+                "api_key": "",
+                "model": "gpt-4.1-mini",
+                "reasoning_effort": "high",
+                "csrf": csrf_from(page.text),
+            },
+        )
+        assert response.status_code == 400
+        assert "请填写 OpenAI API Key" in response.text
+
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "gemini",
+                "api_key": "gemini-test-key",
+                "model": "gemini-2.5-flash",
+                "thinking": "enabled",
+                "reasoning_effort": "high",
+                "csrf": csrf_from(response.text),
+            },
+        )
+        assert response.status_code == 400
+        assert "暂不支持 novelAI 的思考模式" in response.text
 
 
 def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):

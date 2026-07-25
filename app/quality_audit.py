@@ -179,6 +179,7 @@ class DeepSeekQualityAuditor(BaseQualityAuditor):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self.settings = settings
+        self.provider = settings.model_provider
         self.model = settings.deepseek_model
         self._analyzer = DeepSeekAnalyzer(
             settings, transport=transport, sleep=sleep

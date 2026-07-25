@@ -243,6 +243,7 @@ class DeepSeekStyleEditor(BaseStyleEditor):
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.provider = settings.model_provider
         self.model = settings.deepseek_model
         self._analyzer = DeepSeekAnalyzer(settings)
 

@@ -1,6 +1,6 @@
 # novelAI
 
-novelAI 是一套面向长篇中文小说的轻量 Web 创作工作台。它把设定、全书规划、章节正文、故事记忆、编辑审校与 AI 共创组织在同一个创作空间中。用户登录后可以建立小说项目、确认全书蓝图与长期剧情线、维护设定和人物卡、规划分卷/章节/场景，并使用自己的 DeepSeek API Key 生成初稿、续写、重写或润色正文。
+novelAI 是一套面向长篇中文小说的轻量 Web 创作工作台。它把设定、全书规划、章节正文、故事记忆、编辑审校与 AI 共创组织在同一个创作空间中。用户登录后可以建立小说项目、确认全书蓝图与长期剧情线、维护设定和人物卡、规划分卷/章节/场景，并使用自己的模型账号生成初稿、续写、重写或润色正文。
 
 Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章分析可以提取可迁移技法，作者保存、改造并主动绑定后，系统才会在对应的规划、正文创作或审校任务中读取这些抽象规则。
 
@@ -14,7 +14,8 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 ## 已实现
 
 - 用户注册、登录、签名 Cookie 会话与 CSRF 校验
-- 每个账号独立的 DeepSeek API Key、模型、思考模式与全局系统提示词；可用 Key 直接从 DeepSeek 接口读取当前可用模型
+- 每个账号独立的模型服务商、API Key、模型与全局系统提示词；首批支持 DeepSeek、OpenAI、Google Gemini 和本机 Ollama，并从各自模型目录读取可用模型
+- Provider 能力矩阵统一处理 JSON 输出、最大输出字段、用户标识、鉴权和思考参数；当前只有 DeepSeek 暴露其原生思考模式，未把不同厂商参数强行等同
 - API Key 认证加密保存，不写入 Cookie、不完整回显
 - 新版创作工作台：横屏为目录 / 固定页幅正文 / AI 共创三栏，左右面板均可收起；竖屏只显示当前页，目录与 AI 以覆盖层打开
 - 新建作品不要求先填书名或表单，直接进入设定工作台；书名、题材、故事核心、目标读者、叙事约束和默认单章篇幅都可先与 AI 讨论，再由作者确认写入
@@ -123,7 +124,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 打开 <http://127.0.0.1:8000>，注册或登录后：
 
-1. 在“API 设置”中填写个人 DeepSeek API Key。
+1. 在“模型设置”中选择 DeepSeek、OpenAI、Google Gemini 或本机 Ollama，并保存对应模型。远程服务使用个人 API Key，Ollama 无需 Key。
 2. 在首页直接“新建作品”。系统会进入设定页，不要求预先填写书名。
 3. 在右侧对话框说出人物、画面、题材或阅读感受；需要时把 AI 整理出的候选设定应用到作品，再在六个设定分类中继续修改。
 4. 从左侧目录新建章节，或直接要求 AI 创作第一章。空白章节会先讨论写作思路；明确要求创作后，正文才会提交到可撤回工作稿。
@@ -144,24 +145,28 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 设置，不会生成演示正文或假审计结果。确定性 mock 只在
 `APP_ENV=test` 的自动化测试中启用。
 
-## DeepSeek 写作行为
+## 模型接入与写作行为
 
-应用调用：
+当前固定接入以下 Chat Completions 兼容端点；网页不能提交任意 URL：
 
 ```text
-POST https://api.deepseek.com/chat/completions
+DeepSeek  https://api.deepseek.com/chat/completions
+OpenAI    https://api.openai.com/v1/chat/completions
+Gemini    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+Ollama    http://127.0.0.1:11434/v1/chat/completions
 ```
 
-整章 Writer 和 Scene Writer 使用普通文本输出；全书 Story Planner、滚动结构 Planner、跨章因果审查器、长期因果分支模拟器、章节 Planner、锁定任务卡的 Scene Planner、样章声纹提取器、手工改稿偏好提取器、读者意见 Planner、Scene Auditor、Hard Auditor、Observer 和拆文工具使用 JSON Output 与 Pydantic 结构校验。全书 Story Planner 必须返回三套完整且实质不同的方案；请求时会冻结确认版全书计划、正史、人物知情边界和启用的项目级抽象技法，模型结果保存到独立持久队列，采纳时也只新增未确认草稿。滚动结构 Planner 同样固定返回三套方案，并把每套限制为 2–6 卷、连续 10–30 章；应用时再次核对冻结的确认基线与当前结构指纹，只允许更新正史之后的规划数据。跨章因果审查器最多返回 8 条带双端证据的候选，也允许返回零条；候选只能引用冻结快照里的章节与证据 ID。同一结果有多项可信前因时，模型必须用零基索引组成 2–4 条解释组，并为每项提供反证或证据缺口、可推翻条件和中间步骤就绪状态。每条新版候选还必须完成五类语义预检，并用精确确认剧情线 ID 给出联合影响；服务端会逐项验证引用。待审候选可进一步触发只读的 10–30 章沙盘，严格得到三种分支，并对章节标题/位置、人物名、剧情线、蓝图回报和证据 ID 做服务端边界校验。沙盘不能直接应用；原因果链接经作者单独确认后，所选分支才能被确定性拆成逐章任务补丁。每项都需作者编辑并接受或拒绝，最终应用仍会重检未来边界、任务卡指纹和运行中任务。逐章补丁写入任务卡草稿后，Scene Planner 可以冻结当前任务卡，只替换场景节拍；服务端要求每项推进线、必做事件、伏笔和钩子都有逐字场景引用，并在落库前再次比较完整任务卡指纹。作者确认已比较其他解释、核对语义和跨线影响、处理仍缺步骤，并在冲突时留下覆盖理由之前，系统不会写入任何链接。章节 Planner 会读取作者确认的全书蓝图、全部有效规划剧情线和与本章直接有关的作者因果链接，并要求用精确标题选择本章要推进的线；Writer 只读取这些被任务卡选中的线及本章的 incoming / outgoing 因果约束。写前计划和未来因果始终作为方向与边界，不能被模型当成已经发生的正史，也不能提前兑现目标章结果、后续转折或终局。声纹证据会在服务端逐字回查作者样章；改稿偏好证据还必须存在于两个不可变版本的实际差异块中。无法定位的引文不会进入建议。个人设置可以选择模型并开启思考模式。API 地址只能由服务器环境变量配置，网页用户不能指定任意 URL，避免服务器端内网访问风险。
+整章 Writer 和 Scene Writer 使用普通文本输出；全书 Story Planner、滚动结构 Planner、跨章因果审查器、长期因果分支模拟器、章节 Planner、锁定任务卡的 Scene Planner、样章声纹提取器、手工改稿偏好提取器、读者意见 Planner、Scene Auditor、Hard Auditor、Observer 和拆文工具使用 JSON Output 与 Pydantic 结构校验。全书 Story Planner 必须返回三套完整且实质不同的方案；请求时会冻结确认版全书计划、正史、人物知情边界和启用的项目级抽象技法，模型结果保存到独立持久队列，采纳时也只新增未确认草稿。滚动结构 Planner 同样固定返回三套方案，并把每套限制为 2–6 卷、连续 10–30 章；应用时再次核对冻结的确认基线与当前结构指纹，只允许更新正史之后的规划数据。跨章因果审查器最多返回 8 条带双端证据的候选，也允许返回零条；候选只能引用冻结快照里的章节与证据 ID。同一结果有多项可信前因时，模型必须用零基索引组成 2–4 条解释组，并为每项提供反证或证据缺口、可推翻条件和中间步骤就绪状态。每条新版候选还必须完成五类语义预检，并用精确确认剧情线 ID 给出联合影响；服务端会逐项验证引用。待审候选可进一步触发只读的 10–30 章沙盘，严格得到三种分支，并对章节标题/位置、人物名、剧情线、蓝图回报和证据 ID 做服务端边界校验。沙盘不能直接应用；原因果链接经作者单独确认后，所选分支才能被确定性拆成逐章任务补丁。每项都需作者编辑并接受或拒绝，最终应用仍会重检未来边界、任务卡指纹和运行中任务。逐章补丁写入任务卡草稿后，Scene Planner 可以冻结当前任务卡，只替换场景节拍；服务端要求每项推进线、必做事件、伏笔和钩子都有逐字场景引用，并在落库前再次比较完整任务卡指纹。作者确认已比较其他解释、核对语义和跨线影响、处理仍缺步骤，并在冲突时留下覆盖理由之前，系统不会写入任何链接。章节 Planner 会读取作者确认的全书蓝图、全部有效规划剧情线和与本章直接有关的作者因果链接，并要求用精确标题选择本章要推进的线；Writer 只读取这些被任务卡选中的线及本章的 incoming / outgoing 因果约束。写前计划和未来因果始终作为方向与边界，不能被模型当成已经发生的正史，也不能提前兑现目标章结果、后续转折或终局。声纹证据会在服务端逐字回查作者样章；改稿偏好证据还必须存在于两个不可变版本的实际差异块中。无法定位的引文不会进入建议。API 地址来自固定 Provider 注册表，网页用户不能指定任意 URL，避免服务器端内网访问风险。
 
 个人 API Key 使用 Fernet 认证加密后保存在 SQLite。默认从 `APP_SECRET_KEY` 派生加密密钥；生产环境建议单独设置稳定的 `APP_CREDENTIAL_ENCRYPTION_KEY`。修改该密钥后，已有用户需要重新填写 API Key。
 
 官方参考：
 
-- [首次 API 调用](https://api-docs.deepseek.com/quick_start/pricing-details-usd/)
-- [Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion)
-- [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)
-- [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)
+- [DeepSeek API](https://api-docs.deepseek.com/)
+- [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)
+- [DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode/)
+- [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
+- [Ollama OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)
 
 ## 测试
 
@@ -169,9 +174,16 @@ POST https://api.deepseek.com/chat/completions
 python -m pytest
 ```
 
-测试不会调用真实 DeepSeek。接口测试使用 `httpx.MockTransport`，
+测试不会调用真实模型服务。接口测试使用 `httpx.MockTransport`，
 端到端流程在 `APP_ENV=test` 下使用确定性测试模型；开发和生产环境
 均不会回退到这些模型。
+
+如需验证真实个人模型，可运行只使用内置合成材料的冒烟命令。它不读取
+作品正文，也不会打印 API Key 或模型生成内容：
+
+```bash
+python -m app.model_smoke --username 你的账号 --mode all
+```
 
 ## 完整备份与恢复
 

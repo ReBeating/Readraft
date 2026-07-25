@@ -1,11 +1,12 @@
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
 import pytest
 
-from app.analysis_schema import ANALYSIS_JSON_EXAMPLE
+from app.analysis_schema import ANALYSIS_JSON_EXAMPLE, ChapterAnalysis
 from app.config import Settings
 from app.deepseek import AnalyzerError, DeepSeekAnalyzer
 
@@ -53,6 +54,18 @@ def success_response() -> dict:
     }
 
 
+def test_analysis_example_covers_foreshadowing_contract():
+    parsed = ChapterAnalysis.model_validate(ANALYSIS_JSON_EXAMPLE)
+
+    assert parsed.foreshadowing
+    assert parsed.foreshadowing[0].type == "setup"
+    assert set(ANALYSIS_JSON_EXAMPLE["foreshadowing"][0]) == {
+        "type",
+        "clue",
+        "interpretation",
+    }
+
+
 def test_deepseek_request_and_validation(tmp_path):
     seen = {}
 
@@ -81,6 +94,41 @@ def test_deepseek_request_and_validation(tmp_path):
     assert seen["payload"]["response_format"] == {"type": "json_object"}
     assert seen["payload"]["thinking"] == {"type": "disabled"}
     assert seen["payload"]["user_id"] == "u_abc"
+
+
+def test_openai_compatible_analyzer_uses_provider_contract(tmp_path):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json=success_response())
+
+    async def scenario():
+        settings = replace(
+            make_settings(tmp_path),
+            model_provider="openai",
+            deepseek_base_url="https://api.openai.com/v1",
+            deepseek_model="gpt-4.1-mini",
+        )
+        analyzer = DeepSeekAnalyzer(
+            settings, transport=httpx.MockTransport(handler)
+        )
+        try:
+            return analyzer, await analyzer.analyze(
+                "第三章", "正文内容", "u_abc"
+            )
+        finally:
+            await analyzer.close()
+
+    analyzer, response = asyncio.run(scenario())
+    assert response.result.summary
+    assert analyzer.provider == "openai"
+    assert seen["url"] == "https://api.openai.com/v1/chat/completions"
+    assert seen["payload"]["max_completion_tokens"] == 5_000
+    assert seen["payload"]["user"] == "u_abc"
+    assert "thinking" not in seen["payload"]
+    assert "max_tokens" not in seen["payload"]
 
 
 def test_retries_transient_status(tmp_path):

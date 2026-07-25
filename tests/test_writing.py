@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -134,6 +135,55 @@ def test_deepseek_writer_reports_content_filter_with_usage(tmp_path):
     assert "内容安全策略" in str(caught.value)
     assert caught.value.input_tokens == 42
     assert caught.value.output_tokens == 3
+
+
+def test_openai_compatible_writer_uses_active_provider(tmp_path):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "她把船票收进口袋。"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+            },
+        )
+
+    async def scenario():
+        settings = replace(
+            make_settings(tmp_path),
+            model_provider="openai",
+            deepseek_base_url="https://api.openai.com/v1",
+            deepseek_model="gpt-4.1-mini",
+        )
+        writer = DeepSeekWriter(
+            settings, transport=httpx.MockTransport(handler)
+        )
+        try:
+            response = await writer.write(
+                context=writing_context(),
+                operation="draft",
+                instruction="",
+                current_content="",
+                previous_content="",
+                provider_user_id="u_test",
+            )
+            return writer, response
+        finally:
+            await writer.close()
+
+    writer, result = asyncio.run(scenario())
+    assert result.content
+    assert writer.provider == "openai"
+    assert seen["payload"]["max_completion_tokens"] == 5_000
+    assert seen["payload"]["user"] == "u_test"
+    assert "thinking" not in seen["payload"]
 
 
 def test_deepseek_writer_retries_resource_exhaustion_once(tmp_path):

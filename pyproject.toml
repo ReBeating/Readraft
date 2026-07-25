@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 novelai-backup = "app.backup:main"
+novelai-model-smoke = "app.model_smoke:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

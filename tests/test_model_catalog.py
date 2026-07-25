@@ -3,7 +3,11 @@ import asyncio
 import httpx
 import pytest
 
-from app.model_catalog import ModelCatalogError, fetch_deepseek_models
+from app.model_catalog import (
+    ModelCatalogError,
+    fetch_deepseek_models,
+    fetch_models,
+)
 
 
 def test_fetch_deepseek_models_uses_bearer_key_and_deduplicates():
@@ -48,3 +52,24 @@ def test_fetch_deepseek_models_reports_invalid_key():
                 transport=httpx.MockTransport(handler),
             )
         )
+
+
+def test_fetch_ollama_models_does_not_send_authorization():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={"data": [{"id": "qwen3:8b"}]})
+
+    models = asyncio.run(
+        fetch_models(
+            provider_id="ollama",
+            api_key=None,
+            transport=httpx.MockTransport(handler),
+        )
+    )
+
+    assert models == ["qwen3:8b"]
+    assert seen["url"] == "http://127.0.0.1:11434/v1/models"
+    assert seen["authorization"] is None

@@ -59,7 +59,12 @@ from .memory_identity import (
 )
 from .memory_schema import StoryDelta
 from .memory_service import MemoryService
-from .model_catalog import ModelCatalogError, fetch_deepseek_models
+from .model_catalog import ModelCatalogError, fetch_models
+from .model_provider import (
+    ProviderConfigError,
+    get_provider,
+    list_providers,
+)
 from .planning_schema import ChapterTaskCard, SceneBeat
 from .planning_ai import build_chapter_planner
 from .planning_service import PlanningService
@@ -907,7 +912,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         credential = database.get_api_credential_summary(user_id)
         if credential:
             return {
-                "provider": "deepseek",
+                "provider": str(credential["provider"]),
                 "model": str(credential["model"]),
                 "credential_source": "personal",
             }
@@ -964,7 +969,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"/novels/{project_id}/chapters/{chapter_id}"
                 "?canonical=true&error="
                 + quote(
-                    "正文已成为正史；配置 DeepSeek API 后可提取故事记忆"
+                    "正文已成为正史；配置模型服务后可提取故事记忆"
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
@@ -1328,6 +1333,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         error: Optional[str] = None,
         saved: bool = False,
         removed: bool = False,
+        provider: Optional[str] = None,
         model: Optional[str] = None,
         thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
@@ -1335,9 +1341,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         status_code: int = status.HTTP_200_OK,
     ):
         credential = database.get_api_credential_summary(int(user["id"]))
+        current_provider = provider or (
+            str(credential["provider"]) if credential else "deepseek"
+        )
+        try:
+            current_provider_spec = get_provider(current_provider)
+        except ProviderConfigError:
+            current_provider_spec = get_provider("deepseek")
+            current_provider = current_provider_spec.id
         current_model = model or (
             str(credential["model"])
-            if credential
+            if credential and str(credential["provider"]) == current_provider
             else app_settings.deepseek_model
         )
         current_thinking = (
@@ -1372,6 +1386,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 credential=credential,
+                providers=[
+                    item.public_payload() for item in list_providers()
+                ],
+                selected_provider=current_provider,
+                selected_provider_spec=current_provider_spec.public_payload(),
                 error=error,
                 saved=saved,
                 removed=removed,
@@ -1381,7 +1400,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 selected_system_prompt=current_system_prompt,
                 default_system_prompt=DEFAULT_SYSTEM_PROMPT,
                 server_api_available=bool(app_settings.deepseek_api_key),
-                deepseek_base_url=app_settings.deepseek_base_url,
             ),
             status_code=status_code,
         )
@@ -1404,6 +1422,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def save_api_settings(
         request: Request,
         api_key: str = Form(""),
+        provider: str = Form("deepseek"),
         model: str = Form(...),
         thinking: Optional[str] = Form(None),
         reasoning_effort: str = Form("high"),
@@ -1416,6 +1435,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         thinking_enabled = thinking == "enabled"
         try:
+            provider_spec = get_provider(provider)
             clean_model = validate_model(model)
             clean_system_prompt = _clean_field(
                 system_prompt,
@@ -1424,18 +1444,34 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if reasoning_effort not in {"high", "max"}:
                 raise CredentialError("思考强度只能选择 high 或 max")
+            if (
+                thinking_enabled
+                and not provider_spec.capabilities.thinking
+            ):
+                raise CredentialError(
+                    f"{provider_spec.label} 暂不支持 novelAI 的思考模式"
+                )
             existing = database.get_api_credential(int(user["id"]))
             if api_key:
                 clean_key = validate_api_key(api_key)
                 encrypted_key = credential_cipher.encrypt(clean_key)
                 masked_key = key_hint(clean_key)
-            elif existing:
+            elif (
+                existing
+                and str(existing["provider"]) == provider_spec.id
+            ):
                 encrypted_key = str(existing["encrypted_key"])
                 masked_key = str(existing["key_hint"])
+            elif not provider_spec.capabilities.api_key_required:
+                encrypted_key = credential_cipher.encrypt("")
+                masked_key = "无需 Key"
             else:
-                raise CredentialError("请填写 DeepSeek API Key")
+                raise CredentialError(
+                    f"请填写 {provider_spec.label} API Key"
+                )
             database.upsert_api_credential(
                 user_id=int(user["id"]),
+                provider=provider_spec.id,
                 encrypted_key=encrypted_key,
                 key_hint=masked_key,
                 model=clean_model,
@@ -1448,6 +1484,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user,
                 error=str(exc),
+                provider=provider,
                 model=model,
                 thinking=thinking_enabled,
                 reasoning_effort=reasoning_effort,
@@ -1462,6 +1499,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def api_model_catalog(
         request: Request,
         api_key: str = Form(""),
+        provider: str = Form("deepseek"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1472,26 +1510,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         verify_csrf(request, csrf)
         try:
+            provider_spec = get_provider(provider)
             if api_key:
                 clean_key = validate_api_key(api_key)
             else:
                 existing = database.get_api_credential(int(user["id"]))
-                if existing:
+                if (
+                    existing
+                    and str(existing["provider"]) == provider_spec.id
+                ):
                     clean_key = credential_cipher.decrypt(
                         str(existing["encrypted_key"])
                     )
-                elif app_settings.deepseek_api_key:
+                elif (
+                    provider_spec.id == "deepseek"
+                    and app_settings.deepseek_api_key
+                ):
                     clean_key = app_settings.deepseek_api_key
+                elif not provider_spec.capabilities.api_key_required:
+                    clean_key = None
                 else:
                     raise ModelCatalogError(
-                        "请先输入 DeepSeek API Key"
+                        f"请先输入 {provider_spec.label} API Key"
                     )
-            models = await fetch_deepseek_models(
+            models = await fetch_models(
+                provider_id=provider_spec.id,
                 api_key=clean_key,
-                base_url=app_settings.deepseek_base_url,
                 timeout_seconds=app_settings.deepseek_connect_timeout_seconds,
             )
-        except (CredentialError, ModelCatalogError) as exc:
+        except (
+            CredentialError,
+            ModelCatalogError,
+            ProviderConfigError,
+        ) as exc:
             return JSONResponse(
                 {"error": str(exc)},
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2435,7 +2486,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("生成全书方案前，请先配置 DeepSeek API Key"),
+                + quote("生成全书方案前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -2595,7 +2646,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return RedirectResponse(
                 "/settings/api?error="
                 + quote(
-                    "生成分卷与滚动章节骨架前，请先配置 DeepSeek API Key"
+                    "生成分卷与滚动章节骨架前，请先配置模型服务"
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
@@ -2858,7 +2909,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("生成因果建议前，请先配置 DeepSeek API Key"),
+                + quote("生成因果建议前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -3017,7 +3068,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("生成长期因果分支前，请先配置 DeepSeek API Key"),
+                + quote("生成长期因果分支前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -4154,7 +4205,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("生成剧情方案前，请先配置 DeepSeek API Key"),
+                + quote("生成剧情方案前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -4282,7 +4333,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("提取作品声纹前，请先配置 DeepSeek API Key"),
+                + quote("提取作品声纹前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -4535,7 +4586,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("从手工改稿学习前，请先配置 DeepSeek API Key"),
+                + quote("从手工改稿学习前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -5677,7 +5728,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("开始写作前，请先配置你的 DeepSeek API Key"),
+                + quote("开始写作前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -5725,7 +5776,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("执行场景检查前，请先配置你的 DeepSeek API Key"),
+                + quote("执行场景检查前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -6222,7 +6273,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("使用 Planner 前，请先配置 DeepSeek API Key"),
+                + quote("使用 Planner 前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -6290,7 +6341,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("使用 Scene Planner 前，请先配置 DeepSeek API Key"),
+                + quote("使用 Scene Planner 前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -6536,7 +6587,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("执行正文硬审计前，请先配置 DeepSeek API Key"),
+                + quote("执行正文硬审计前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -6652,7 +6703,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not api:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("执行 AI 味审校前，请先配置 DeepSeek API Key"),
+                + quote("执行 AI 味审校前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -6707,7 +6758,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not api:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("生成定点改写前，请先配置 DeepSeek API Key"),
+                + quote("生成定点改写前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -7277,7 +7328,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("提取故事记忆前，请先配置 DeepSeek API Key"),
+                + quote("提取故事记忆前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -7448,7 +7499,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("开始写作前，请先配置你的 DeepSeek API Key"),
+                + quote("开始写作前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -8061,7 +8112,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return RedirectResponse(
                     "/settings/api?error="
                     + quote(
-                        "开始创作对话前，请先配置你的 DeepSeek API Key"
+                        "开始创作对话前，请先配置模型服务"
                     ),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
@@ -8290,7 +8341,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return RedirectResponse(
                 "/settings/api?error="
                 + quote(
-                    "重新发送消息前，请先配置你的 DeepSeek API Key"
+                    "重新发送消息前，请先配置模型服务"
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
@@ -8348,7 +8399,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return RedirectResponse(
                 "/settings/api?error="
                 + quote(
-                    "重新生成回复前，请先配置你的 DeepSeek API Key"
+                    "重新生成回复前，请先配置模型服务"
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
@@ -8583,7 +8634,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return RedirectResponse(
                     "/settings/api?error="
                     + quote(
-                        "开始拆书对话前，请先配置你的 DeepSeek API Key"
+                        "开始拆书对话前，请先配置模型服务"
                     ),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
@@ -9243,7 +9294,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         credential = database.get_api_credential_summary(int(user["id"]))
         analyzer = request.app.state.analyzer
         if credential:
-            provider = "deepseek"
+            provider = str(credential["provider"])
             model = str(credential["model"])
             credential_source = "personal"
         elif app_settings.deepseek_api_key:
@@ -9257,7 +9308,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         else:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("开始分析前，请先配置你的 DeepSeek API Key"),
+                + quote("开始分析前，请先配置你的模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -9344,7 +9395,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         ):
             return RedirectResponse(
                 "/settings/api?error="
-                + quote("重试这个任务前，请先重新配置个人 DeepSeek API Key"),
+                + quote("重试这个任务前，请先重新配置个人模型凭据"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         retried = database.retry_failed(int(user["id"]), job_id)

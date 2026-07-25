@@ -2,7 +2,7 @@
 {% block title %}模型与提示词 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-1">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-2">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -37,16 +37,39 @@
         {% if removed %}<div class="studio-alert success">个人 API Key 已删除。</div>{% endif %}
 
         <label>
-          <span>DeepSeek API Key</span>
+          <span>模型服务商</span>
+          <select name="provider" required data-provider-select>
+            {% for provider in providers %}
+              <option
+                value="{{ provider.id }}"
+                data-label="{{ provider.label }}"
+                data-api-key-required="{{ 'true' if provider.capabilities.api_key_required else 'false' }}"
+                data-thinking="{{ 'true' if provider.capabilities.thinking else 'false' }}"
+                data-notes="{{ provider.notes }}"
+                {% if provider.id == selected_provider %}selected{% endif %}
+              >{{ provider.label }}</option>
+            {% endfor %}
+          </select>
+          <small data-provider-notes>{{ selected_provider_spec.notes }}</small>
+        </label>
+
+        <label>
+          <span data-api-key-label>{{ selected_provider_spec.label }} API Key</span>
           <input
             type="password"
             name="api_key"
             maxlength="512"
             autocomplete="off"
             spellcheck="false"
-            placeholder="{{ '留空则保留当前 Key（' ~ credential.key_hint ~ '）' if credential else 'sk-…' }}"
+            placeholder="{{ '留空则保留当前 Key（' ~ credential.key_hint ~ '）' if credential and credential.provider == selected_provider else ('无需填写' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
           >
-          <small>只在保存时加密写入本机数据库，不会再次完整显示。</small>
+          <small data-api-key-help>
+            {% if selected_provider_spec.capabilities.api_key_required %}
+              只在保存时加密写入本机数据库，不会再次完整显示。
+            {% else %}
+              本机服务无需 API Key；请求只发送到固定的本机端点。
+            {% endif %}
+          </small>
         </label>
 
         <label>
@@ -58,11 +81,11 @@
             <button class="studio-button" type="button" data-load-models>读取可用模型</button>
           </div>
           <p class="studio-model-feedback" data-model-feedback aria-live="polite">
-            输入新 Key 或使用已保存的 Key，从 DeepSeek 接口读取模型。
+            输入新 Key 或使用已保存的配置，从所选服务商读取模型。
           </p>
         </label>
 
-        <div class="studio-api-options">
+        <div class="studio-api-options" data-thinking-options>
           <label class="studio-check">
             <input type="checkbox" name="thinking" value="enabled" {% if selected_thinking %}checked{% endif %}>
             <span>开启思考模式</span>
@@ -96,14 +119,14 @@
 
       <aside class="studio-api-aside">
         {% if credential %}
-          <h2>个人 Key 已配置</h2>
-          <p>{{ credential.key_hint }}<br>更新于 {{ credential.updated_at }}</p>
+          <h2>个人模型已配置</h2>
+          <p>{{ selected_provider_spec.label }} · {{ credential.model }}<br>{{ credential.key_hint }} · 更新于 {{ credential.updated_at }}</p>
         {% elif server_api_available %}
           <h2>服务器凭据</h2>
           <p>当前使用服务器共享 Key。保存个人 Key 后会优先使用个人配置。</p>
         {% else %}
           <h2>尚未连接模型</h2>
-          <p>未填写 Key 时仍可使用本地模拟回复测试界面。</p>
+          <p>选择服务商、验证模型并保存后，即可开始真实创作任务。</p>
         {% endif %}
 
         <h2>提示词层级</h2>
@@ -112,7 +135,7 @@
         <h2>隐私</h2>
         <ul>
           <li>凭据不会存进浏览器 Cookie。</li>
-          <li>模型请求只发往配置好的 DeepSeek 地址。</li>
+          <li>模型请求只发往所选服务商的固定官方地址，Ollama 只连接本机。</li>
           <li>按任务发送必要的章节与设定，不会一次上传整本书。</li>
         </ul>
 
@@ -143,14 +166,45 @@
       if (!form) return;
       const loadButton = form.querySelector("[data-load-models]");
       const modelSelect = form.querySelector("[data-model-select]");
+      const providerSelect = form.querySelector("[data-provider-select]");
       const feedback = form.querySelector("[data-model-feedback]");
       const prompt = form.querySelector("[data-system-prompt]");
       const promptTemplate = form.querySelector("[data-default-system-prompt]");
+      const keyInput = form.elements.api_key;
+      const keyLabel = form.querySelector("[data-api-key-label]");
+      const keyHelp = form.querySelector("[data-api-key-help]");
+      const providerNotes = form.querySelector("[data-provider-notes]");
+      const thinkingOptions = form.querySelector("[data-thinking-options]");
+      const thinkingInput = form.elements.thinking;
+      const reasoningEffort = form.elements.reasoning_effort;
+
+      const syncProvider = ({resetModel = false} = {}) => {
+        const option = providerSelect.selectedOptions[0];
+        const label = option.dataset.label;
+        const keyRequired = option.dataset.apiKeyRequired === "true";
+        const supportsThinking = option.dataset.thinking === "true";
+        keyLabel.textContent = `${label} API Key`;
+        keyInput.placeholder = keyRequired ? "输入或保留 API Key" : "无需填写";
+        keyHelp.textContent = keyRequired
+          ? "只在保存时加密写入本机数据库，不会再次完整显示。"
+          : "本机服务无需 API Key；请求只发送到固定的本机端点。";
+        providerNotes.textContent = option.dataset.notes || "";
+        thinkingOptions.hidden = !supportsThinking;
+        thinkingInput.disabled = !supportsThinking;
+        reasoningEffort.disabled = !supportsThinking;
+        if (!supportsThinking) thinkingInput.checked = false;
+        if (resetModel) {
+          modelSelect.replaceChildren(new Option("请读取可用模型", ""));
+          feedback.textContent = `请读取 ${label} 当前可用的模型。`;
+        }
+      };
 
       form.querySelector("[data-restore-system-prompt]")?.addEventListener("click", () => {
         prompt.value = promptTemplate.content.textContent.trim();
         prompt.focus();
       });
+      providerSelect.addEventListener("change", () => syncProvider({resetModel: true}));
+      syncProvider();
 
       loadButton.addEventListener("click", async () => {
         loadButton.disabled = true;
@@ -158,6 +212,7 @@
         const payload = new FormData();
         payload.set("csrf", form.elements.csrf.value);
         payload.set("api_key", form.elements.api_key.value);
+        payload.set("provider", providerSelect.value);
         try {
           const response = await fetch("/api/settings/models", {
             method: "POST",

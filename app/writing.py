@@ -17,6 +17,12 @@ from .context_compiler import (
     compile_story_plan_context,
 )
 from .deepseek import AnalyzerError
+from .model_provider import (
+    ProviderConfigError,
+    build_chat_payload,
+    build_provider_headers,
+    get_provider,
+)
 
 
 WRITING_SYSTEM_PROMPT = """
@@ -617,9 +623,9 @@ class DeepSeekWriter(BaseWriter):
         transport: Optional[httpx.AsyncBaseTransport] = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
-        if not settings.deepseek_api_key:
-            raise ValueError("DEEPSEEK_API_KEY 未配置")
         self.settings = settings
+        self.provider = settings.model_provider
+        self._provider_spec = get_provider(self.provider)
         self.model = settings.deepseek_model
         self._sleep = sleep
         timeout = httpx.Timeout(
@@ -629,11 +635,10 @@ class DeepSeekWriter(BaseWriter):
             pool=10,
         )
         self._client = httpx.AsyncClient(
-            base_url=settings.deepseek_base_url,
-            headers={
-                "Authorization": f"Bearer {settings.deepseek_api_key}",
-                "Content-Type": "application/json",
-            },
+            base_url=settings.deepseek_base_url.rstrip("/") + "/",
+            headers=build_provider_headers(
+                self._provider_spec, settings.deepseek_api_key
+            ),
             timeout=timeout,
             limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
             transport=transport,
@@ -642,21 +647,17 @@ class DeepSeekWriter(BaseWriter):
     def _payload(
         self, messages: List[Mapping[str, str]], provider_user_id: str
     ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": self.settings.deepseek_max_tokens,
-            "stream": False,
-            "user_id": provider_user_id,
-            "thinking": {
-                "type": "enabled" if self.settings.deepseek_thinking else "disabled"
-            },
-        }
-        if self.settings.deepseek_thinking:
-            payload["reasoning_effort"] = self.settings.deepseek_reasoning_effort
-        else:
-            payload["temperature"] = 0.85
-        return payload
+        try:
+            return build_chat_payload(
+                settings=self.settings,
+                messages=messages,
+                provider_user_id=provider_user_id,
+                max_tokens=self.settings.deepseek_max_tokens,
+                json_object=False,
+                temperature=0.85,
+            )
+        except ProviderConfigError as exc:
+            raise AnalyzerError(str(exc)) from exc
 
     async def _post(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         total_attempts = self.settings.deepseek_max_retries + 1
@@ -671,16 +672,18 @@ class DeepSeekWriter(BaseWriter):
                         response=response,
                     )
                 if response.status_code >= 400:
+                    label = self._provider_spec.label
                     messages = {
-                        400: "DeepSeek 写作请求格式不正确",
-                        401: "DeepSeek API Key 无效",
-                        402: "DeepSeek 账户余额不足",
-                        422: "DeepSeek 写作请求参数无效",
+                        400: f"{label} 写作请求格式不正确",
+                        401: f"{label} API Key 无效",
+                        402: f"{label} 账户余额不足",
+                        403: f"{label} API Key 无权执行此请求",
+                        422: f"{label} 写作请求参数无效",
                     }
                     raise AnalyzerError(
                         messages.get(
                             response.status_code,
-                            f"DeepSeek 写作请求失败（HTTP {response.status_code}）",
+                            f"{label} 写作请求失败（HTTP {response.status_code}）",
                         )
                     )
                 body = response.json()
@@ -702,7 +705,8 @@ class DeepSeekWriter(BaseWriter):
                 delay = min(8.0, 2**attempt) + random.uniform(0, 0.25)
                 await self._sleep(delay)
         raise AnalyzerError(
-            f"DeepSeek 连接失败，已重试 {self.settings.deepseek_max_retries} 次"
+            f"{self._provider_spec.label} 连接失败，已重试 "
+            f"{self.settings.deepseek_max_retries} 次"
         ) from last_error
 
     @staticmethod

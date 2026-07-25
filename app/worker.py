@@ -5,7 +5,6 @@ import hashlib
 import logging
 import os
 import time
-from dataclasses import replace
 from pathlib import Path
 
 from .assistant_chat import (
@@ -41,6 +40,7 @@ from .memory_extraction import (
     DeepSeekMemoryExtractor,
 )
 from .memory_service import MemoryService
+from .model_provider import ProviderConfigError, settings_for_credential
 from .planning_ai import (
     BaseChapterPlanner,
     DeepSeekChapterPlanner,
@@ -182,6 +182,33 @@ class AnalysisWorker:
 
     def wake(self) -> None:
         self._wake.set()
+
+    async def _personal_model_settings(self, item: dict) -> Settings:
+        user_id = int(item["user_id"])
+        credential = await asyncio.to_thread(
+            self.database.get_api_credential, user_id
+        )
+        if not credential:
+            raise AnalyzerError(
+                "个人模型凭据已被删除，请重新配置后重试"
+            )
+        provider = str(credential.get("provider") or "deepseek")
+        if provider != str(item["provider"]):
+            raise AnalyzerError(
+                "任务创建后模型服务商配置已变化，请重新创建任务"
+            )
+        try:
+            api_key = self.credential_cipher.decrypt(
+                str(credential["encrypted_key"])
+            )
+            return settings_for_credential(
+                self.settings,
+                credential=credential,
+                api_key=api_key,
+                model=str(item["model"]),
+            )
+        except (CredentialError, ProviderConfigError) as exc:
+            raise AnalyzerError(str(exc)) from exc
 
     async def run(self) -> None:
         logger.info(
@@ -2062,29 +2089,7 @@ class AnalysisWorker:
         writer = self.writer
         close_writer = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(credential["reasoning_effort"]),
-                deepseek_system_prompt=str(
-                    credential.get("system_prompt") or ""
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             writer = DeepSeekWriter(personal_settings)
             close_writer = True
         elif self.writer is None or (
@@ -2119,31 +2124,7 @@ class AnalysisWorker:
         extractor = self.memory_extractor
         close_extractor = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-                deepseek_system_prompt=str(
-                    credential.get("system_prompt") or ""
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             extractor = DeepSeekMemoryExtractor(personal_settings)
             close_extractor = True
         elif self.memory_extractor is None or (
@@ -2175,28 +2156,7 @@ class AnalysisWorker:
         planner = self.chapter_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekChapterPlanner(personal_settings)
             close_planner = True
         elif self.chapter_planner is None or (
@@ -2229,28 +2189,7 @@ class AnalysisWorker:
         planner = self.chapter_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekChapterPlanner(personal_settings)
             close_planner = True
         elif self.chapter_planner is None or (
@@ -2283,28 +2222,7 @@ class AnalysisWorker:
         planner = self.story_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekStoryPlanner(personal_settings)
             close_planner = True
         elif self.story_planner is None or (
@@ -2337,28 +2255,7 @@ class AnalysisWorker:
         planner = self.story_structure_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekStoryStructurePlanner(personal_settings)
             close_planner = True
         elif self.story_structure_planner is None or (
@@ -2391,28 +2288,7 @@ class AnalysisWorker:
         planner = self.causal_suggestion_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekCausalSuggestionPlanner(personal_settings)
             close_planner = True
         elif self.causal_suggestion_planner is None or (
@@ -2446,29 +2322,7 @@ class AnalysisWorker:
         planner = self.causal_branch_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential,
-                user_id,
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekCausalBranchPlanner(personal_settings)
             close_planner = True
         elif self.causal_branch_planner is None or (
@@ -2500,28 +2354,7 @@ class AnalysisWorker:
         planner = self.reader_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             planner = DeepSeekReaderPlanner(personal_settings)
             close_planner = True
         elif self.reader_planner is None or (
@@ -2554,28 +2387,7 @@ class AnalysisWorker:
         auditor = self.quality_auditor
         close_auditor = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             auditor = DeepSeekQualityAuditor(personal_settings)
             close_auditor = True
         elif self.quality_auditor is None or (
@@ -2653,28 +2465,7 @@ class AnalysisWorker:
         extractor = self.voice_profile_extractor
         close_extractor = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             extractor = DeepSeekVoiceProfileExtractor(personal_settings)
             close_extractor = True
         elif self.voice_profile_extractor is None or (
@@ -2712,28 +2503,7 @@ class AnalysisWorker:
         extractor = self.edit_preference_extractor
         close_extractor = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             extractor = DeepSeekEditPreferenceExtractor(personal_settings)
             close_extractor = True
         elif self.edit_preference_extractor is None or (
@@ -2773,28 +2543,7 @@ class AnalysisWorker:
     ) -> tuple[BaseStyleEditor, bool]:
         user_id = int(item["user_id"])
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             return DeepSeekStyleEditor(personal_settings), True
         if self.style_editor is None or (
             str(item["provider"]) != self.style_editor.provider
@@ -2820,27 +2569,7 @@ class AnalysisWorker:
                 str(item["chapter_title"]), content, provider_user_id
             )
 
-        credential = await asyncio.to_thread(
-            self.database.get_api_credential, user_id
-        )
-        if not credential:
-            raise AnalyzerError(
-                "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-            )
-        try:
-            api_key = self.credential_cipher.decrypt(
-                str(credential["encrypted_key"])
-            )
-        except CredentialError as exc:
-            raise AnalyzerError(str(exc)) from exc
-
-        personal_settings = replace(
-            self.settings,
-            deepseek_api_key=api_key,
-            deepseek_model=str(item["model"]),
-            deepseek_thinking=bool(credential["thinking"]),
-            deepseek_reasoning_effort=str(credential["reasoning_effort"]),
-        )
+        personal_settings = await self._personal_model_settings(item)
         analyzer = DeepSeekAnalyzer(personal_settings)
         try:
             return await analyzer.analyze(
@@ -2862,28 +2591,7 @@ class AnalysisWorker:
         model = self.assistant_chat_model
         close_model = False
         if item.get("credential_source") == "personal":
-            credential = await asyncio.to_thread(
-                self.database.get_api_credential, user_id
-            )
-            if not credential:
-                raise AnalyzerError(
-                    "个人 DeepSeek API Key 已被删除，请重新配置后重试"
-                )
-            try:
-                api_key = self.credential_cipher.decrypt(
-                    str(credential["encrypted_key"])
-                )
-            except CredentialError as exc:
-                raise AnalyzerError(str(exc)) from exc
-            personal_settings = replace(
-                self.settings,
-                deepseek_api_key=api_key,
-                deepseek_model=str(item["model"]),
-                deepseek_thinking=bool(credential["thinking"]),
-                deepseek_reasoning_effort=str(
-                    credential["reasoning_effort"]
-                ),
-            )
+            personal_settings = await self._personal_model_settings(item)
             model = DeepSeekAssistantChatModel(personal_settings)
             close_model = True
         elif self.assistant_chat_model is None or (
