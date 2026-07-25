@@ -2,7 +2,7 @@
 {% block title %}模型与提示词 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-2">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-3">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -34,7 +34,7 @@
 
         {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
         {% if saved %}<div class="studio-alert success">设置已保存。</div>{% endif %}
-        {% if removed %}<div class="studio-alert success">个人 API Key 已删除。</div>{% endif %}
+        {% if removed %}<div class="studio-alert success">个人模型配置已删除。</div>{% endif %}
 
         <label>
           <span>模型服务商</span>
@@ -45,12 +45,33 @@
                 data-label="{{ provider.label }}"
                 data-api-key-required="{{ 'true' if provider.capabilities.api_key_required else 'false' }}"
                 data-thinking="{{ 'true' if provider.capabilities.thinking else 'false' }}"
+                data-base-url-configurable="{{ 'true' if provider.capabilities.configurable_base_url else 'false' }}"
+                data-default-base-url="{{ provider.base_url }}"
                 data-notes="{{ provider.notes }}"
                 {% if provider.id == selected_provider %}selected{% endif %}
               >{{ provider.label }}</option>
             {% endfor %}
           </select>
           <small data-provider-notes>{{ selected_provider_spec.notes }}</small>
+        </label>
+
+        <label
+          data-base-url-field
+          {% if not selected_provider_spec.capabilities.configurable_base_url %}hidden{% endif %}
+        >
+          <span>Base URL</span>
+          <input
+            type="url"
+            name="base_url"
+            maxlength="2048"
+            autocomplete="url"
+            spellcheck="false"
+            value="{{ selected_base_url }}"
+            placeholder="例如 http://127.0.0.1:11434/v1"
+            data-base-url-input
+            {% if selected_provider_spec.capabilities.configurable_base_url %}required{% else %}disabled{% endif %}
+          >
+          <small>填写 API 根路径，通常以 <code>/v1</code> 结尾；不要填写 <code>/models</code> 或 <code>/chat/completions</code>。</small>
         </label>
 
         <label>
@@ -61,13 +82,13 @@
             maxlength="512"
             autocomplete="off"
             spellcheck="false"
-            placeholder="{{ '留空则保留当前 Key（' ~ credential.key_hint ~ '）' if credential and credential.provider == selected_provider else ('无需填写' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
+            placeholder="{{ '留空则保留当前 Key（' ~ credential.key_hint ~ '）' if credential and credential.provider == selected_provider else ('可选（Bearer API Key）' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
           >
           <small data-api-key-help>
             {% if selected_provider_spec.capabilities.api_key_required %}
               只在保存时加密写入本机数据库，不会再次完整显示。
             {% else %}
-              本机服务无需 API Key；请求只发送到固定的本机端点。
+              可选；直连通常无需 Key，经过鉴权网关时可填写 Bearer API Key。
             {% endif %}
           </small>
         </label>
@@ -75,13 +96,22 @@
         <label>
           <span>模型</span>
           <div class="studio-model-field">
-            <select name="model" required data-model-select>
-              <option value="{{ selected_model }}" selected>{{ selected_model }}</option>
-            </select>
+            <input
+              type="text"
+              name="model"
+              value="{{ selected_model }}"
+              list="available-models"
+              maxlength="100"
+              autocomplete="off"
+              spellcheck="false"
+              required
+              data-model-input
+            >
+            <datalist id="available-models" data-model-options></datalist>
             <button class="studio-button" type="button" data-load-models>读取可用模型</button>
           </div>
           <p class="studio-model-feedback" data-model-feedback aria-live="polite">
-            输入新 Key 或使用已保存的配置，从所选服务商读取模型。
+            可直接输入模型 ID，也可从当前接口读取模型目录。
           </p>
         </label>
 
@@ -120,7 +150,13 @@
       <aside class="studio-api-aside">
         {% if credential %}
           <h2>个人模型已配置</h2>
-          <p>{{ selected_provider_spec.label }} · {{ credential.model }}<br>{{ credential.key_hint }} · 更新于 {{ credential.updated_at }}</p>
+          <p>
+            {{ credential_provider_spec.label if credential_provider_spec else credential.provider }} · {{ credential.model }}<br>
+            {% if credential_provider_spec and credential_provider_spec.capabilities.configurable_base_url %}
+              {{ credential.base_url or credential_provider_spec.base_url }}<br>
+            {% endif %}
+            {{ credential.key_hint }} · 更新于 {{ credential.updated_at }}
+          </p>
         {% elif server_api_available %}
           <h2>服务器凭据</h2>
           <p>当前使用服务器共享 Key。保存个人 Key 后会优先使用个人配置。</p>
@@ -135,7 +171,8 @@
         <h2>隐私</h2>
         <ul>
           <li>凭据不会存进浏览器 Cookie。</li>
-          <li>模型请求只发往所选服务商的固定官方地址，Ollama 只连接本机。</li>
+          <li>官方 Provider 使用固定地址；Ollama 与 OpenAI 兼容接口只请求你保存的 Base URL。</li>
+          <li>生产环境默认禁止自定义接口访问本机或内网地址。</li>
           <li>按任务发送必要的章节与设定，不会一次上传整本书。</li>
         </ul>
 
@@ -143,7 +180,7 @@
           <div class="studio-danger-zone">
             <form method="post" action="/settings/api/delete">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <button class="studio-button" type="submit">删除个人 API Key</button>
+              <button class="studio-button" type="submit">删除个人模型配置</button>
             </form>
           </div>
         {% endif %}
@@ -165,8 +202,11 @@
       const form = document.querySelector("[data-api-settings-form]");
       if (!form) return;
       const loadButton = form.querySelector("[data-load-models]");
-      const modelSelect = form.querySelector("[data-model-select]");
+      const modelInput = form.querySelector("[data-model-input]");
+      const modelOptions = form.querySelector("[data-model-options]");
       const providerSelect = form.querySelector("[data-provider-select]");
+      const baseUrlField = form.querySelector("[data-base-url-field]");
+      const baseUrlInput = form.querySelector("[data-base-url-input]");
       const feedback = form.querySelector("[data-model-feedback]");
       const prompt = form.querySelector("[data-system-prompt]");
       const promptTemplate = form.querySelector("[data-default-system-prompt]");
@@ -183,19 +223,26 @@
         const label = option.dataset.label;
         const keyRequired = option.dataset.apiKeyRequired === "true";
         const supportsThinking = option.dataset.thinking === "true";
+        const configurableBaseUrl = option.dataset.baseUrlConfigurable === "true";
         keyLabel.textContent = `${label} API Key`;
-        keyInput.placeholder = keyRequired ? "输入或保留 API Key" : "无需填写";
+        keyInput.placeholder = keyRequired ? "输入或保留 API Key" : "可选（Bearer API Key）";
         keyHelp.textContent = keyRequired
           ? "只在保存时加密写入本机数据库，不会再次完整显示。"
-          : "本机服务无需 API Key；请求只发送到固定的本机端点。";
+          : "可选；直连通常无需 Key，经过鉴权网关时可填写 Bearer API Key。";
         providerNotes.textContent = option.dataset.notes || "";
+        baseUrlField.hidden = !configurableBaseUrl;
+        baseUrlInput.disabled = !configurableBaseUrl;
+        baseUrlInput.required = configurableBaseUrl;
         thinkingOptions.hidden = !supportsThinking;
         thinkingInput.disabled = !supportsThinking;
         reasoningEffort.disabled = !supportsThinking;
         if (!supportsThinking) thinkingInput.checked = false;
         if (resetModel) {
-          modelSelect.replaceChildren(new Option("请读取可用模型", ""));
-          feedback.textContent = `请读取 ${label} 当前可用的模型。`;
+          keyInput.value = "";
+          baseUrlInput.value = option.dataset.defaultBaseUrl || "";
+          modelInput.value = "";
+          modelOptions.replaceChildren();
+          feedback.textContent = `请输入模型 ID，或读取 ${label} 的模型目录。`;
         }
       };
 
@@ -213,6 +260,7 @@
         payload.set("csrf", form.elements.csrf.value);
         payload.set("api_key", form.elements.api_key.value);
         payload.set("provider", providerSelect.value);
+        payload.set("base_url", baseUrlInput.value);
         try {
           const response = await fetch("/api/settings/models", {
             method: "POST",
@@ -222,15 +270,14 @@
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "读取模型失败");
-          const current = modelSelect.value;
-          modelSelect.replaceChildren();
+          const current = modelInput.value;
+          modelOptions.replaceChildren();
           result.models.forEach((model) => {
             const option = document.createElement("option");
             option.value = model;
-            option.textContent = model;
-            option.selected = model === current;
-            modelSelect.append(option);
+            modelOptions.append(option);
           });
+          if (!current && result.models.length) modelInput.value = result.models[0];
           feedback.textContent = `已读取 ${result.models.length} 个可用模型。`;
         } catch (error) {
           feedback.textContent = error.message || "读取模型失败，请检查 API Key。";

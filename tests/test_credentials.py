@@ -42,6 +42,7 @@ def test_api_credential_database_never_stores_plaintext(tmp_path: Path):
         thinking=True,
         reasoning_effort="max",
         system_prompt="减少解释性总结。",
+        base_url="https://api.deepseek.com",
     )
 
     stored = database.get_api_credential(user_id)
@@ -50,6 +51,7 @@ def test_api_credential_database_never_stores_plaintext(tmp_path: Path):
     assert stored["key_hint"] == "sk-••••9876"
     assert stored["thinking"] == 1
     assert stored["system_prompt"] == "减少解释性总结。"
+    assert stored["base_url"] == "https://api.deepseek.com"
     assert cipher.decrypt(stored["encrypted_key"]) == raw_key
     assert database.get_api_credential(other_user_id) is None
 

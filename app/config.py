@@ -67,6 +67,7 @@ class Settings:
     deepseek_system_prompt: str = ""
     model_provider: str = "deepseek"
     max_project_archive_bytes: int = 256 * 1024 * 1024
+    allow_private_model_base_urls: bool = False
 
     @property
     def documents_dir(self) -> Path:
@@ -92,6 +93,13 @@ class Settings:
     @property
     def credential_secret(self) -> str:
         return self.credential_encryption_key or self.secret_key
+
+    @property
+    def permits_private_model_base_urls(self) -> bool:
+        return (
+            self.app_env.lower() != "production"
+            or self.allow_private_model_base_urls
+        )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -144,6 +152,10 @@ class Settings:
             model_provider=os.getenv("MODEL_PROVIDER", "deepseek"),
             max_project_archive_bytes=_as_int(
                 "APP_MAX_PROJECT_ARCHIVE_BYTES", 256 * 1024 * 1024
+            ),
+            allow_private_model_base_urls=_as_bool(
+                "APP_ALLOW_PRIVATE_MODEL_BASE_URLS",
+                os.getenv("APP_ENV", "development").lower() != "production",
             ),
         )
 

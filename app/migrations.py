@@ -2711,6 +2711,18 @@ def _assistant_agent_steps_v26(
     )
 
 
+def _model_base_url_v27(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _add_column(
+        connection,
+        "api_credentials",
+        "base_url",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -2801,6 +2813,11 @@ MIGRATIONS = (
         26,
         "assistant_agent_steps_v26",
         _assistant_agent_steps_v26,
+    ),
+    Migration(
+        27,
+        "model_base_url_v27",
+        _model_base_url_v27,
     ),
 )
 

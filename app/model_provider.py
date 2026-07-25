@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from .config import Settings
@@ -17,6 +19,7 @@ class ProviderCapabilities:
     thinking: bool
     model_catalog: bool
     api_key_required: bool
+    configurable_base_url: bool = False
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,9 @@ class ProviderSpec:
                 "thinking": self.capabilities.thinking,
                 "model_catalog": self.capabilities.model_catalog,
                 "api_key_required": self.capabilities.api_key_required,
+                "configurable_base_url": (
+                    self.capabilities.configurable_base_url
+                ),
             },
             "notes": self.notes,
         }
@@ -86,15 +92,32 @@ _PROVIDERS = (
     ),
     ProviderSpec(
         id="ollama",
-        label="Ollama（本机）",
+        label="Ollama",
         base_url="http://127.0.0.1:11434/v1",
         capabilities=ProviderCapabilities(
             json_object=True,
             thinking=False,
             model_catalog=True,
             api_key_required=False,
+            configurable_base_url=True,
         ),
-        notes="只连接本机 Ollama；无需 API Key。",
+        notes="默认连接本机 Ollama，也可改为其他 Ollama 服务地址；API Key 可选。",
+    ),
+    ProviderSpec(
+        id="openai_compatible",
+        label="OpenAI 兼容接口",
+        base_url="",
+        capabilities=ProviderCapabilities(
+            json_object=True,
+            thinking=False,
+            model_catalog=True,
+            api_key_required=False,
+            configurable_base_url=True,
+        ),
+        notes=(
+            "兼容 /chat/completions；API Key 可选，模型目录不可用时"
+            "可直接填写模型 ID。"
+        ),
     ),
 )
 PROVIDERS = {provider.id: provider for provider in _PROVIDERS}
@@ -110,6 +133,102 @@ def get_provider(provider_id: str) -> ProviderSpec:
         return PROVIDERS[normalized]
     except KeyError as exc:
         raise ProviderConfigError("不支持的模型服务商") from exc
+
+
+def _is_private_model_host(hostname: str) -> bool:
+    normalized = hostname.rstrip(".").lower()
+    if (
+        normalized == "localhost"
+        or normalized.endswith(".localhost")
+        or normalized.endswith(".local")
+        or normalized.endswith(".internal")
+        or normalized == "metadata.google.internal"
+    ):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return not address.is_global
+
+
+def normalize_provider_base_url(
+    provider: ProviderSpec,
+    base_url: Optional[str],
+    *,
+    allow_private: bool = True,
+    production: bool = False,
+) -> str:
+    """Return a safe API root for one provider.
+
+    Official providers intentionally ignore submitted URL overrides. Custom
+    URLs are limited to an API root so request code can append ``models`` or
+    ``chat/completions`` consistently.
+    """
+
+    if not provider.capabilities.configurable_base_url:
+        return provider.base_url
+
+    clean_url = str(base_url or provider.base_url).strip()
+    if not clean_url:
+        raise ProviderConfigError(
+            f"请填写 {provider.label} Base URL"
+        )
+    if len(clean_url) > 2048:
+        raise ProviderConfigError("Base URL 不能超过 2048 个字符")
+    if any(character.isspace() for character in clean_url):
+        raise ProviderConfigError("Base URL 不能包含空白字符")
+    try:
+        parsed = urlsplit(clean_url)
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise ProviderConfigError("Base URL 格式不正确") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+    ):
+        raise ProviderConfigError("Base URL 必须是完整的 HTTP(S) 地址")
+    if parsed.username is not None or parsed.password is not None:
+        raise ProviderConfigError(
+            "Base URL 不能包含用户名或密码，请使用 API Key 字段"
+        )
+    if parsed.query or parsed.fragment:
+        raise ProviderConfigError("Base URL 不能包含查询参数或片段")
+    if parsed_port is not None and not 1 <= parsed_port <= 65535:
+        raise ProviderConfigError("Base URL 端口必须在 1–65535 之间")
+
+    path = parsed.path.rstrip("/")
+    endpoint_path = path.lower()
+    if endpoint_path.endswith("/chat/completions") or endpoint_path.endswith(
+        "/models"
+    ):
+        raise ProviderConfigError(
+            "Base URL 请填写到 API 根路径（通常以 /v1 结尾）"
+        )
+
+    private_target = _is_private_model_host(parsed.hostname)
+    if private_target and production and not allow_private:
+        raise ProviderConfigError(
+            "生产环境默认禁止连接本机或内网模型地址；"
+            "确认可信后设置 APP_ALLOW_PRIVATE_MODEL_BASE_URLS=true"
+        )
+    if (
+        production
+        and parsed.scheme.lower() != "https"
+        and not (private_target and allow_private)
+    ):
+        raise ProviderConfigError("生产环境的公网模型 Base URL 必须使用 HTTPS")
+
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc,
+            path,
+            "",
+            "",
+        )
+    )
 
 
 def build_provider_headers(
@@ -179,11 +298,17 @@ def settings_for_credential(
         raise ProviderConfigError(
             f"{provider.label} 暂不支持 novelAI 的思考模式参数"
         )
+    base_url = normalize_provider_base_url(
+        provider,
+        credential.get("base_url"),
+        allow_private=settings.permits_private_model_base_urls,
+        production=settings.app_env.lower() == "production",
+    )
     return replace(
         settings,
         model_provider=provider.id,
         deepseek_api_key=api_key or None,
-        deepseek_base_url=provider.base_url,
+        deepseek_base_url=base_url,
         deepseek_model=str(model or credential.get("model") or "").strip(),
         deepseek_thinking=thinking,
         deepseek_reasoning_effort=str(

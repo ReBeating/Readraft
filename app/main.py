@@ -73,6 +73,7 @@ from .model_provider import (
     ProviderConfigError,
     get_provider,
     list_providers,
+    normalize_provider_base_url,
 )
 from .planning_schema import ChapterTaskCard, SceneBeat
 from .planning_ai import build_chapter_planner
@@ -932,7 +933,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
         if app_settings.deepseek_api_key:
             return {
-                "provider": "deepseek",
+                "provider": app_settings.model_provider,
                 "model": app_settings.deepseek_model,
                 "credential_source": "default",
             }
@@ -1348,6 +1349,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         saved: bool = False,
         removed: bool = False,
         provider: Optional[str] = None,
+        base_url: Optional[str] = None,
         model: Optional[str] = None,
         thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
@@ -1355,6 +1357,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         status_code: int = status.HTTP_200_OK,
     ):
         credential = database.get_api_credential_summary(int(user["id"]))
+        credential_provider_spec = None
+        if credential:
+            try:
+                credential_provider_spec = get_provider(
+                    str(credential["provider"])
+                ).public_payload()
+            except ProviderConfigError:
+                credential_provider_spec = None
         current_provider = provider or (
             str(credential["provider"]) if credential else "deepseek"
         )
@@ -1363,6 +1373,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except ProviderConfigError:
             current_provider_spec = get_provider("deepseek")
             current_provider = current_provider_spec.id
+        current_base_url = (
+            str(base_url).strip()
+            if base_url is not None
+            else (
+                str(credential.get("base_url") or "").strip()
+                if (
+                    credential
+                    and str(credential["provider"]) == current_provider
+                )
+                else current_provider_spec.base_url
+            )
+        )
+        if not current_base_url:
+            current_base_url = current_provider_spec.base_url
         current_model = model or (
             str(credential["model"])
             if credential and str(credential["provider"]) == current_provider
@@ -1400,11 +1424,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 credential=credential,
+                credential_provider_spec=credential_provider_spec,
                 providers=[
                     item.public_payload() for item in list_providers()
                 ],
                 selected_provider=current_provider,
                 selected_provider_spec=current_provider_spec.public_payload(),
+                selected_base_url=current_base_url,
                 error=error,
                 saved=saved,
                 removed=removed,
@@ -1437,6 +1463,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         api_key: str = Form(""),
         provider: str = Form("deepseek"),
+        base_url: str = Form(""),
         model: str = Form(...),
         thinking: Optional[str] = Form(None),
         reasoning_effort: str = Form("high"),
@@ -1450,6 +1477,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         thinking_enabled = thinking == "enabled"
         try:
             provider_spec = get_provider(provider)
+            clean_base_url = normalize_provider_base_url(
+                provider_spec,
+                base_url,
+                allow_private=(
+                    app_settings.permits_private_model_base_urls
+                ),
+                production=app_settings.app_env.lower() == "production",
+            )
             clean_model = validate_model(model)
             clean_system_prompt = _clean_field(
                 system_prompt,
@@ -1478,7 +1513,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 masked_key = str(existing["key_hint"])
             elif not provider_spec.capabilities.api_key_required:
                 encrypted_key = credential_cipher.encrypt("")
-                masked_key = "无需 Key"
+                masked_key = (
+                    "无需 Key"
+                    if provider_spec.id == "ollama"
+                    else "未设置 Key"
+                )
             else:
                 raise CredentialError(
                     f"请填写 {provider_spec.label} API Key"
@@ -1486,6 +1525,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             database.upsert_api_credential(
                 user_id=int(user["id"]),
                 provider=provider_spec.id,
+                base_url=clean_base_url,
                 encrypted_key=encrypted_key,
                 key_hint=masked_key,
                 model=clean_model,
@@ -1499,6 +1539,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user,
                 error=str(exc),
                 provider=provider,
+                base_url=base_url,
                 model=model,
                 thinking=thinking_enabled,
                 reasoning_effort=reasoning_effort,
@@ -1514,6 +1555,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         api_key: str = Form(""),
         provider: str = Form("deepseek"),
+        base_url: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1525,10 +1567,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         try:
             provider_spec = get_provider(provider)
+            existing = database.get_api_credential(int(user["id"]))
+            submitted_base_url = base_url
+            if (
+                not submitted_base_url.strip()
+                and existing
+                and str(existing["provider"]) == provider_spec.id
+            ):
+                submitted_base_url = str(
+                    existing.get("base_url") or ""
+                )
+            clean_base_url = normalize_provider_base_url(
+                provider_spec,
+                submitted_base_url,
+                allow_private=(
+                    app_settings.permits_private_model_base_urls
+                ),
+                production=app_settings.app_env.lower() == "production",
+            )
             if api_key:
                 clean_key = validate_api_key(api_key)
             else:
-                existing = database.get_api_credential(int(user["id"]))
                 if (
                     existing
                     and str(existing["provider"]) == provider_spec.id
@@ -1550,6 +1609,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             models = await fetch_models(
                 provider_id=provider_spec.id,
                 api_key=clean_key,
+                base_url=clean_base_url,
                 timeout_seconds=app_settings.deepseek_connect_timeout_seconds,
             )
         except (

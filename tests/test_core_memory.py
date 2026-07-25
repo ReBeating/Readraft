@@ -756,7 +756,12 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                 "version": 26,
                                 "name": "assistant_agent_steps_v26",
                             },
+                            {
+                                "version": 27,
+                                "name": "model_base_url_v27",
+                            },
                         ]
+        assert database.get_api_credential(7)["base_url"] == ""
         assert connection.execute(
             """
             SELECT COUNT(*) FROM novel_chapter_plans

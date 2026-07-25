@@ -638,11 +638,13 @@ def test_user_can_select_ollama_without_api_key(tmp_path):
 
         page = client.get("/settings/api")
         assert "Google Gemini" in page.text
-        assert "Ollama（本机）" in page.text
+        assert "Ollama" in page.text
+        assert "OpenAI 兼容接口" in page.text
         response = client.post(
             "/settings/api",
             data={
                 "provider": "ollama",
+                "base_url": "http://192.168.50.20:11434/v1/",
                 "api_key": "",
                 "model": "qwen3:8b",
                 "reasoning_effort": "high",
@@ -659,6 +661,9 @@ def test_user_can_select_ollama_without_api_key(tmp_path):
             user["id"]
         )
         assert credential["provider"] == "ollama"
+        assert credential["base_url"] == (
+            "http://192.168.50.20:11434/v1"
+        )
         assert credential["model"] == "qwen3:8b"
         assert credential["key_hint"] == "无需 Key"
         assert (
@@ -667,6 +672,101 @@ def test_user_can_select_ollama_without_api_key(tmp_path):
             )
             == ""
         )
+
+
+def test_user_can_save_keyless_openai_compatible_endpoint(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "兼容接口用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        page = client.get("/settings/api")
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "openai_compatible",
+                "base_url": "https://gateway.example.com/openai/v1/",
+                "api_key": "",
+                "model": "my-chat-model",
+                "reasoning_effort": "high",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        user = application.state.database.get_user_by_username(
+            "兼容接口用户"
+        )
+        credential = application.state.database.get_api_credential(
+            user["id"]
+        )
+        assert credential["provider"] == "openai_compatible"
+        assert credential["base_url"] == (
+            "https://gateway.example.com/openai/v1"
+        )
+        assert credential["model"] == "my-chat-model"
+        assert credential["key_hint"] == "未设置 Key"
+        assert (
+            application.state.credential_cipher.decrypt(
+                credential["encrypted_key"]
+            )
+            == ""
+        )
+
+
+def test_model_catalog_uses_submitted_openai_compatible_base_url(
+    tmp_path, monkeypatch
+):
+    seen = {}
+
+    async def fake_fetch_models(**kwargs):
+        seen.update(kwargs)
+        return ["catalog-model"]
+
+    monkeypatch.setattr("app.main.fetch_models", fake_fetch_models)
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "兼容目录用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        page = client.get("/settings/api")
+        response = client.post(
+            "/api/settings/models",
+            data={
+                "provider": "openai_compatible",
+                "base_url": "https://gateway.example.com/openai/v1/",
+                "api_key": "",
+                "csrf": csrf_from(page.text),
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {"models": ["catalog-model"]}
+        assert seen["provider_id"] == "openai_compatible"
+        assert seen["base_url"] == (
+            "https://gateway.example.com/openai/v1"
+        )
+        assert seen["api_key"] is None
 
 
 def test_remote_provider_rejects_missing_key_and_thinking(tmp_path):

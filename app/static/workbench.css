@@ -2009,6 +2009,10 @@ body.studio-surface .studio-api-form textarea {
   line-height: 1.7;
 }
 
+body.studio-surface .studio-api-form [data-base-url-field][hidden] {
+  display: none;
+}
+
 .studio-model-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2056,6 +2060,10 @@ body.studio-surface .studio-api-form textarea {
   margin-bottom: 8px;
   font-family: inherit !important;
   font-size: 15px;
+}
+
+.studio-api-aside p {
+  overflow-wrap: anywhere;
 }
 
 .studio-api-aside ul {

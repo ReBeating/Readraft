@@ -35,9 +35,12 @@ async def fetch_models(
         write=timeout_seconds,
         pool=timeout_seconds,
     )
+    request_base_url = str(base_url or provider.base_url).strip()
+    if not request_base_url:
+        raise ModelCatalogError(f"请填写 {provider.label} Base URL")
     try:
         async with httpx.AsyncClient(
-            base_url=(base_url or provider.base_url).rstrip("/") + "/",
+            base_url=request_base_url.rstrip("/") + "/",
             headers={**headers, "Accept": "application/json"},
             timeout=timeout,
             transport=transport,

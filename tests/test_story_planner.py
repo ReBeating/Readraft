@@ -577,7 +577,7 @@ def test_v15_migrates_v14_database_and_preserves_existing_data(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 26
+                ).fetchone()[0] == 27
         assert migrated.execute(
             "SELECT COUNT(*) FROM story_plan_suggestions"
         ).fetchone()[0] == 0

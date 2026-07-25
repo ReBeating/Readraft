@@ -73,3 +73,28 @@ def test_fetch_ollama_models_does_not_send_authorization():
     assert models == ["qwen3:8b"]
     assert seen["url"] == "http://127.0.0.1:11434/v1/models"
     assert seen["authorization"] is None
+
+
+def test_fetch_openai_compatible_models_uses_custom_url_and_optional_key():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={"data": [{"id": "local-model"}]})
+
+    models = asyncio.run(
+        fetch_models(
+            provider_id="openai_compatible",
+            api_key="sk-test-key",
+            base_url="https://gateway.example.com/openai/v1",
+            transport=httpx.MockTransport(handler),
+        )
+    )
+
+    assert models == ["local-model"]
+    assert (
+        seen["url"]
+        == "https://gateway.example.com/openai/v1/models"
+    )
+    assert seen["authorization"] == "Bearer sk-test-key"

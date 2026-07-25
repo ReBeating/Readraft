@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS api_credentials (
     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
+    base_url TEXT NOT NULL DEFAULT '',
     encrypted_key TEXT NOT NULL,
     key_hint TEXT NOT NULL,
     model TEXT NOT NULL,
@@ -484,8 +485,8 @@ class Database:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT user_id, provider, encrypted_key, key_hint, model,
-                       thinking, reasoning_effort, system_prompt,
+                SELECT user_id, provider, base_url, encrypted_key, key_hint,
+                       model, thinking, reasoning_effort, system_prompt,
                        created_at, updated_at
                 FROM api_credentials WHERE user_id=?
                 """,
@@ -499,8 +500,9 @@ class Database:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT user_id, provider, key_hint, model, thinking,
-                       reasoning_effort, system_prompt, created_at, updated_at
+                SELECT user_id, provider, base_url, key_hint, model,
+                       thinking, reasoning_effort, system_prompt,
+                       created_at, updated_at
                 FROM api_credentials WHERE user_id=?
                 """,
                 (user_id,),
@@ -526,6 +528,7 @@ class Database:
         reasoning_effort: str,
         system_prompt: str = "",
         provider: str = "deepseek",
+        base_url: str = "",
     ) -> None:
         now = utc_now()
         with self.connection() as connection:
@@ -538,12 +541,13 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO api_credentials(
-                    user_id, provider, encrypted_key, key_hint, model,
+                    user_id, provider, base_url, encrypted_key, key_hint, model,
                     thinking, reasoning_effort, system_prompt,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     provider=excluded.provider,
+                    base_url=excluded.base_url,
                     encrypted_key=excluded.encrypted_key,
                     key_hint=excluded.key_hint,
                     model=excluded.model,
@@ -555,6 +559,7 @@ class Database:
                 (
                     user_id,
                     provider,
+                    base_url,
                     encrypted_key,
                     key_hint,
                     model,
