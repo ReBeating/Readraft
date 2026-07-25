@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}写作技法库 · {{ app_name }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/dashboard">← 返回创作工作台</a>
+      <h1>写作技法库</h1>
+      <p>保存可执行的结构、节奏、信息释放与语言方法，再由作者选择应用到全书、分卷、章节或场景。</p>
+    </div>
+    <a class="button" href="/upload">导入参考文本</a>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if created %}<div class="alert success">技法卡已创建。</div>{% endif %}
+  <div class="alert warning"><strong>原创性边界始终生效。</strong>进入规划、正文创作和审校流程的只有抽象执行规则、作者改造要求与边界，不包含参考作品正文。</div>
+
+  <section class="technique-library-layout">
+    <div class="technique-library-main">
+      <div class="section-heading">
+        <div>
+          <h2>个人参考库</h2>
+        </div>
+        <span>{{ cards|length }} 张</span>
+      </div>
+      {% if cards %}
+        <div class="technique-card-list">
+          {% for card in cards %}
+            <a class="card technique-library-card {{ card.status }}" href="/techniques/{{ card.id }}">
+              <div class="technique-library-card-top">
+                <span class="tag">{{ card.dimension|technique_dimension_label }}</span>
+                <span class="status {{ card.status }}">{{ '已启用' if card.status == 'active' else '已归档' }}</span>
+              </div>
+              <h3>{{ card.name }}</h3>
+              <p>{{ card.execution_rule }}</p>
+              <small>
+                {% if card.source_document_title %}
+                  来源：《{{ card.source_document_title }}》
+                  {% if card.source_chapter_position %}第 {{ card.source_chapter_position }} 单元{% endif %}
+                {% else %}作者手动总结{% endif %}
+                · {{ card.enabled_binding_count }} 个启用范围
+              </small>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <section class="card empty-state compact-empty">
+          <h2>还没有技法卡</h2>
+          <p>完成一次拆文分析后，可以从章节结果保存有证据的技法；也可以在右侧手动建立自己的方法。</p>
+        </section>
+      {% endif %}
+    </div>
+
+    <details class="card technique-manual-form" {% if not cards %}open{% endif %}>
+      <summary>＋ 手动建立技法卡</summary>
+      <form method="post" action="/techniques" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label><span>技法名称</span><input name="name" maxlength="80" required placeholder="例如：关键物件先产生后果、后解释来源"></label>
+        <div class="form-grid">
+          <label>
+            <span>维度</span>
+            <select name="dimension">
+              <option value="plot">剧情</option>
+              <option value="structure">结构</option>
+              <option value="scene">场景</option>
+              <option value="pacing">节奏</option>
+              <option value="information" selected>信息释放</option>
+              <option value="character">人物</option>
+              <option value="dialogue">对话</option>
+              <option value="language">语言</option>
+              <option value="suspense">悬念</option>
+            </select>
+          </label>
+          <label><span>来源位置</span><input name="source_location" maxlength="200" value="作者手动总结" required></label>
+        </div>
+        <label><span>观察到的做法</span><textarea name="observation" rows="4" maxlength="600" minlength="10" required></textarea></label>
+        <label><span>为什么有效</span><textarea name="effect" rows="4" maxlength="600" minlength="10" required></textarea></label>
+        <div class="form-grid">
+          <label><span>适用场景（每行一条）</span><textarea name="suitable_for" rows="4" maxlength="1400"></textarea></label>
+          <label><span>不适用场景（每行一条）</span><textarea name="unsuitable_for" rows="4" maxlength="1400"></textarea></label>
+        </div>
+        <label><span>可执行写作规则</span><textarea name="execution_rule" rows="5" maxlength="600" minlength="10" required></textarea></label>
+        <label><span>原创性边界</span><textarea name="originality_boundary" rows="4" maxlength="600" minlength="10" required placeholder="只迁移信息释放顺序，不复用参考文本的人名、物件、具体事件、独特措辞或揭示答案。"></textarea></label>
+        <label><span>作者备注</span><textarea name="author_note" rows="3" maxlength="2000"></textarea></label>
+        <button class="button primary full" type="submit">建立技法卡</button>
+      </form>
+    </details>
+  </section>
+{% endblock %}

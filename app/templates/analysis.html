@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}{{ analysis.chapter_title }} · 拆解结果{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/jobs/{{ analysis.job_id }}">← 返回任务</a>
+      <h1>{{ analysis.chapter_title }}</h1>
+      <p>{{ analysis.document_title }} · {{ analysis.char_count|human_size }} · {{ analysis.provider }}/{{ analysis.model }}</p>
+    </div>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  {% if result %}
+    <section class="analysis-grid">
+      <article class="card summary-card wide">
+        <span class="section-kicker">章节摘要</span>
+        <h2>{{ result.chapter_title }}</h2>
+        <p>{{ result.summary }}</p>
+      </article>
+
+      <article class="card analysis-block">
+        <div class="section-heading"><h2>人物</h2><span>{{ result.characters|length }}</span></div>
+        {% for item in result.characters %}
+          <div class="result-item">
+            <strong>{{ item.name }}</strong><span class="tag">{{ item.role }}</span>
+            <p>{{ item.development }}</p>
+          </div>
+        {% else %}<p class="muted">本章未识别到明确人物。</p>{% endfor %}
+      </article>
+
+      <article class="card analysis-block">
+        <div class="section-heading"><h2>场景</h2><span>{{ result.scenes|length }}</span></div>
+        {% for item in result.scenes %}
+          <div class="result-item">
+            <strong>{{ item.location }}</strong><span class="tag">{{ item.time }}</span>
+            <p>{{ item.summary }}</p>
+            <small>{{ item.participants|join(" · ") }}</small>
+          </div>
+        {% else %}<p class="muted">本章未识别到独立场景。</p>{% endfor %}
+      </article>
+
+      <article class="card analysis-block wide">
+        <div class="section-heading"><h2>关键事件</h2><span>{{ result.key_events|length }}</span></div>
+        <div class="timeline">
+          {% for item in result.key_events %}
+            <div class="timeline-item"><span>{{ loop.index }}</span><div><strong>{{ item.event }}</strong><p>{{ item.impact }}</p></div></div>
+          {% else %}<p class="muted">本章未识别到关键事件。</p>{% endfor %}
+        </div>
+      </article>
+
+      <article class="card analysis-block">
+        <div class="section-heading"><h2>伏笔与回收</h2><span>{{ result.foreshadowing|length }}</span></div>
+        {% for item in result.foreshadowing %}
+          <div class="result-item"><span class="tag accent">{{ item.type }}</span><strong>{{ item.clue }}</strong><p>{{ item.interpretation }}</p></div>
+        {% else %}<p class="muted">本章未识别到可靠的伏笔或回收。</p>{% endfor %}
+      </article>
+
+      <article class="card analysis-block">
+        <div class="section-heading"><h2>冲突</h2><span>{{ result.conflicts|length }}</span></div>
+        {% for item in result.conflicts %}
+          <div class="result-item"><strong>{{ item.parties|join(" × ") }}</strong><span class="tag">{{ item.status }}</span><p>{{ item.description }}</p></div>
+        {% else %}<p class="muted">本章未识别到明确冲突。</p>{% endfor %}
+      </article>
+
+      {% if result.ending_hook %}
+        <article class="card hook-card wide">
+          <span class="section-kicker">{{ result.ending_hook.type }}</span>
+          <h2>结尾钩子</h2>
+          <p>{{ result.ending_hook.content }}</p>
+        </article>
+      {% endif %}
+
+      <article class="card technique-observations wide">
+        <div class="section-heading">
+          <div>
+            <h2>可迁移技法</h2>
+          </div>
+          <span>{{ result.techniques|length }}</span>
+        </div>
+        <p class="muted">这里只保存抽象方法和原创性边界，不把参考作品的具体措辞、人物、物件或情节送入原创作品上下文。</p>
+        {% if result.techniques %}
+          <div class="technique-observation-grid">
+            {% for item in result.techniques %}
+              <section class="technique-observation">
+                <div>
+                  <span class="tag">{{ item.dimension|technique_dimension_label }}</span>
+                  <small>{{ item.source_location }}</small>
+                </div>
+                <h3>{{ item.name }}</h3>
+                <p><b>观察</b>{{ item.observation }}</p>
+                <p><b>为什么有效</b>{{ item.effect }}</p>
+                <p><b>可执行规则</b>{{ item.execution_rule }}</p>
+                <p class="originality-boundary"><b>原创性边界</b>{{ item.originality_boundary }}</p>
+                {% if item.name in saved_technique_names %}
+                  <span class="status completed">已保存到技法库</span>
+                {% else %}
+                  <form method="post" action="/analyses/{{ analysis.id }}/techniques/{{ loop.index0 }}">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <button class="button primary" type="submit">保存为技法卡</button>
+                  </form>
+                {% endif %}
+              </section>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">本章没有足够可靠、可抽象迁移的技法证据。</p>
+        {% endif %}
+      </article>
+    </section>
+  {% else %}
+    <div class="alert error">{{ analysis.error or "本章尚无分析结果" }}</div>
+  {% endif %}
+
+  <details class="source-panel">
+    <summary>查看本章原文</summary>
+    <pre>{{ source_text }}</pre>
+  </details>
+{% endblock %}

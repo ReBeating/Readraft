@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}版本比较 · {{ chapter.title or '未命名章节' }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}#versions">← 返回章节版本</a>
+      <span class="eyebrow">CHAPTER VERSION DIFF · {{ "%03d"|format(chapter.position) }}</span>
+      <h1>{{ chapter.title or '未命名章节' }}</h1>
+      <p>比较完整章节版本，确认 AI 生成、手工修改或定点改写到底改变了什么。</p>
+    </div>
+    {% if base_version %}
+      <form method="get" class="version-compare-picker">
+        <label>
+          <span>左侧基准版本</span>
+          <select name="base_id">
+            {% for version in versions %}
+              {% if version.id != target_version.id %}
+                <option value="{{ version.id }}" {% if version.id == base_version.id %}selected{% endif %}>
+                  {{ version.kind|writing_operation_label }} · {{ version.created_at }}
+                  {% if version.id == chapter.canonical_version_id %}· 正史{% endif %}
+                </option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <button class="button" type="submit">重新比较</button>
+      </form>
+    {% endif %}
+  </section>
+
+  {% if comparison_error %}<div class="alert error">{{ comparison_error }}</div>{% endif %}
+
+  {% if not base_version %}
+    <section class="card empty-style-state">
+      <h2>还没有可比较的另一个版本</h2>
+      <p>保存下一次手工修改、生成结果或定点改写后，就能在这里查看完整差异。</p>
+      <a class="button primary" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}">返回正文编辑器</a>
+    </section>
+  {% elif comparison %}
+    <section class="card chapter-version-summary">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">CHANGE SUMMARY</span>
+          <h2>
+            {% if comparison.identical %}
+              两个版本正文一致
+            {% else %}
+              {{ comparison.changed_blocks }} 处改动
+            {% endif %}
+          </h2>
+        </div>
+        <span>
+          {% if comparison.delta_chars > 0 %}+{% endif %}{{ comparison.delta_chars }} 有效字符
+        </span>
+      </div>
+      <div class="version-diff-metrics">
+        <div><strong>{{ comparison.original_chars }}</strong><span>基准有效字符</span></div>
+        <div><strong>{{ comparison.replacement_chars }}</strong><span>目标有效字符</span></div>
+        <div><strong>+{{ comparison.added_chars }}</strong><span>新增</span></div>
+        <div><strong>−{{ comparison.removed_chars }}</strong><span>删除</span></div>
+      </div>
+      {% if target_version.change_summary %}
+        <p class="version-change-note"><b>作者记录：</b>{{ target_version.change_summary }}</p>
+      {% endif %}
+      <p class="muted">
+        左侧红色为基准版本中被删除的文字，右侧绿色为目标版本中新增的文字。
+        比较本身不会切换当前候选或正史。
+      </p>
+    </section>
+
+    <section class="chapter-version-diff">
+      <div class="diff-grid">
+        <div class="card">
+          <div class="version-diff-heading">
+            <div>
+              <span class="section-kicker">BASE VERSION</span>
+              <h2>{{ base_version.kind|writing_operation_label }}</h2>
+            </div>
+            <span>
+              {% if base_version.id == chapter.canonical_version_id %}正史
+              {% elif base_version.id == chapter.working_version_id %}当前候选
+              {% else %}历史版本{% endif %}
+            </span>
+          </div>
+          <p class="version-diff-meta">{{ base_version.created_at }} · {{ base_version.char_count|human_size }}</p>
+          <div class="diff-text" aria-label="基准版本正文">{% for segment in comparison.before %}<span class="{{ segment.kind }}">{{ segment.text }}</span>{% endfor %}</div>
+        </div>
+        <div class="card">
+          <div class="version-diff-heading">
+            <div>
+              <span class="section-kicker">TARGET VERSION</span>
+              <h2>{{ target_version.kind|writing_operation_label }}</h2>
+            </div>
+            <span>
+              {% if target_version.id == chapter.canonical_version_id %}正史
+              {% elif target_version.id == chapter.working_version_id %}当前候选
+              {% else %}历史版本{% endif %}
+            </span>
+          </div>
+          <p class="version-diff-meta">{{ target_version.created_at }} · {{ target_version.char_count|human_size }}</p>
+          <div class="diff-text" aria-label="目标版本正文">{% for segment in comparison.after %}<span class="{{ segment.kind }}">{{ segment.text }}</span>{% endfor %}</div>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

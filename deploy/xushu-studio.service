@@ -1,0 +1,27 @@
+[Unit]
+Description=Xushu Studio FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xushu
+Group=xushu
+UMask=0077
+WorkingDirectory=/opt/xushu-studio
+EnvironmentFile=/opt/xushu-studio/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/xushu-studio/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/xushu-studio/data
+MemoryHigh=450M
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,355 @@
+{% extends "base.html" %}
+{% block title %}分支落地清单 · {{ adoption.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a
+        class="back-link"
+        href="/causal-branch-simulations/{{ adoption.simulation_id }}#{{ adoption.branch_key }}"
+      >← 返回三分支沙盘</a>
+      <span class="eyebrow">BRANCH ADOPTION · AUTHOR REVIEW</span>
+      <h1>{{ adoption.branch_label }}分支 · 逐章落地清单</h1>
+      <p>
+        先把模型推演拆成逐章任务卡补丁，再由你逐项修改、采用或拒绝。
+        清单不会触碰正文或正史；只有全部条目审完并再次确认后，
+        才会原子更新未来骨架和任务卡草稿。
+      </p>
+    </div>
+    <span class="status {{ adoption.status }}">{{ adoption.status_label }}</span>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if adoption_created %}
+    <div class="alert success">
+      已建立独立落地清单；目前尚未修改任何章节、任务卡或正文。
+    </div>
+  {% endif %}
+  {% if saved %}
+    <div class="alert success">本项决定已保存，其他条目不受影响。</div>
+  {% endif %}
+  {% if applied %}
+    <div class="alert success">
+      已写入 {{ applied_items }} 个未来章节；
+      {{ reset_task_cards }} 张已确认任务卡退回草稿，
+      {{ stale_scenes }} 个已有场景稿被标记为过期。正文与正史未改变。
+    </div>
+  {% endif %}
+  {% if reverted %}
+    <div class="alert success">
+      已安全撤销这次分支落地，章节骨架、任务卡和场景状态恢复到应用前。
+      原因果链接仍由你单独管理。
+    </div>
+  {% endif %}
+  {% if adoption.baseline_changed %}
+    <div class="alert warning">
+      准备采用的章节在清单建立后发生了变化。旧清单仍可阅读，
+      但不能覆盖后来编辑；请放弃它并从沙盘重新建立。
+    </div>
+  {% endif %}
+
+  <section class="card adoption-source-card">
+    <div>
+      <span class="section-kicker">{{ adoption.branch_key|upper }}</span>
+      <h2>{{ adoption.branch.label }}</h2>
+      <p>{{ adoption.branch.premise }}</p>
+    </div>
+    <dl>
+      <div>
+        <dt>作者已确认的起因</dt>
+        <dd>{{ adoption.source_cause_text }}</dd>
+      </div>
+      <div>
+        <dt>作者已确认的结果</dt>
+        <dd>{{ adoption.source_effect_text }}</dd>
+      </div>
+      <div>
+        <dt>读者体验</dt>
+        <dd>{{ adoption.branch.reader_experience }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="adoption-progress card">
+    <div>
+      <span class="section-kicker">REVIEW PROGRESS</span>
+      <h2>逐项决定，而不是整包接受</h2>
+    </div>
+    <div class="adoption-progress-counts">
+      <span><b>{{ adoption.accepted_count }}</b> 准备采用</span>
+      <span><b>{{ adoption.rejected_count }}</b> 不采用</span>
+      <span><b>{{ adoption.pending_count }}</b> 待决定</span>
+    </div>
+  </section>
+
+  <div class="adoption-item-list">
+    {% for item in adoption['items'] %}
+      <article
+        class="card adoption-item {{ item.decision }}"
+        id="item-{{ item.id }}"
+      >
+        <header>
+          <div class="adoption-item-number">
+            <b>{{ "%03d"|format(item.chapter_position) }}</b>
+            <span>{{ item.impact_label }}</span>
+          </div>
+          <div>
+            <span class="section-kicker">CHAPTER TASK PATCH</span>
+            <h2>《{{ item.current_chapter_title }}》</h2>
+            <p>{{ item.snapshot.rationale if item.snapshot else '落地项数据无法读取。' }}</p>
+          </div>
+          <span class="status {{ item.decision }}">{{ item.decision_label }}</span>
+        </header>
+
+        {% if item.snapshot and item.patch %}
+          <div class="adoption-item-origin">
+            <div>
+              <small>分支原始变化</small>
+              <p>{{ item.snapshot.planned_change }}</p>
+            </div>
+            <div>
+              <small>因果职责</small>
+              <p>{{ item.snapshot.causal_role }}</p>
+            </div>
+            {% if item.snapshot.unresolved_assumption %}
+              <div class="uncertain">
+                <small>仍需作者确认</small>
+                <p>{{ item.snapshot.unresolved_assumption }}</p>
+              </div>
+            {% endif %}
+          </div>
+
+          {% if adoption.status == 'draft' %}
+            <form
+              method="post"
+              action="/causal-branch-adoptions/{{ adoption.id }}/items/{{ item.id }}"
+              class="adoption-review-form"
+            >
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <label>
+                <span>写入“本章必须落实”</span>
+                <textarea
+                  name="must_happen"
+                  rows="6"
+                  maxlength="12000"
+                  required
+                >{{ item.patch.must_happen|join('\n') }}</textarea>
+                <small>
+                  可改写措辞；每行一条。采用后也会同步进未来章节骨架的关键事件。
+                </small>
+              </label>
+
+              {% if item.snapshot.proposed_patch.plot_threads %}
+                <fieldset>
+                  <legend>本章需要推进的已确认剧情线</legend>
+                  <div class="checkbox-grid compact">
+                    {% for title in item.snapshot.proposed_patch.plot_threads %}
+                      <label class="checkbox-card">
+                        <input
+                          type="checkbox"
+                          name="plot_threads"
+                          value="{{ title }}"
+                          {% if title in item.patch.plot_threads %}checked{% endif %}
+                        >
+                        <span><b>{{ title }}</b></span>
+                      </label>
+                    {% endfor %}
+                  </div>
+                  <small>只能从推演引用的确认剧情线中选择；不能在这里凭空创建新线。</small>
+                </fieldset>
+              {% endif %}
+
+              <div class="two-column">
+                <label>
+                  <span>补入“伏笔铺设”</span>
+                  <textarea
+                    name="foreshadow_setup"
+                    rows="4"
+                    maxlength="8000"
+                  >{{ item.patch.foreshadow_setup|join('\n') }}</textarea>
+                  <small>每行一条；不需要时留空。</small>
+                </label>
+                <label>
+                  <span>补入“伏笔回收”</span>
+                  <textarea
+                    name="foreshadow_payoff"
+                    rows="4"
+                    maxlength="8000"
+                  >{{ item.patch.foreshadow_payoff|join('\n') }}</textarea>
+                  <small>每行一条；不需要时留空。</small>
+                </label>
+              </div>
+
+              <label>
+                <span>作者对本项的备注</span>
+                <textarea
+                  name="author_note"
+                  rows="3"
+                  maxlength="1200"
+                  placeholder="例如：保留行动结果，但把知情渠道改成档案员留下的维修记录。"
+                >{{ item.author_note }}</textarea>
+              </label>
+
+              <fieldset class="adoption-decision-fieldset">
+                <legend>本章是否采用这项修改？</legend>
+                <div class="adoption-decision-options">
+                  <label class="checkbox-card accept">
+                    <input
+                      type="radio"
+                      name="decision"
+                      value="accepted"
+                      required
+                      {% if item.decision == 'accepted' %}checked{% endif %}
+                    >
+                    <span>
+                      <b>准备采用</b>
+                      <small>最终确认时写入本章骨架和任务卡草稿。</small>
+                    </span>
+                  </label>
+                  <label class="checkbox-card reject">
+                    <input
+                      type="radio"
+                      name="decision"
+                      value="rejected"
+                      required
+                      {% if item.decision == 'rejected' %}checked{% endif %}
+                    >
+                    <span>
+                      <b>不采用</b>
+                      <small>保留审核记录，但不修改本章。</small>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <div class="form-actions">
+                <button class="button primary" type="submit">保存本项决定</button>
+                <a
+                  class="button secondary"
+                  href="/novels/{{ adoption.project_id }}/chapters/{{ item.chapter_id }}/task-card"
+                >查看当前任务卡</a>
+              </div>
+            </form>
+          {% else %}
+            <div class="adoption-final-patch">
+              <div>
+                <strong>审核后的“必须落实”</strong>
+                <ul>{% for value in item.patch.must_happen %}<li>{{ value }}</li>{% endfor %}</ul>
+              </div>
+              {% if item.patch.plot_threads %}
+                <div>
+                  <strong>推进线</strong>
+                  <p>{{ item.patch.plot_threads|join('、') }}</p>
+                </div>
+              {% endif %}
+              {% if item.author_note %}<p><b>作者备注：</b>{{ item.author_note }}</p>{% endif %}
+              {% if item.decision == 'accepted' %}
+                <a
+                  class="button secondary"
+                  href="/novels/{{ adoption.project_id }}/chapters/{{ item.chapter_id }}/task-card"
+                >打开已更新的任务卡</a>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          <details class="adoption-evidence">
+            <summary>冻结证据引用</summary>
+            <ul>
+              {% for evidence_ref in item.snapshot.evidence_refs %}
+                <li>{{ evidence_ref }}</li>
+              {% endfor %}
+            </ul>
+          </details>
+        {% else %}
+          <div class="alert error">这项落地数据损坏，不能继续应用。</div>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+
+  {% if adoption.status == 'draft' %}
+    <section class="card adoption-apply-card" id="apply">
+      <div>
+        <span class="section-kicker">ATOMIC APPLY</span>
+        <h2>全部审完后，再一次性写入未来任务卡</h2>
+        <p>
+          只处理标记为“准备采用”的章节；任何一章已变化或正在运行 AI 任务时，
+          整次操作都会停止，不会留下半套修改。
+        </p>
+      </div>
+      {% if adoption.apply_blocker %}
+        <div class="alert warning">{{ adoption.apply_blocker }}</div>
+      {% endif %}
+      <form
+        method="post"
+        action="/causal-branch-adoptions/{{ adoption.id }}/apply"
+      >
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label class="checkbox-card">
+          <input
+            type="checkbox"
+            name="author_confirmed"
+            value="true"
+            required
+            {% if adoption.apply_blocker %}disabled{% endif %}
+          >
+          <span>
+            <b>我确认只应用上面明确采用的 {{ adoption.accepted_count }} 项</b>
+            <small>
+              相关任务卡会回到草稿、已有场景稿可能过期；正文、候选版本、
+              正史指针和原因果链接不会被改写。
+            </small>
+          </span>
+        </label>
+        <button
+          class="button primary"
+          type="submit"
+          {% if adoption.apply_blocker %}disabled{% endif %}
+        >写入未来骨架与任务卡草稿</button>
+      </form>
+      <form
+        method="post"
+        action="/causal-branch-adoptions/{{ adoption.id }}/abandon"
+        class="inline-form adoption-abandon"
+      >
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button danger" type="submit">放弃整份清单</button>
+      </form>
+    </section>
+  {% elif adoption.status == 'applied' %}
+    <section class="card adoption-apply-card" id="revert">
+      <div>
+        <span class="section-kicker">SAFE REVERT</span>
+        <h2>落地结果已经进入未来规划</h2>
+        <p>
+          你仍需逐章打开任务卡，补全场景节拍并重新确认，Writer 才会读取这些变化。
+          原因果链接保持独立，不会随本清单撤销。
+        </p>
+      </div>
+      {% if adoption.can_revert %}
+        <form
+          method="post"
+          action="/causal-branch-adoptions/{{ adoption.id }}/revert"
+        >
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="button danger" type="submit">安全撤销这次任务卡落地</button>
+        </form>
+      {% else %}
+        <div class="alert warning">
+          应用后相关章节或任务卡已经继续修改。为保护后来的工作，
+          系统不再提供自动撤销；请按上面的审核记录手动调整。
+        </div>
+      {% endif %}
+    </section>
+  {% elif adoption.status == 'reverted' %}
+    <section class="card empty-state">
+      <span class="section-kicker">REVERTED</span>
+      <h2>这次任务卡落地已经撤销</h2>
+      <p>审核记录仍保留，可返回三分支沙盘重新建立新的清单。</p>
+    </section>
+  {% else %}
+    <section class="card empty-state">
+      <h2>这份清单已被放弃</h2>
+      <p>它没有修改未来骨架、任务卡、正文或正史。</p>
+    </section>
+  {% endif %}
+{% endblock %}

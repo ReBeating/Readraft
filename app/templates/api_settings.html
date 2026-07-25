@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}模型与提示词 · {{ app_name }}{% endblock %}
+{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260725-10">
+{% endblock %}
+{% block site_header %}{% endblock %}
+{% block status_banner %}{% endblock %}
+{% block site_footer %}{% endblock %}
+{% block main_class %}studio-settings-page{% endblock %}
+{% block content %}
+  <div class="studio-settings-shell" data-studio-theme>
+    <header class="studio-settings-header">
+      <a class="studio-icon-button" href="/dashboard" aria-label="返回书库">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m15 18-6-6 6-6"></path>
+        </svg>
+      </a>
+      <h1>模型与提示词</h1>
+      <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+        <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+        </svg>
+        <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+        </svg>
+      </button>
+    </header>
+
+    <div class="studio-api-grid">
+      <form method="post" action="/settings/api" class="studio-api-form" data-api-settings-form>
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+
+        {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
+        {% if saved %}<div class="studio-alert success">设置已保存。</div>{% endif %}
+        {% if removed %}<div class="studio-alert success">个人 API Key 已删除。</div>{% endif %}
+
+        <label>
+          <span>DeepSeek API Key</span>
+          <input
+            type="password"
+            name="api_key"
+            maxlength="512"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="{{ '留空则保留当前 Key（' ~ credential.key_hint ~ '）' if credential else 'sk-…' }}"
+          >
+          <small>只在保存时加密写入本机数据库，不会再次完整显示。</small>
+        </label>
+
+        <label>
+          <span>模型</span>
+          <div class="studio-model-field">
+            <select name="model" required data-model-select>
+              <option value="{{ selected_model }}" selected>{{ selected_model }}</option>
+            </select>
+            <button class="studio-button" type="button" data-load-models>读取可用模型</button>
+          </div>
+          <p class="studio-model-feedback" data-model-feedback aria-live="polite">
+            输入新 Key 或使用已保存的 Key，从 DeepSeek 接口读取模型。
+          </p>
+        </label>
+
+        <div class="studio-api-options">
+          <label class="studio-check">
+            <input type="checkbox" name="thinking" value="enabled" {% if selected_thinking %}checked{% endif %}>
+            <span>开启思考模式</span>
+          </label>
+          <label>
+            <span>思考强度</span>
+            <select name="reasoning_effort">
+              <option value="high" {% if selected_effort == 'high' %}selected{% endif %}>高</option>
+              <option value="max" {% if selected_effort == 'max' %}selected{% endif %}>最高</option>
+            </select>
+          </label>
+        </div>
+
+        <label>
+          <span>全局系统提示词</span>
+          <textarea
+            name="system_prompt"
+            maxlength="20000"
+            data-system-prompt
+            placeholder="说明 AI 在所有作品中都应遵守的写作原则。"
+          >{{ selected_system_prompt }}</textarea>
+          <small>用于共创对话和正文生成；每本书还可以在“设定”里追加本书专属指令。</small>
+        </label>
+        <template data-default-system-prompt>{{ default_system_prompt }}</template>
+
+        <div class="studio-api-actions">
+          <button class="studio-button" type="button" data-restore-system-prompt>恢复默认提示词</button>
+          <button class="studio-button primary" type="submit">保存设置</button>
+        </div>
+      </form>
+
+      <aside class="studio-api-aside">
+        {% if credential %}
+          <h2>个人 Key 已配置</h2>
+          <p>{{ credential.key_hint }}<br>更新于 {{ credential.updated_at }}</p>
+        {% elif server_api_available %}
+          <h2>服务器凭据</h2>
+          <p>当前使用服务器共享 Key。保存个人 Key 后会优先使用个人配置。</p>
+        {% else %}
+          <h2>尚未连接模型</h2>
+          <p>未填写 Key 时仍可使用本地模拟回复测试界面。</p>
+        {% endif %}
+
+        <h2>提示词层级</h2>
+        <p>基础执行边界 → 全局系统提示词 → 本书补充指令 → 当前章节与对话。越靠后的内容越具体，但不能覆盖前面的服务端权限与事实边界。</p>
+
+        <h2>隐私</h2>
+        <ul>
+          <li>凭据不会存进浏览器 Cookie。</li>
+          <li>模型请求只发往配置好的 DeepSeek 地址。</li>
+          <li>按任务发送必要的章节与设定，不会一次上传整本书。</li>
+        </ul>
+
+        {% if credential %}
+          <div class="studio-danger-zone">
+            <form method="post" action="/settings/api/delete">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="studio-button" type="submit">删除个人 API Key</button>
+            </form>
+          </div>
+        {% endif %}
+
+        <div class="studio-danger-zone">
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="studio-button" type="submit">退出登录</button>
+          </form>
+        </div>
+      </aside>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260725-5" defer></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const form = document.querySelector("[data-api-settings-form]");
+      if (!form) return;
+      const loadButton = form.querySelector("[data-load-models]");
+      const modelSelect = form.querySelector("[data-model-select]");
+      const feedback = form.querySelector("[data-model-feedback]");
+      const prompt = form.querySelector("[data-system-prompt]");
+      const promptTemplate = form.querySelector("[data-default-system-prompt]");
+
+      form.querySelector("[data-restore-system-prompt]")?.addEventListener("click", () => {
+        prompt.value = promptTemplate.content.textContent.trim();
+        prompt.focus();
+      });
+
+      loadButton.addEventListener("click", async () => {
+        loadButton.disabled = true;
+        feedback.textContent = "正在验证 Key 并读取模型…";
+        const payload = new FormData();
+        payload.set("csrf", form.elements.csrf.value);
+        payload.set("api_key", form.elements.api_key.value);
+        try {
+          const response = await fetch("/api/settings/models", {
+            method: "POST",
+            body: payload,
+            credentials: "same-origin",
+            headers: {"Accept": "application/json"},
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "读取模型失败");
+          const current = modelSelect.value;
+          modelSelect.replaceChildren();
+          result.models.forEach((model) => {
+            const option = document.createElement("option");
+            option.value = model;
+            option.textContent = model;
+            option.selected = model === current;
+            modelSelect.append(option);
+          });
+          feedback.textContent = `已读取 ${result.models.length} 个可用模型。`;
+        } catch (error) {
+          feedback.textContent = error.message || "读取模型失败，请检查 API Key。";
+        } finally {
+          loadButton.disabled = false;
+        }
+      });
+    });
+  </script>
+{% endblock %}

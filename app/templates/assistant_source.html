@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ source_title }} · 引用来源 · {{ app_name }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="{{ back_url }}">← 返回</a>
+      <h1>{{ source_title }}</h1>
+      <p>{{ source_meta }} · 此页面用于核对 AI 回答所引用的原始位置。</p>
+    </div>
+  </section>
+  <article class="card assistant-source-page">
+    <pre>{{ before }}{% if selection %}<mark id="cited-selection">{{ selection }}</mark>{% endif %}{{ after }}</pre>
+  </article>
+{% endblock %}
+{% block scripts %}
+{% if selection %}
+<script>
+  document.querySelector("#cited-selection")?.scrollIntoView({block: "center"});
+</script>
+{% endif %}
+{% endblock %}

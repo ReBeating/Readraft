@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}正文硬审计 · {{ chapter.title or '未命名章节' }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}">← 返回章节编辑器</a>
+      <span class="eyebrow">HARD AUDIT</span>
+      <h1>{{ chapter.title or '未命名章节' }}</h1>
+      <p>版本 {{ version.id[:8] }} · {{ version.kind|writing_operation_label }} · {{ version.created_at }}</p>
+    </div>
+    <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/quality">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit" {% if chapter.latest_job_status in ['queued','running'] %}disabled{% endif %}>
+        {% if audit %}重新执行硬审计{% else %}执行硬审计{% endif %}
+      </button>
+    </form>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  {% set workflow_context = 'quality' %}
+  {% include "_chapter_workflow.html" %}
+
+  <section class="quality-summary quality-{{ version.quality_status }}">
+    <div>
+      <span class="section-kicker">CANON GATE</span>
+      <h2>
+        {% if version.quality_status == 'pass' %}硬审计通过
+        {% elif version.quality_status == 'block' %}已阻止进入正史
+        {% elif version.quality_status == 'overridden' %}作者已明确覆盖
+        {% else %}等待硬审计{% endif %}
+      </h2>
+      <p>
+        {% if report.summary %}{{ report.summary }}
+        {% elif version.quality_status == 'block' and version.effective_char_count < 2000 %}
+          有效字符低于 2000 的硬下限。
+        {% else %}
+          当前版本还没有完整的独立审计报告。
+        {% endif %}
+      </p>
+    </div>
+    <dl>
+      <div><dt>有效字符</dt><dd>{{ version.effective_char_count }} / 2000+</dd></div>
+      <div><dt>硬问题</dt><dd>{{ version.hard_issue_count }}</dd></div>
+      <div><dt>补写机会</dt><dd>{% if report.expansion_attempted %}已使用一次{% else %}未使用{% endif %}</dd></div>
+      <div><dt>审计模型</dt><dd>{% if audit %}{{ audit.provider }} / {{ audit.model }}{% else %}尚未执行{% endif %}</dd></div>
+    </dl>
+  </section>
+
+  {% if report.audit_error %}
+    <div class="alert warning">审计未完成：{{ report.audit_error }}</div>
+  {% endif %}
+  {% if report.expansion_error %}
+    <div class="alert warning">定向补写未完成：{{ report.expansion_error }}</div>
+  {% endif %}
+
+  <section class="quality-grid">
+    <article class="card quality-findings">
+      <div class="section-heading">
+        <h2>硬问题与复核项</h2>
+        <span>{{ report.findings|length if report.findings else 0 }}</span>
+      </div>
+      {% if report.findings %}
+        <ol>
+          {% for finding in report.findings %}
+            <li class="finding-{{ finding.severity }}">
+              <div class="finding-title">
+                <strong>{{ finding.description }}</strong>
+                <span>{{ '阻断' if finding.severity == 'hard' else '复核' }}</span>
+              </div>
+              <p><b>位置：</b>{{ finding.location or '未定位' }}</p>
+              {% if finding.evidence %}<blockquote>{{ finding.evidence }}</blockquote>{% endif %}
+              {% if finding.violated_constraint %}<p><b>违反：</b>{{ finding.violated_constraint }}</p>{% endif %}
+              {% if finding.repair_instruction %}<p><b>修改方向：</b>{{ finding.repair_instruction }}</p>{% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% elif audit %}
+        <p class="empty-copy">没有发现会阻止正史提交的硬问题。</p>
+      {% else %}
+        <p class="empty-copy">运行硬审计后，这里会列出可定位的问题、证据与修改方向。</p>
+      {% endif %}
+    </article>
+
+    <aside class="quality-side">
+      <section class="card coverage-card">
+        <span class="section-kicker">TASK COVERAGE</span>
+        <h2>任务卡覆盖</h2>
+        {% if report.must_happen_coverage %}
+          <ul>
+            {% for item in report.must_happen_coverage %}
+              <li class="coverage-{{ item.status }}">
+                <strong>{{ item.requirement }}</strong>
+                <span>{% if item.status == 'met' %}已落实{% elif item.status == 'missing' %}缺失{% else %}无法确认{% endif %}</span>
+                {% if item.evidence %}<small>{{ item.evidence }}</small>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>尚无逐项覆盖结果。</p>
+        {% endif %}
+      </section>
+
+      <section class="card coverage-card">
+        <span class="section-kicker">SCENE COVERAGE</span>
+        <h2>场景节拍覆盖</h2>
+        {% if report.scene_coverage %}
+          <ul>
+            {% for item in report.scene_coverage %}
+              <li class="coverage-{{ item.status }}">
+                <strong>{{ item.requirement }}</strong>
+                <span>{% if item.status == 'met' %}已落实{% elif item.status == 'missing' %}缺失{% else %}无法确认{% endif %}</span>
+                {% if item.evidence %}<small>{{ item.evidence }}</small>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>尚无逐场景覆盖结果。</p>
+        {% endif %}
+      </section>
+
+      {% if version.id != chapter.canonical_version_id %}
+        <section class="card canon-decision-card">
+          <span class="section-kicker">AUTHOR DECISION</span>
+          {% if version.quality_status == 'pass' %}
+            <h2>可以提交正史</h2>
+            <p>硬审计只负责门禁；正文是否达到你的审美标准仍由你决定。</p>
+            <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/accept">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="button primary full" type="submit">接受为正史</button>
+            </form>
+          {% else %}
+            <h2>明确覆盖硬门禁</h2>
+            <p>建议先修改并重新审计。若你确认问题可接受，必须留下原因，系统会永久记录。</p>
+            <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/accept">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <label>
+                <span>作者覆盖原因</span>
+                <textarea name="override_reason" rows="4" minlength="8" maxlength="1000" required placeholder="例如：本章是有意设置的短章，节奏需要在此处截断。"></textarea>
+              </label>
+              <button class="button danger full" type="submit">记录原因并接受为正史</button>
+            </form>
+          {% endif %}
+        </section>
+      {% elif version.quality_status == 'overridden' %}
+        <section class="card canon-decision-card">
+          <span class="section-kicker">OVERRIDE LOG</span>
+          <h2>此版本已成为正史</h2>
+          <p>{{ version.quality_override_reason }}</p>
+        </section>
+      {% endif %}
+    </aside>
+  </section>
+{% endblock %}

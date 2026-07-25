@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}作者样章声纹 · {{ suggestion.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}#voice-learning">← 返回作品声纹</a>
+      <span class="eyebrow">AUTHOR VOICE PROFILER</span>
+      <h1>{{ suggestion.sample_title }}</h1>
+      <p>
+        {{ suggestion.sample_char_count|human_size }} ·
+        {{ suggestion.provider }} / {{ suggestion.model }} ·
+        {{ suggestion.status|voice_suggestion_status_label }}
+      </p>
+    </div>
+    {% if suggestion.status == 'ready' %}
+      <form method="post" action="/voice-suggestions/{{ suggestion.id }}/reject">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button" type="submit">放弃这份建议</button>
+      </form>
+    {% endif %}
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  {% if suggestion.status in ['queued', 'running'] %}
+    <section class="card generation-state" data-voice-suggestion-id="{{ suggestion.id }}">
+      <div class="generation-orbit"><span></span></div>
+      <span class="status {{ suggestion.status }}">{{ suggestion.status|voice_suggestion_status_label }}</span>
+      <h2>{% if suggestion.status == 'queued' %}等待分析作者样章{% else %}正在提取可核对的声纹规则{% endif %}</h2>
+      <p>
+        系统只会生成待审核建议，不会自动覆盖当前作品声纹。完成后会展示
+        样章原文证据、可执行规则和证据不足的维度。
+      </p>
+    </section>
+  {% elif suggestion.status == 'failed' %}
+    <section class="card">
+      <span class="status failed">提取失败</span>
+      <h2>这次没有形成可审核的声纹建议</h2>
+      <div class="alert error">{{ suggestion.error or '未知错误' }}</div>
+      <p>当前作品声纹没有发生变化。可以返回工作台调整样章或补充说明后重试。</p>
+      <a class="button" href="/novels/{{ suggestion.project_id }}#voice-learning">返回重新提交</a>
+    </section>
+  {% elif suggestion.status == 'rejected' %}
+    <section class="card">
+      <span class="status">已放弃</span>
+      <h2>这份建议没有写入作品声纹</h2>
+      <p>样章分析记录仍保留用于追溯；Writer 和 Style Auditor 不会读取它。</p>
+      <a class="button" href="/novels/{{ suggestion.project_id }}#voice">返回作品声纹</a>
+    </section>
+  {% elif suggestion.status == 'applied' %}
+    <section class="card">
+      <span class="status completed">已应用</span>
+      <h2>作者审核后的规则已写入作品声纹</h2>
+      <p>
+        当前保存状态：
+        <strong>{{ '已确认，可用于写作与审校' if suggestion.applied_profile.status == 'confirmed' else '声纹草稿，尚未用于 AI 味审校' }}</strong>
+      </p>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}#voice">查看作品声纹</a>
+    </section>
+  {% elif suggestion.status == 'ready' %}
+    <section class="card voice-suggestion-summary">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">MODEL PROPOSAL</span>
+          <h2>声纹提取结论</h2>
+        </div>
+        <span>{{ suggestion.valid_evidence_count }} 条证据已逐字核对</span>
+      </div>
+      <p>{{ suggestion.suggestion.summary }}</p>
+      {% if suggestion.dropped_evidence_count %}
+        <div class="alert warning">
+          模型另有 {{ suggestion.dropped_evidence_count }} 条引用未能在样章中逐字定位，已自动丢弃。
+        </div>
+      {% endif %}
+      <div class="voice-evidence-grid">
+        {% for evidence in suggestion.suggestion.evidence %}
+          <article>
+            <span>{{ evidence.dimension|voice_dimension_label }}</span>
+            <blockquote>{{ evidence.quote }}</blockquote>
+            <p>{{ evidence.observation }}</p>
+          </article>
+        {% endfor %}
+      </div>
+      {% if suggestion.suggestion.uncertainties %}
+        <div class="voice-uncertainties">
+          <strong>证据不足或需要你判断</strong>
+          <ul>
+            {% for item in suggestion.suggestion.uncertainties %}
+              <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">AUTHOR REVIEW</span>
+          <h2>编辑后再写入作品声纹</h2>
+        </div>
+        <span>当前声纹内容已合并进表单</span>
+      </div>
+      <p>
+        这里是建议，不是正史。你可以删改任何字段；“保存为草稿”不会启用 AI 味审校，
+        “确认并使用”才会让后续 Writer 与 Style Auditor 读取这些规则。
+      </p>
+      <form method="post" action="/voice-suggestions/{{ suggestion.id }}/apply" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label>
+            <span>叙述规则</span>
+            <textarea name="narration_rules" rows="5" maxlength="6000">{{ review_profile.narration_rules }}</textarea>
+          </label>
+          <label>
+            <span>句段节奏</span>
+            <textarea name="sentence_rhythm" rows="5" maxlength="4000">{{ review_profile.sentence_rhythm }}</textarea>
+          </label>
+          <label>
+            <span>人物对话声音</span>
+            <textarea name="dialogue_voice" rows="5" maxlength="6000">{{ review_profile.dialogue_voice }}</textarea>
+          </label>
+          <label>
+            <span>感官与意象来源</span>
+            <textarea name="sensory_palette" rows="5" maxlength="4000">{{ review_profile.sensory_palette }}</textarea>
+          </label>
+          <label>
+            <span>比喻策略</span>
+            <textarea name="metaphor_policy" rows="4" maxlength="4000">{{ review_profile.metaphor_policy }}</textarea>
+          </label>
+          <label>
+            <span>允许的省略与留白</span>
+            <textarea name="allowed_omissions" rows="4" maxlength="4000">{{ review_profile.allowed_omissions }}</textarea>
+          </label>
+          <label>
+            <span>希望保留的表达方式（每行一条）</span>
+            <textarea name="preferred_patterns" rows="5" maxlength="6000">{{ review_profile.preferred_patterns|join('\n') }}</textarea>
+          </label>
+          <label>
+            <span>禁用词与禁用句式（每行一条）</span>
+            <textarea name="banned_expressions" rows="5" maxlength="6000">{{ review_profile.banned_expressions|join('\n') }}</textarea>
+          </label>
+        </div>
+        <label>
+          <span>作者补充说明</span>
+          <textarea name="author_notes" rows="4" maxlength="6000">{{ review_profile.author_notes }}</textarea>
+        </label>
+        <div class="form-actions">
+          <button class="button" type="submit" name="action" value="apply_draft">保存为声纹草稿</button>
+          <button class="button primary" type="submit" name="action" value="apply_confirm">确认并用于写作与审校</button>
+        </div>
+      </form>
+    </section>
+  {% endif %}
+
+  <details class="card voice-source-details">
+    <summary>查看本次作者样章与提取记录</summary>
+    {% if suggestion.author_intent %}
+      <h3>作者补充方向</h3>
+      <p>{{ suggestion.author_intent }}</p>
+    {% endif %}
+    <h3>样章原文</h3>
+    <pre>{{ suggestion.sample_text }}</pre>
+    {% if suggestion.finished_at %}
+      <small>
+        {{ suggestion.input_tokens }} 输入 tokens ·
+        {{ suggestion.output_tokens }} 输出 tokens ·
+        完成于 {{ suggestion.finished_at }}
+      </small>
+    {% endif %}
+  </details>
+{% endblock %}
+{% block scripts %}
+  {% if suggestion.status in ['queued', 'running'] %}
+    <script>
+      (() => {
+        const root = document.querySelector("[data-voice-suggestion-id]");
+        const suggestionId = root.dataset.voiceSuggestionId;
+        const poll = async () => {
+          try {
+            const response = await fetch(`/api/voice-suggestions/${suggestionId}`, {
+              headers: {"Accept": "application/json"}
+            });
+            if (!response.ok) throw new Error("poll failed");
+            const data = await response.json();
+            if (data.terminal) {
+              window.location.reload();
+            } else {
+              window.setTimeout(poll, 1800);
+            }
+          } catch (_) {
+            window.setTimeout(poll, 4000);
+          }
+        };
+        window.setTimeout(poll, 1200);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

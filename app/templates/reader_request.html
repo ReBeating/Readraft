@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}读者意见剧情决策 · {{ reader_request.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <a class="back-link" href="/novels/{{ reader_request.project_id }}#reader-decisions">← 返回《{{ reader_request.project_title }}》</a>
+    <span class="eyebrow">READER REQUEST</span>
+    <h1>读者意见剧情决策</h1>
+    <p>读者原话只交给 Planner 评估，不会直接进入 Writer，也不会自动改变正史。</p>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if adopted %}<div class="alert success">已采纳所选方案，未来滚动细纲已经更新；相关章节任务卡已回到待确认状态。</div>{% endif %}
+
+  <section class="card reader-request-source">
+    <div class="request-meta">
+      <span>{{ reader_request.request_type|reader_request_type_label }}</span>
+      <span>{{ reader_request.impact_scope|reader_scope_label }}</span>
+      <span>{{ '硬性优先' if reader_request.priority == 'hard' else '软性参考' }}</span>
+      <span class="status {{ reader_request.status }}">{{ reader_request.status|reader_status_label }}</span>
+    </div>
+    <blockquote>{{ reader_request.raw_text }}</blockquote>
+    {% if reader_request.constraints %}
+      <div>
+        <b>不可破坏的约束</b>
+        <ul>{% for item in reader_request.constraints %}<li>{{ item }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+    {% if reader_request.author_note %}<p><b>作者备注：</b>{{ reader_request.author_note }}</p>{% endif %}
+  </section>
+
+  {% if reader_request.status in ['draft', 'failed'] or (reader_request.status == 'reviewing' and reader_request.proposals) %}
+    <section class="card reader-generate-panel">
+      <div>
+        <span class="section-kicker">PLANNER</span>
+        <h2>{{ '重新生成三个方案' if reader_request.proposals else '生成三个剧情方案' }}</h2>
+        <p>每个方案都会列出满足点、牺牲、影响章节、正史风险与具体未来章节变化。</p>
+      </div>
+      <form method="post" action="/reader-requests/{{ reader_request.id }}/propose">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button primary" type="submit">{{ '重新生成' if reader_request.proposals else '开始评估' }}</button>
+      </form>
+    </section>
+  {% elif reader_request.status == 'proposing' %}
+    <section class="card reader-generate-panel">
+      <div>
+        <span class="section-kicker">PLANNER RUNNING</span>
+        <h2>正在比较三种未来走向</h2>
+        <p>任务完成前不会修改章节计划。</p>
+      </div>
+      {% if reader_request.latest_job_id %}<a class="button" href="/writing-jobs/{{ reader_request.latest_job_id }}">查看任务进度</a>{% endif %}
+    </section>
+  {% endif %}
+
+  {% if reader_request.proposals %}
+    <section class="reader-proposals">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">THREE BRANCHES</span>
+          <h2>三个走向与代价</h2>
+        </div>
+        <span>只有作者采纳才会写入未来细纲</span>
+      </div>
+      <div class="reader-proposal-grid">
+        {% for proposal in reader_request.proposals %}
+          <article class="card reader-proposal-card risk-{{ proposal.risk_level }}">
+            <div class="proposal-heading">
+              <span>OPTION {{ proposal.position }}</span>
+              <span class="risk-badge {{ proposal.risk_level }}">{{ proposal.risk_level|upper }} RISK</span>
+            </div>
+            <h3>{{ proposal.label }}</h3>
+            <p>{{ proposal.summary }}</p>
+            {% if proposal.affects_published_canon %}
+              <div class="alert warning"><strong>涉及已发表正史，禁止直接采纳。</strong>{{ proposal.published_canon_impact }}</div>
+            {% endif %}
+            <div class="proposal-tradeoffs">
+              <div><b>满足</b><ul>{% for item in proposal.satisfies %}<li>{{ item }}</li>{% endfor %}</ul></div>
+              <div><b>牺牲</b><ul>{% for item in proposal.sacrifices %}<li>{{ item }}</li>{% endfor %}</ul></div>
+            </div>
+            {% if proposal.affected_characters %}<p><b>人物：</b>{{ proposal.affected_characters|join('、') }}</p>{% endif %}
+            {% if proposal.affected_plot_threads %}<p><b>剧情线：</b>{{ proposal.affected_plot_threads|join('、') }}</p>{% endif %}
+            <p><b>作品承诺：</b>{{ proposal.promise_impact }}</p>
+            <div class="future-revision-list">
+              <b>未来章节变化</b>
+              {% for change in proposal.future_changes %}
+                <div>
+                  <span>{{ "%03d"|format(change.chapter_position) }}</span>
+                  <strong>{{ change.title }}</strong>
+                  <p>{{ change.outline }}</p>
+                  <small>{{ change.rationale }}</small>
+                </div>
+              {% endfor %}
+            </div>
+            <div class="proposal-risks">
+              <b>风险</b>
+              <ul>{% for item in proposal.risks %}<li>{{ item }}</li>{% endfor %}</ul>
+            </div>
+            {% if proposal.status == 'accepted' %}
+              <span class="button disabled">已采纳</span>
+            {% elif proposal.status == 'candidate' and not proposal.affects_published_canon %}
+              <form method="post" action="/reader-proposals/{{ proposal.id }}/accept">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <input type="hidden" name="request_id" value="{{ reader_request.id }}">
+                <button class="button primary full" type="submit">采纳并更新未来细纲</button>
+              </form>
+            {% elif proposal.status == 'candidate' %}
+              <span class="button disabled">需先处理旧章影响</span>
+            {% else %}
+              <span class="button disabled">未采用</span>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if reader_request.applications %}
+    <section class="card applied-plan-list">
+      <span class="section-kicker">APPLIED TO ROLLING PLAN</span>
+      <h2>已写入的未来章节</h2>
+      {% for item in reader_request.applications %}
+        <a href="/novels/{{ reader_request.project_id }}/chapters/{{ item.chapter_id }}/task-card">
+          <span>{{ "%03d"|format(item.chapter_position) }}</span>
+          <strong>{{ item.chapter_title }}</strong>
+          <small>{{ '新建章节骨架' if item.action == 'created' else '更新章节骨架，任务卡待重新确认' }}</small>
+        </a>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  {% if reader_request.status not in ['adopted', 'dismissed', 'proposing'] %}
+    <form method="post" action="/reader-requests/{{ reader_request.id }}/dismiss" class="reader-dismiss-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit">不采纳，归档这条意见</button>
+    </form>
+  {% endif %}
+{% endblock %}

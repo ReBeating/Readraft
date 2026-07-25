@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}手工改稿偏好 · {{ suggestion.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/editing-memory">← 返回编辑记忆</a>
+      <span class="eyebrow">EDITING PREFERENCE LEARNER</span>
+      <h1>
+        第 {{ suggestion.position }} 章《{{ suggestion.chapter_title }}》
+        {% if suggestion.scene_goal %}· {{ suggestion.scene_goal|truncate(36) }}{% endif %}
+      </h1>
+      <p>
+        {{ '场景改稿' if suggestion.source_type == 'scene' else '整章改稿' }} ·
+        {{ suggestion.changed_char_count|human_size }} 变更 ·
+        {{ suggestion.provider }} / {{ suggestion.model }} ·
+        {{ suggestion.status|edit_preference_status_label }}
+      </p>
+    </div>
+    {% if suggestion.status == 'ready' %}
+      <form method="post" action="/editing-preference-suggestions/{{ suggestion.id }}/reject">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button" type="submit">放弃这次归纳</button>
+      </form>
+    {% endif %}
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  {% if suggestion.status in ['queued', 'running'] %}
+    <section class="card generation-state" data-edit-preference-id="{{ suggestion.id }}">
+      <div class="generation-orbit"><span></span></div>
+      <span class="status {{ suggestion.status }}">{{ suggestion.status|edit_preference_status_label }}</span>
+      <h2>{% if suggestion.status == 'queued' %}等待分析手工改稿{% else %}正在核对修改前后证据{% endif %}</h2>
+      <p>
+        模型只会提出待审核候选。没有来自实际变化的逐字证据，就不会形成
+        可确认偏好；当前 Writer 上下文不会被自动修改。
+      </p>
+    </section>
+  {% elif suggestion.status == 'failed' %}
+    <section class="card">
+      <span class="status failed">提取失败</span>
+      <h2>这次改稿没有形成可审核偏好</h2>
+      <div class="alert error">{{ suggestion.error or '未知错误' }}</div>
+      <p>现有作品声纹和确认偏好均未改变。</p>
+      <a class="button" href="/novels/{{ suggestion.project_id }}/editing-memory">返回编辑记忆</a>
+    </section>
+  {% elif suggestion.status == 'rejected' %}
+    <section class="card">
+      <span class="status">已放弃</span>
+      <h2>这次归纳没有进入 Writer</h2>
+      <p>差异与模型建议仍保留用于追溯，但不会影响后续写作或审校。</p>
+      <a class="button" href="/novels/{{ suggestion.project_id }}/editing-memory">返回编辑记忆</a>
+    </section>
+  {% elif suggestion.status == 'applied' %}
+    <section class="card">
+      <span class="status completed">已确认</span>
+      <h2>{{ suggestion.applied_preference_ids|length }} 条偏好已由作者确认</h2>
+      <p>后续整章 Writer、Scene Writer 与 AI 味审校只读取抽象规则和适用范围，不读取下方证据原文。</p>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/editing-memory">查看并管理编辑记忆</a>
+    </section>
+  {% elif suggestion.status == 'ready' %}
+    <section class="card edit-preference-summary">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">MODEL PROPOSAL</span>
+          <h2>手工改稿归纳</h2>
+        </div>
+        <span>{{ suggestion.valid_evidence_count }} 条候选证据已核对</span>
+      </div>
+      <p>{{ suggestion.suggestion.summary }}</p>
+      {% if suggestion.dropped_evidence_count %}
+        <div class="alert warning">
+          模型另有 {{ suggestion.dropped_evidence_count }} 条候选未能在对应差异块中逐字定位，已自动丢弃。
+        </div>
+      {% endif %}
+      {% if suggestion.suggestion.uncertainties %}
+        <div class="voice-uncertainties">
+          <strong>模型无法确定的部分</strong>
+          <ul>
+            {% for item in suggestion.suggestion.uncertainties %}
+              <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    </section>
+
+    <form method="post" action="/editing-preference-suggestions/{{ suggestion.id }}/apply" class="edit-preference-review">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">AUTHOR REVIEW</span>
+          <h2>只确认真正代表你的规则</h2>
+        </div>
+        <span>可以改写规则与适用范围</span>
+      </div>
+      <p>
+        单次改稿不一定代表长期习惯。取消不稳定候选的勾选，并把规则改成你愿意
+        让后续章节持续执行的表达；证据本身不可编辑，也不会发送给 Writer。
+      </p>
+      {% for preference in suggestion.suggestion.preferences %}
+        {% set index = loop.index0 %}
+        <article class="card edit-preference-candidate">
+          <label class="checkbox-line candidate-selector">
+            <input type="checkbox" name="selected" value="{{ index }}" checked>
+            <span>确认这条偏好候选</span>
+          </label>
+          <div class="edit-evidence-pair">
+            <div>
+              <span>修改前</span>
+              {% if preference.before_quote %}<blockquote>{{ preference.before_quote }}</blockquote>{% else %}<p class="muted">纯新增，没有修改前引文</p>{% endif %}
+            </div>
+            <div>
+              <span>修改后</span>
+              {% if preference.after_quote %}<blockquote>{{ preference.after_quote }}</blockquote>{% else %}<p class="muted">纯删除，没有修改后引文</p>{% endif %}
+            </div>
+          </div>
+          <p class="candidate-rationale">{{ preference.rationale }}</p>
+          <div class="form-grid">
+            <label>
+              <span>类别</span>
+              <select name="category_{{ index }}">
+                {% for option in category_options %}
+                  <option value="{{ option }}" {% if option == preference.category %}selected{% endif %}>{{ option|edit_preference_category_label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              <span>什么时候适用</span>
+              <textarea name="applicability_{{ index }}" rows="4" minlength="4" maxlength="500" required>{{ preference.applicability }}</textarea>
+            </label>
+          </div>
+          <label>
+            <span>给后续 Writer 的抽象规则</span>
+            <textarea name="guidance_{{ index }}" rows="4" minlength="8" maxlength="600" required>{{ preference.guidance }}</textarea>
+          </label>
+        </article>
+      {% endfor %}
+      <div class="form-actions">
+        <button class="button primary" type="submit">确认所选偏好并用于后续写作</button>
+      </div>
+    </form>
+  {% endif %}
+
+  <details class="card edit-source-details">
+    <summary>查看本次有界改稿差异与任务记录</summary>
+    {% if suggestion.author_change_summary %}
+      <h3>作者改稿说明</h3>
+      <p>{{ suggestion.author_change_summary }}</p>
+    {% endif %}
+    {% for block in suggestion.change_sample.blocks %}
+      <article>
+        <strong>变化块 {{ block.index }}</strong>
+        {% if block.context_before %}<p class="muted">{{ block.context_before }}</p>{% endif %}
+        <div class="edit-evidence-pair">
+          <pre>{{ block.before or '（无）' }}</pre>
+          <pre>{{ block.after or '（无）' }}</pre>
+        </div>
+        {% if block.context_after %}<p class="muted">{{ block.context_after }}</p>{% endif %}
+      </article>
+    {% endfor %}
+    {% if suggestion.finished_at %}
+      <small>
+        {{ suggestion.input_tokens }} 输入 tokens ·
+        {{ suggestion.output_tokens }} 输出 tokens ·
+        完成于 {{ suggestion.finished_at }}
+      </small>
+    {% endif %}
+  </details>
+{% endblock %}
+{% block scripts %}
+  {% if suggestion.status in ['queued', 'running'] %}
+    <script>
+      (() => {
+        const root = document.querySelector("[data-edit-preference-id]");
+        const suggestionId = root.dataset.editPreferenceId;
+        const poll = async () => {
+          try {
+            const response = await fetch(`/api/editing-preference-suggestions/${suggestionId}`, {
+              headers: {"Accept": "application/json"}
+            });
+            if (!response.ok) throw new Error("poll failed");
+            const data = await response.json();
+            if (data.terminal) {
+              window.location.reload();
+            } else {
+              window.setTimeout(poll, 1800);
+            }
+          } catch (_) {
+            window.setTimeout(poll, 4000);
+          }
+        };
+        window.setTimeout(poll, 1200);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

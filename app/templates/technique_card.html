@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ card.name }} · 写作技法库{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/techniques">← 返回写作技法库</a>
+      <span class="eyebrow">{{ card.dimension|technique_dimension_label }}</span>
+      <h1>{{ card.name }}</h1>
+      <p>把参考观察改造成你自己的执行规则，并明确它在什么范围、什么阶段生效。</p>
+    </div>
+    <span class="status {{ card.status }}">{{ '已启用' if card.status == 'active' else '已归档' }}</span>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if created %}<div class="alert success">技法卡已保存到个人参考库。现在可以选择它应用到哪部作品。</div>{% endif %}
+  {% if saved %}<div class="alert success">技法卡或启用状态已保存。</div>{% endif %}
+  {% if bound %}<div class="alert success">应用范围已保存；对应规划、创作或审校流程会记录这张卡的实际上下文快照。</div>{% endif %}
+
+  <section class="technique-detail-layout">
+    <form method="post" action="/techniques/{{ card.id }}" class="card form-card technique-edit-card">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <div class="section-heading">
+        <div>
+          <h2>方法与原创性边界</h2>
+        </div>
+      </div>
+      {% if card.source_document_title %}
+        <p class="technique-source">
+          来源：《{{ card.source_document_title }}》
+          {% if card.source_chapter_position %}· 第 {{ card.source_chapter_position }} 分析单元《{{ card.source_chapter_title }}》{% endif %}
+          {% if card.source_analysis_id %}· <a href="/analyses/{{ card.source_analysis_id }}">查看证据分析</a>{% endif %}
+        </p>
+      {% else %}
+        <p class="technique-source">来源：作者手动总结</p>
+      {% endif %}
+      <label><span>技法名称</span><input name="name" value="{{ card.name }}" maxlength="80" required></label>
+      <div class="form-grid">
+        <label>
+          <span>维度</span>
+          <select name="dimension">
+            {% for value, label in [('plot','剧情'),('structure','结构'),('scene','场景'),('pacing','节奏'),('information','信息释放'),('character','人物'),('dialogue','对话'),('language','语言'),('suspense','悬念')] %}
+              <option value="{{ value }}" {% if card.dimension == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label><span>来源位置</span><input name="source_location" value="{{ card.source_location }}" maxlength="200" required></label>
+      </div>
+      <label><span>在参考文本中观察到什么</span><textarea name="observation" rows="5" maxlength="600" minlength="10" required>{{ card.observation }}</textarea></label>
+      <label><span>它为什么有效</span><textarea name="effect" rows="5" maxlength="600" minlength="10" required>{{ card.effect }}</textarea></label>
+      <div class="form-grid">
+        <label><span>适用场景（每行一条）</span><textarea name="suitable_for" rows="5" maxlength="1400">{{ card.suitable_for|join('\n') }}</textarea></label>
+        <label><span>不适用场景（每行一条）</span><textarea name="unsuitable_for" rows="5" maxlength="1400">{{ card.unsuitable_for|join('\n') }}</textarea></label>
+      </div>
+      <label><span>进入创作上下文的执行规则</span><textarea name="execution_rule" rows="6" maxlength="600" minlength="10" required>{{ card.execution_rule }}</textarea></label>
+      <label class="originality-field"><span>原创性边界</span><textarea name="originality_boundary" rows="5" maxlength="600" minlength="10" required>{{ card.originality_boundary }}</textarea><small>系统只会发送这项边界与执行规则，不会发送来源观察和原文。</small></label>
+      <label><span>作者备注</span><textarea name="author_note" rows="4" maxlength="2000">{{ card.author_note }}</textarea></label>
+      <label>
+        <span>技法卡状态</span>
+        <select name="card_status">
+          <option value="active" {% if card.status == 'active' %}selected{% endif %}>启用</option>
+          <option value="archived" {% if card.status == 'archived' %}selected{% endif %}>归档并停用所有绑定</option>
+        </select>
+      </label>
+      <button class="button primary" type="submit">保存技法卡</button>
+    </form>
+
+    <aside class="technique-binding-column">
+      <section class="card technique-bind-card">
+        <h2>应用到创作</h2>
+        <p>范围越具体优先级越高；只有你勾选的阶段会读取这张卡。</p>
+        {% if targets and card.status == 'active' %}
+          <form method="post" action="/techniques/{{ card.id }}/bindings" class="form-card embedded-form">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <label>
+              <span>作品与范围</span>
+              <select name="target" required>
+                {% for target in targets %}
+                  <option value="{{ target.value }}">{{ target.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <fieldset class="usage-modes">
+              <legend>在哪些阶段使用</legend>
+              <label><input type="checkbox" name="usage_modes" value="plan" checked> 章节规划</label>
+              <label><input type="checkbox" name="usage_modes" value="write" checked> 正文生成</label>
+              <label><input type="checkbox" name="usage_modes" value="audit" checked> AI 味审校</label>
+            </fieldset>
+            <label><span>针对这部作品的改造</span><textarea name="author_adaptation" rows="5" maxlength="1000" placeholder="例如：在本书中改为“旧码头工具先影响调查，两个场景后再解释来源”，但不沿用参考物件。"></textarea></label>
+            <label><span>优先级 0–100</span><input type="number" name="priority" min="0" max="100" value="50"></label>
+            <button class="button primary full" type="submit">启用这个范围</button>
+          </form>
+        {% elif card.status != 'active' %}
+          <p class="muted">先把技法卡状态改为“启用”。</p>
+        {% else %}
+          <p class="muted">先建立一部小说，才能应用技法。</p>
+        {% endif %}
+      </section>
+
+      <section class="card technique-bindings-list">
+        <div class="section-heading">
+          <h2>当前应用范围</h2>
+          <span>{{ card.bindings|length }}</span>
+        </div>
+        {% for binding in card.bindings %}
+          <article>
+            <div>
+              <strong>{{ binding.project_title }}</strong>
+              <span class="status {{ binding.status }}">{{ '已启用' if binding.status == 'enabled' else '已停用' }}</span>
+            </div>
+            <p>
+              {% if binding.scope_type == 'project' %}全书
+              {% elif binding.scope_type == 'volume' %}第 {{ binding.volume_position }} 卷《{{ binding.volume_title }}》
+              {% elif binding.scope_type == 'chapter' %}第 {{ binding.chapter_position }} 章《{{ binding.chapter_title }}》
+              {% else %}第 {{ binding.scene_chapter_position }} 章 / 场景 {{ binding.scene_position }}：{{ binding.scene_goal }}{% endif %}
+            </p>
+            <small>{{ binding.usage_modes|map('technique_usage_label')|join(' · ') }} · 优先级 {{ binding.priority }}</small>
+            {% if binding.author_adaptation %}<p class="binding-adaptation">{{ binding.author_adaptation }}</p>{% endif %}
+            <form method="post" action="/technique-bindings/{{ binding.id }}/status">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="binding_status" value="{{ 'disabled' if binding.status == 'enabled' else 'enabled' }}">
+              <button class="button small" type="submit">{{ '停用' if binding.status == 'enabled' else '重新启用' }}</button>
+            </form>
+          </article>
+        {% else %}
+          <p class="muted">尚未应用到任何作品。</p>
+        {% endfor %}
+      </section>
+    </aside>
+  </section>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}创建账号 · {{ app_name }}{% endblock %}
+{% block content %}
+  <section class="auth-layout compact">
+    <div class="hero-copy">
+      <h1>建立你的<br><em>私人创作工作台</em></h1>
+      <p>账号只用于隔离本机数据。首位用户创建完成后，可以在生产环境关闭公开注册。</p>
+    </div>
+    <div class="card auth-card">
+      <div class="card-heading">
+        <span class="step-number">00</span>
+        <div>
+          <h2>创建账号</h2>
+          <p>用户名支持中文、字母和数字</p>
+        </div>
+      </div>
+      {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+      <form method="post" action="/register" class="form-stack">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>
+          <span>用户名</span>
+          <input name="username" value="{{ username or '' }}" autocomplete="username" required autofocus>
+        </label>
+        <label>
+          <span>密码</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+          <small>至少 8 位</small>
+        </label>
+        <label>
+          <span>确认密码</span>
+          <input type="password" name="password_confirm" autocomplete="new-password" minlength="8" required>
+        </label>
+        <button class="button primary full" type="submit">创建并进入</button>
+      </form>
+      <p class="auth-switch">已有账号？<a href="/login">返回登录</a></p>
+    </div>
+  </section>
+{% endblock %}

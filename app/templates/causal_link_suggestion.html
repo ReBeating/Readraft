@@ -1,0 +1,546 @@
+{% extends "base.html" %}
+{% block title %}跨章节因果建议 · {{ suggestion.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/structure-health#causal-suggestions">← 返回《{{ suggestion.project_title }}》结构体检</a>
+      <span class="eyebrow">CAUSALITY REVIEW · READ-ONLY PROPOSALS</span>
+      <h1>跨章节因果建议</h1>
+      <p>
+        模型只对冻结的正史、人物知情、连续性、未来骨架与现有链接做
+        证据引用式预检，并在证据允许时比较同一结果的不同前因。
+        每条候选必须由你核对并确认，才会成为未来写作约束。
+      </p>
+    </div>
+    <div class="heading-actions">
+      <span class="status {{ suggestion.status }}">{{ suggestion.status|story_plan_status_label }}</span>
+    </div>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if accepted %}
+    <div class="alert success">
+      候选已由你确认并建立为未来因果链接。
+      {% if reset_task_cards %}{{ reset_task_cards }} 张已确认任务卡已退回草稿，等待复查。{% endif %}
+    </div>
+  {% endif %}
+  {% if dismissed %}
+    <div class="alert success">候选已忽略；决定已记录，大纲、正文和正史均未改变。</div>
+  {% endif %}
+  {% if suggestion.baseline_changed %}
+    <div class="alert warning">
+      这批建议生成后，正史、未来骨架、确认计划或现有因果链接发生了变化。
+      旧候选仍可查看和忽略，但不能采纳；请从结构体检页重新生成。
+    </div>
+  {% endif %}
+
+  <section class="card causal-review-boundary">
+    <div>
+      <span class="section-kicker">AUTHOR DECISION GATE</span>
+      <h2>建议不是正史，也不是已经生效的计划</h2>
+    </div>
+    <p>
+      模型不能创建、修改或归档因果链接。采纳时系统会再次检查章节方向、
+      正史边界和完整冻结基线；随后只让相关未来任务卡失效，不触碰正文、
+      候选版本或正史。语义状态只是模型对所列证据的预检，不是事实判决；
+      采纳一种解释也不会自动否定同组其他解释。
+    </p>
+  </section>
+
+  {% if suggestion.status in ['queued', 'running'] %}
+    <section class="card generation-state" data-causal-suggestion-id="{{ suggestion.id }}">
+      <span class="status {{ suggestion.status }}">{{ suggestion.status|story_plan_status_label }}</span>
+      <h2>
+        {% if suggestion.status == 'queued' %}
+          正在等待因果审查
+        {% else %}
+          正在核对未来 {{ suggestion.chapter_limit }} 章内的因果接缝
+        {% endif %}
+      </h2>
+      <p>
+        系统正在比对正史事件、章节职责、关键点、剧情线、窗口边界和已有显式链接，
+        并检查同一结果是否存在不同前因、反证、缺失中间步骤或跨线副作用。
+        证据不足时允许返回零条候选，页面会在任务结束后自动刷新。
+      </p>
+      {% if suggestion.instruction %}
+        <div class="story-plan-focus-note">
+          <small>作者本次重点</small>
+          <p>{{ suggestion.instruction }}</p>
+        </div>
+      {% endif %}
+    </section>
+  {% elif suggestion.status == 'failed' %}
+    <section class="card empty-state">
+      <span class="section-kicker">REVIEW FAILED</span>
+      <h2>这次没有得到通过边界校验的因果建议</h2>
+      <p>{{ suggestion.error or '模型输出未通过 Schema、章节方向或冻结上下文校验。' }}</p>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/structure-health#causal-suggestions">调整范围后重试</a>
+    </section>
+  {% elif suggestion.result %}
+    <section class="causal-review-summary">
+      <span class="section-kicker">SEMANTIC REVIEW</span>
+      <h2>模型看到了什么</h2>
+      <p>{{ suggestion.result.analysis_summary }}</p>
+      <div>
+        <span><b>{{ suggestion.result.proposals|length }}</b> 条候选</span>
+        <span><b>{{ suggestion.result.comparison_group_count }}</b> 组可比较解释</span>
+        <span class="{{ 'has-conflict' if suggestion.result.semantic_conflict_count else '' }}">
+          <b>{{ suggestion.result.semantic_conflict_count }}</b> 项语义冲突
+        </span>
+        <span class="{{ 'has-uncertainty' if suggestion.result.semantic_uncertain_count else '' }}">
+          <b>{{ suggestion.result.semantic_uncertain_count }}</b> 项证据不足
+        </span>
+        <span><b>{{ suggestion.result.unresolved_gaps|length }}</b> 条未决观察</span>
+        <span><b>{{ suggestion.input_tokens + suggestion.output_tokens }}</b> tokens</span>
+      </div>
+    </section>
+
+    {% if suggestion.result.proposals %}
+      <div class="causal-proposal-list">
+        {% for proposal in suggestion.result.proposals %}
+          {% set proposal_index = proposal.proposal_index %}
+          {% if proposal.comparison_group and proposal.comparison_group.is_first %}
+            <section class="card causal-comparison-intro" id="comparison-{{ proposal.comparison_group.group_id }}">
+              <div>
+                <span class="section-kicker">COMPETING CAUSAL EXPLANATIONS</span>
+                <h2>同一结果的 {{ proposal.comparison_group.size }} 种可能前因</h2>
+                <p>{{ proposal.comparison_group.target_outcome }}</p>
+              </div>
+              <div class="causal-comparison-question">
+                <b>{{ proposal.comparison_group.compatibility_label }}</b>
+                <p>{{ proposal.comparison_group.comparison_summary }}</p>
+                <strong>{{ proposal.comparison_group.decision_question }}</strong>
+                <small>你可以采纳一条、多条或全部忽略；系统不会替你排除其他解释。</small>
+              </div>
+            </section>
+          {% endif %}
+          <article class="card causal-proposal-card {{ 'comparative' if proposal.comparison_group else 'standalone' }} {{ proposal.review.decision if proposal.review else 'pending' }}" id="proposal-{{ proposal_index }}">
+            <header>
+              <div>
+                <span class="story-plan-option-number">{{ "%02d"|format(loop.index) }}</span>
+                <div>
+                  <span class="section-kicker">
+                    {% if proposal.comparison_group %}
+                      EXPLANATION {{ proposal.comparison_group.position }} / {{ proposal.comparison_group.size }}
+                    {% else %}
+                      DIRECT CAUSAL CANDIDATE
+                    {% endif %}
+                  </span>
+                  <h2>
+                    {% if proposal.alternative_label %}
+                      {{ proposal.alternative_label }}
+                    {% else %}
+                      第 {{ "%03d"|format(proposal.source_chapter.position) }} 章
+                      →
+                      第 {{ "%03d"|format(proposal.target_chapter.position) }} 章
+                    {% endif %}
+                  </h2>
+                </div>
+              </div>
+              <div class="causal-proposal-badges">
+                <span>{{ proposal.relation_label }}</span>
+                <span>{{ proposal.confidence|upper }} CONFIDENCE</span>
+                {% if proposal.bridge_readiness == 'needs_intermediate_steps' %}
+                  <b>仍缺中间步骤</b>
+                {% else %}
+                  <span>可直接审阅</span>
+                {% endif %}
+                {% if proposal.cross_line %}<b>跨剧情线</b>{% endif %}
+                {% if proposal.source_chapter.is_canonical %}<b>正史起因</b>{% endif %}
+                {% if proposal.semantic_conflict_count %}
+                  <b class="semantic-conflict">{{ proposal.semantic_conflict_count }} 项冲突</b>
+                {% elif proposal.semantic_uncertain_count %}
+                  <b class="semantic-uncertain">{{ proposal.semantic_uncertain_count }} 项待确认</b>
+                {% endif %}
+                {% if proposal.review %}
+                  <b>{{ '已采纳' if proposal.review.decision == 'accepted' else '已忽略' }}</b>
+                {% endif %}
+              </div>
+            </header>
+
+            <div class="causal-proposal-route">
+              <div>
+                <small>起因章</small>
+                <strong>第 {{ proposal.source_chapter.position }} 章《{{ proposal.source_chapter.title }}》</strong>
+                {% if proposal.source_chapter.skeleton_arc_titles %}
+                  <span>{{ proposal.source_chapter.skeleton_arc_titles|join('、') }}</span>
+                {% elif proposal.source_chapter.is_canonical %}
+                  <span>作者确认正史</span>
+                {% endif %}
+              </div>
+              <i>导致</i>
+              <div>
+                <small>结果章</small>
+                <strong>第 {{ proposal.target_chapter.position }} 章《{{ proposal.target_chapter.title }}》</strong>
+                {% if proposal.target_chapter.skeleton_arc_titles %}
+                  <span>{{ proposal.target_chapter.skeleton_arc_titles|join('、') }}</span>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="causal-proposal-logic">
+              <div>
+                <small>建议起因</small>
+                <p>{{ proposal.cause_text }}</p>
+              </div>
+              <div>
+                <small>目标结果</small>
+                <p>{{ proposal.effect_text }}</p>
+              </div>
+              <div>
+                <small>桥接目的</small>
+                <p>{{ proposal.bridge_purpose }}</p>
+              </div>
+              <div>
+                <small>若不处理</small>
+                <p>{{ proposal.risk_if_omitted }}</p>
+              </div>
+            </div>
+
+            {% if proposal.challenge_points or proposal.disconfirmation_test %}
+              <div class="causal-challenge-grid">
+                <section>
+                  <strong>反证 / 证据缺口</strong>
+                  <ul>
+                    {% for item in proposal.challenge_points %}<li>{{ item }}</li>{% endfor %}
+                  </ul>
+                </section>
+                <section class="{{ 'warning' if proposal.missing_intermediate_steps else 'ready' }}">
+                  <strong>中间步骤检查</strong>
+                  {% if proposal.missing_intermediate_steps %}
+                    <ul>
+                      {% for item in proposal.missing_intermediate_steps %}<li>{{ item }}</li>{% endfor %}
+                    </ul>
+                  {% else %}
+                    <p>冻结资料中没有发现必须补写的传递环节；仍需作者核对语义是否成立。</p>
+                  {% endif %}
+                </section>
+                <section>
+                  <strong>什么证据会推翻它</strong>
+                  <p>{{ proposal.disconfirmation_test }}</p>
+                </section>
+              </div>
+            {% endif %}
+
+            {% if proposal.semantic_checks %}
+              <section class="causal-semantic-review">
+                <header>
+                  <div>
+                    <span class="section-kicker">EVIDENCE-REFERENCED SEMANTIC PREFLIGHT</span>
+                    <h3>五类语义预检</h3>
+                  </div>
+                  <p>
+                    每项判断只引用本次任务冻结时的证据。SUPPORTED 表示当前证据支持，
+                    UNCERTAIN 表示证据不足，CONFLICT 表示需要修改规划或由作者明确覆盖；
+                    它们都不是系统自动认定的事实。
+                  </p>
+                </header>
+                <div class="causal-semantic-grid">
+                  {% for check in proposal.semantic_checks %}
+                    <article class="semantic-check {{ check.status }}">
+                      <div>
+                        <strong>{{ check.category_label }}</strong>
+                        <span>{{ check.status_label }}</span>
+                      </div>
+                      <p>{{ check.finding }}</p>
+                      {% if check.required_resolution %}
+                        <b>需要处理：{{ check.required_resolution }}</b>
+                      {% endif %}
+                      <details>
+                        <summary>查看 {{ check.evidence|length }} 条冻结证据</summary>
+                        <ul>
+                          {% for evidence in check.evidence %}
+                            <li>
+                              <small>{{ evidence.label }} · {{ evidence.id }}</small>
+                              <p>{{ evidence.value }}</p>
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      </details>
+                    </article>
+                  {% endfor %}
+                </div>
+              </section>
+            {% endif %}
+
+            {% if proposal.arc_impacts %}
+              <section class="causal-arc-review">
+                <header>
+                  <div>
+                    <span class="section-kicker">JOINT PLOT-LINE IMPACT</span>
+                    <h3>跨剧情线联合影响</h3>
+                  </div>
+                  <p>这里逐条对应作者已确认的规划剧情线，用来检查桥接是否只服务一条线、却破坏另一条线。</p>
+                </header>
+                <div class="causal-arc-impact-list">
+                  {% for impact in proposal.arc_impacts %}
+                    <article>
+                      <div class="causal-arc-impact-heading">
+                        <strong>《{{ impact.arc_title }}》</strong>
+                        <span>{{ impact.impact_label }}</span>
+                      </div>
+                      <div class="causal-arc-state-change">
+                        <p><small>变化前</small>{{ impact.before_state }}</p>
+                        <i>→</i>
+                        <p><small>变化后</small>{{ impact.after_state }}</p>
+                      </div>
+                      <p class="causal-arc-risk"><b>风险</b>{{ impact.risk }}</p>
+                      {% if impact.support_chapters %}
+                        <p class="causal-arc-support">
+                          <b>需要承接：</b>
+                          {% for chapter in impact.support_chapters %}
+                            第 {{ chapter.position }} 章《{{ chapter.title }}》{% if not loop.last %}、{% endif %}
+                          {% endfor %}
+                        </p>
+                      {% endif %}
+                      <details>
+                        <summary>查看 {{ impact.evidence|length }} 条影响依据</summary>
+                        <ul>
+                          {% for evidence in impact.evidence %}
+                            <li>
+                              <small>{{ evidence.label }} · {{ evidence.id }}</small>
+                              <p>{{ evidence.value }}</p>
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      </details>
+                    </article>
+                  {% endfor %}
+                </div>
+              </section>
+            {% endif %}
+
+            <details class="causal-evidence">
+              <summary>查看模型引用的可核对证据</summary>
+              <div>
+                <section>
+                  <strong>起因证据</strong>
+                  <ul>{% for item in proposal.source_evidence %}<li>{{ item }}</li>{% endfor %}</ul>
+                </section>
+                <section>
+                  <strong>结果证据</strong>
+                  <ul>{% for item in proposal.target_evidence %}<li>{{ item }}</li>{% endfor %}</ul>
+                </section>
+              </div>
+            </details>
+
+            <section class="causal-branch-launcher">
+              <header>
+                <div>
+                  <span class="section-kicker">LONG-HORIZON SANDBOX</span>
+                  <h3>沿这条候选推演未来三种分支</h3>
+                </div>
+                <span>只读 · 不改纲</span>
+              </header>
+              <p>
+                分别比较“只补必要桥接”“让后果跨章扩散”和“把候选推到断裂点”。
+                推演会逐章核对人物知情、剧情线与蓝图回报，但不会采纳候选、
+                创建链接或修改任何章节。
+              </p>
+
+              {% if proposal.branch_simulations %}
+                <div class="causal-branch-history">
+                  {% for simulation in proposal.branch_simulations %}
+                    <a href="/causal-branch-simulations/{{ simulation.id }}">
+                      <span class="status {{ simulation.status }}">{{ simulation.status|story_plan_status_label }}</span>
+                      <strong>未来 {{ simulation.horizon_chapter_count }} 章</strong>
+                      <small>{{ simulation.created_at }}</small>
+                    </a>
+                  {% endfor %}
+                </div>
+              {% endif %}
+
+              {% if not proposal.review and not suggestion.application_blocker %}
+                {% if simulation_max_horizon >= 10 %}
+                  <form
+                    method="post"
+                    action="/causal-link-suggestions/{{ suggestion.id }}/proposals/{{ proposal_index }}/branch-simulations"
+                    class="causal-branch-form"
+                  >
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <label>
+                      <span>推演范围</span>
+                      <div class="number-with-unit">
+                        <input
+                          type="number"
+                          name="horizon_chapter_count"
+                          min="10"
+                          max="{{ simulation_max_horizon }}"
+                          value="{{ simulation_default_horizon }}"
+                          required
+                        >
+                        <span>章</span>
+                      </div>
+                    </label>
+                    <label class="wide">
+                      <span>本次特别想检验什么（可选）</span>
+                      <textarea
+                        name="instruction"
+                        rows="2"
+                        maxlength="4000"
+                        placeholder="例如：重点检查林岚何时得知投递链变化，以及关系线是否被主线工具化。"
+                      ></textarea>
+                    </label>
+                    <button class="button secondary" type="submit">生成三种长期分支</button>
+                  </form>
+                {% else %}
+                  <div class="causal-branch-unavailable">
+                    当前冻结范围不足 10 章。请先生成并确认更长的未来章节骨架，
+                    再重新运行因果审查。
+                  </div>
+                {% endif %}
+              {% elif proposal.review %}
+                <small class="muted">
+                  这条候选已经作出作者决定；已有推演仍可查看，但不能再从它发起新沙盘。
+                </small>
+              {% endif %}
+            </section>
+
+            {% if proposal.review %}
+              <div class="causal-review-decision {{ proposal.review.decision }}">
+                <strong>{{ '你已采纳这条候选' if proposal.review.decision == 'accepted' else '你已忽略这条候选' }}</strong>
+                {% if proposal.review.decision == 'accepted' %}
+                  <p>
+                    实际保存：{{ proposal.review.cause_text }} →
+                    {{ proposal.review.effect_text }}
+                    {% if proposal.review.causal_link_status == 'archived' %}；该链接后来已归档{% endif %}
+                  </p>
+                  {% if proposal.review.author_note %}
+                    <p>作者判断：{{ proposal.review.author_note }}</p>
+                  {% endif %}
+                {% else %}
+                  <p>这项决定不改变任何规划或正文。</p>
+                {% endif %}
+              </div>
+            {% else %}
+              {% if not suggestion.application_blocker %}
+                <form method="post" action="/causal-link-suggestions/{{ suggestion.id }}/proposals/{{ proposal_index }}/accept" class="causal-proposal-accept">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <div class="form-grid">
+                    <label>
+                      <span>确认后的起因约束</span>
+                      <textarea name="cause_text" rows="4" maxlength="1200" required>{{ proposal.cause_text }}</textarea>
+                    </label>
+                    <label>
+                      <span>确认后的结果约束</span>
+                      <textarea name="effect_text" rows="4" maxlength="1200" required>{{ proposal.effect_text }}</textarea>
+                    </label>
+                  </div>
+                  <label>
+                    <span>
+                      {% if proposal.missing_intermediate_steps %}
+                        中间步骤处理与作者判断（必填）
+                      {% else %}
+                        作者判断（可选）
+                      {% endif %}
+                    </span>
+                    <textarea
+                      name="author_note"
+                      rows="3"
+                      maxlength="3000"
+                      {% if proposal.missing_intermediate_steps %}minlength="8" required{% endif %}
+                      placeholder="{% if proposal.missing_intermediate_steps %}说明准备在哪一章补出传递步骤，或为什么仍可直接建立链接。{% else %}记录你为什么选择这项解释、写作时要特别注意什么。{% endif %}"
+                    ></textarea>
+                  </label>
+                  {% if proposal.comparison_group %}
+                    <label class="checkbox-line">
+                      <input type="checkbox" name="confirm_comparison" value="yes" required>
+                      <span>
+                        我已比较同组其他 {{ proposal.comparison_group.size - 1 }} 种可能前因、
+                        它们的反证与证据缺口；我没有把模型排序当作事实。
+                      </span>
+                    </label>
+                  {% endif %}
+                  {% if proposal.semantic_checks %}
+                    {% if proposal.semantic_conflict_count %}
+                      <label class="causal-semantic-override">
+                        <span>语义冲突覆盖理由（必填）</span>
+                        <textarea
+                          name="semantic_override_reason"
+                          rows="3"
+                          minlength="8"
+                          maxlength="3000"
+                          required
+                          placeholder="说明为什么仍然采纳，以及你会如何修改设定、人物知情或承接章节来消解冲突。"
+                        ></textarea>
+                        <small>该理由会随作者判断一起保存到因果链接，并进入相关章节的规划上下文。</small>
+                      </label>
+                    {% endif %}
+                    <label class="checkbox-line causal-semantic-confirm">
+                      <input type="checkbox" name="confirm_semantic_review" value="yes" required>
+                      <span>
+                        我已逐项核对五类语义检查、引用证据和各剧情线影响；
+                        我知道 SUPPORTED / UNCERTAIN / CONFLICT 是模型预检，不是自动事实判决。
+                      </span>
+                    </label>
+                  {% endif %}
+                  <label class="checkbox-line">
+                    <input type="checkbox" name="confirm_changes" value="yes" required>
+                    <span>
+                      我已核对章节、证据、反证、起因和结果；我知道确认后它会
+                      成为未来写作约束，并使相关未来任务卡退回草稿。
+                    </span>
+                  </label>
+                  <button class="button primary" type="submit">确认并建立因果链接</button>
+                </form>
+              {% endif %}
+              <form method="post" action="/causal-link-suggestions/{{ suggestion.id }}/proposals/{{ proposal_index }}/dismiss" class="causal-proposal-dismiss">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button class="button small" type="submit">忽略这条候选</button>
+              </form>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <section class="card causal-no-proposals">
+        <span class="section-kicker">NO FORCED LINKS</span>
+        <h2>这次没有足够可靠的直接因果候选</h2>
+        <p>{{ suggestion.result.no_proposal_reason }}</p>
+      </section>
+    {% endif %}
+
+    {% if suggestion.result.unresolved_gaps %}
+      <section class="card causal-unresolved-gaps">
+        <span class="section-kicker">UNRESOLVED OBSERVATIONS</span>
+        <h2>需要作者判断，但不应自动连线</h2>
+        <ul>{% for item in suggestion.result.unresolved_gaps %}<li>{{ item }}</li>{% endfor %}</ul>
+      </section>
+    {% endif %}
+  {% elif suggestion.result_error %}
+    <section class="card empty-state">
+      <h2>已保存结果无法安全读取</h2>
+      <p>{{ suggestion.result_error }}</p>
+    </section>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {% if suggestion.status in ['queued', 'running'] %}
+    <script>
+      (() => {
+        const root = document.querySelector("[data-causal-suggestion-id]");
+        if (!root) return;
+        const suggestionId = root.dataset.causalSuggestionId;
+        const poll = async () => {
+          try {
+            const response = await fetch(`/api/causal-link-suggestions/${suggestionId}`, {
+              headers: { "Accept": "application/json" },
+              credentials: "same-origin",
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.terminal) {
+              window.location.reload();
+              return;
+            }
+          } catch (_) {
+            // A later poll can recover from a transient local connection error.
+          }
+          window.setTimeout(poll, 1200);
+        };
+        window.setTimeout(poll, 900);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

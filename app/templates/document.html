@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/dashboard">← 返回创作工作台</a>
+      <h1>{{ document.title }}</h1>
+      <p>{{ document.original_filename }} · {{ document.char_count|human_size }} · {{ document.chapter_count }} 个分析单元</p>
+    </div>
+    <div class="heading-actions">
+      <a class="button" href="/documents/{{ document.id }}/assistant">和 AI 拆书讨论</a>
+      {% if document.latest_job_id %}
+        <a class="button" href="/jobs/{{ document.latest_job_id }}">查看最近任务</a>
+      {% endif %}
+      {% if document.latest_job_status not in ['queued', 'running'] %}
+        <form method="post" action="/documents/{{ document.id }}/analyze">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <button class="button primary" type="submit">
+            {% if document.latest_job_id %}重新分析{% else %}开始 DeepSeek 拆文{% endif %}
+          </button>
+        </form>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <section class="card table-card">
+    <div class="section-heading">
+      <h2>章节目录</h2>
+      <span>{{ chapters|length }} 项</span>
+    </div>
+    <div class="chapter-list">
+      {% for chapter in chapters %}
+        <div class="chapter-row">
+          <span class="chapter-number">{{ "%03d"|format(chapter.position) }}</span>
+          <div class="chapter-main">
+            <strong>{{ chapter.title }}</strong>
+            <span>{{ chapter.char_count|human_size }} · {{ chapter.kind }}</span>
+          </div>
+          <div class="chapter-row-actions">
+            <a class="text-link" href="/documents/{{ document.id }}/assistant?new=true&amp;reference_chapter_id={{ chapter.id }}">引用本章提问</a>
+            {% if chapter.analysis_id and chapter.analysis_status == 'completed' %}
+              <a class="text-link" href="/analyses/{{ chapter.analysis_id }}">查看结果 →</a>
+            {% elif chapter.analysis_status %}
+              <span class="status {{ chapter.analysis_status }}">{{ chapter.analysis_status|status_label }}</span>
+            {% else %}
+              <span class="muted">未分析</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

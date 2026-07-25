@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}上传小说 · {{ app_name }}{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <a class="back-link" href="/dashboard">← 返回创作工作台</a>
+    <h1>上传小说</h1>
+    <p>原文先保存在服务器本地；只有开始分析后，单个章节才会发送给 DeepSeek。</p>
+  </section>
+
+  <section class="two-column">
+    <form method="post" action="/upload" enctype="multipart/form-data" class="card form-card">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+      <label>
+        <span>作品名</span>
+        <input name="title" value="{{ title or '' }}" maxlength="120" placeholder="不填则使用文件名">
+      </label>
+      <label class="upload-zone">
+        <input type="file" name="source_file" accept=".txt,.text,.md,text/plain,text/markdown" required>
+        <span class="upload-icon">↑</span>
+        <strong>选择 TXT 或 Markdown 文件</strong>
+        <small>最大 {{ max_upload_mb }} MB，支持 UTF-8 / GB18030 / UTF-16</small>
+      </label>
+      <button class="button primary full" type="submit">上传并识别章节</button>
+    </form>
+
+    <aside class="process-list">
+      <h2>导入过程</h2>
+      <ol>
+        <li><span>1</span><div><strong>识别编码</strong><p>自动处理常见中文文本编码与换行。</p></div></li>
+        <li><span>2</span><div><strong>定位章节</strong><p>识别“第 X 章 / 回 / 卷”、序章、番外等标题。</p></div></li>
+        <li><span>3</span><div><strong>安全分块</strong><p>超长章节优先在段落和句末处分开，不丢字。</p></div></li>
+      </ol>
+    </aside>
+  </section>
+{% endblock %}

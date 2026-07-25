@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xushu-studio"
+version = "0.1.0"
+description = "叙枢：面向长篇中文小说的 AI 辅助创作工作台。"
+requires-python = ">=3.9"
+dependencies = [
+  "cryptography>=42,<47",
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "itsdangerous>=2.2,<3",
+  "jinja2>=3.1,<4",
+  "python-dotenv>=1.0,<2",
+  "python-multipart>=0.0.9,<1",
+  "pydantic>=2.7,<3",
+  "uvicorn>=0.30,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]

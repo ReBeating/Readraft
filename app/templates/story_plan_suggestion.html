@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}全书方案 · {{ suggestion.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}#story-planner">← 返回《{{ suggestion.project_title }}》</a>
+      <span class="eyebrow">STORY PLANNER · {{ suggestion.planning_mode|story_planning_mode_label }}</span>
+      <h1>三套全书结构提案</h1>
+      <p>
+        比较核心选择、读者体验、代价、剧情线和分卷草图，再把需要的部分
+        采纳为未确认草稿。
+      </p>
+    </div>
+    <div class="heading-actions">
+      <span class="status {{ suggestion.status }}">{{ suggestion.status|story_plan_status_label }}</span>
+    </div>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if suggestion.baseline_changed %}
+    <div class="alert warning">
+      这套提案生成后，项目的确认计划、未来细纲、正史或规划技法发生过变化。
+      你仍可采纳为草稿，但确认前需要重新核对因果和约束。
+    </div>
+  {% endif %}
+
+  <section class="card story-plan-boundary">
+    <div>
+      <span class="section-kicker">AUTHOR CONTROL</span>
+      <h2>提案不会自动进入正文</h2>
+    </div>
+    <p>
+      “采纳”只会新增蓝图/剧情线草稿，并保留当前确认版。分卷草图目前只作
+      结构比较，不会自动创建分卷；只有你之后手动确认的蓝图和剧情线才会被
+      Planner 读取，Writer 仍只看到章节任务卡精确选中的剧情线。
+    </p>
+  </section>
+
+  {% if suggestion.status in ['queued', 'running'] %}
+    <section class="card generation-state" data-story-plan-suggestion-id="{{ suggestion.id }}">
+      <span class="status {{ suggestion.status }}">{{ suggestion.status|story_plan_status_label }}</span>
+      <h2>
+        {% if suggestion.status == 'queued' %}
+          正在等待规划
+        {% else %}
+          正在构建三套完整结构
+        {% endif %}
+      </h2>
+      <p>
+        系统正在分别检查全书蓝图、剧情线、分卷承载和已发布正史边界。
+        页面会在任务完成后自动刷新。
+      </p>
+      {% if suggestion.instruction %}
+        <div class="story-plan-focus-note">
+          <small>作者本次重点</small>
+          <p>{{ suggestion.instruction }}</p>
+        </div>
+      {% endif %}
+    </section>
+  {% elif suggestion.status == 'failed' %}
+    <section class="card empty-state">
+      <span class="section-kicker">GENERATION FAILED</span>
+      <h2>这次没有得到可安全比较的完整方案</h2>
+      <p>{{ suggestion.error or '模型输出未通过完整性校验，请返回工作台重试。' }}</p>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}#story-planner">调整重点后重试</a>
+    </section>
+  {% elif suggestion.result %}
+    <section class="story-plan-comparison-intro">
+      <span class="section-kicker">COMPARISON</span>
+      <h2>三套方案的关键差异</h2>
+      <p>{{ suggestion.result.comparison_summary }}</p>
+    </section>
+
+    <div class="story-plan-option-grid">
+      {% for option in suggestion.result.options %}
+        {% set option_index = loop.index0 %}
+        <article class="card story-plan-option">
+          <header>
+            <span class="story-plan-option-number">{{ "%02d"|format(loop.index) }}</span>
+            <div>
+              <span class="section-kicker">STRUCTURE OPTION</span>
+              <h2>{{ option.label }}</h2>
+            </div>
+          </header>
+
+          <div class="story-plan-decision">
+            <small>这套方案真正选择了什么</small>
+            <p>{{ option.distinctive_choice }}</p>
+          </div>
+          <div class="story-plan-reader-experience">
+            <small>预期读者体验</small>
+            <p>{{ option.reader_experience }}</p>
+          </div>
+
+          <div class="story-plan-pros-cons">
+            <div>
+              <strong>优势</strong>
+              <ul>{% for item in option.strengths %}<li>{{ item }}</li>{% endfor %}</ul>
+            </div>
+            <div>
+              <strong>代价与风险</strong>
+              <ul>{% for item in option.tradeoffs %}<li>{{ item }}</li>{% endfor %}</ul>
+            </div>
+          </div>
+
+          <details class="story-plan-detail" open>
+            <summary>全书蓝图</summary>
+            <dl>
+              <div><dt>核心悬问</dt><dd>{{ option.blueprint.central_question }}</dd></div>
+              <div><dt>主角目标</dt><dd>{{ option.blueprint.protagonist_goal }}</dd></div>
+              <div><dt>冲突引擎</dt><dd>{{ option.blueprint.core_conflict }}</dd></div>
+              <div><dt>长期代价</dt><dd>{{ option.blueprint.stakes }}</dd></div>
+              <div><dt>开篇 → 终局</dt><dd>{{ option.blueprint.opening_state }} → {{ option.blueprint.ending_state }}</dd></div>
+            </dl>
+            <strong>全书关键转折</strong>
+            <ol>
+              {% for turn in option.blueprint.major_turns %}<li>{{ turn }}</li>{% endfor %}
+            </ol>
+            <strong>必须兑现</strong>
+            <ul>
+              {% for payoff in option.blueprint.must_payoffs %}<li>{{ payoff }}</li>{% endfor %}
+            </ul>
+            <strong>禁止捷径</strong>
+            <ul>
+              {% for shortcut in option.blueprint.forbidden_shortcuts %}<li>{{ shortcut }}</li>{% endfor %}
+            </ul>
+          </details>
+
+          <details class="story-plan-detail">
+            <summary>{{ option.plot_arcs|length }} 条剧情线</summary>
+            <div class="story-plan-arc-list">
+              {% for arc in option.plot_arcs %}
+                <div>
+                  <span>{{ arc.arc_type|story_arc_type_label }} · 优先级 {{ arc.priority }}</span>
+                  <h3>{{ arc.title }}</h3>
+                  <p><b>悬问</b>{{ arc.dramatic_question }}</p>
+                  <p><b>承诺</b>{{ arc.promise }}</p>
+                  <p><b>目标回报</b>{{ arc.target_payoff }}</p>
+                  {% if arc.planned_turns %}
+                    <ol>{% for turn in arc.planned_turns %}<li>{{ turn }}</li>{% endfor %}</ol>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          </details>
+
+          <details class="story-plan-detail">
+            <summary>{{ option.volume_sketches|length }} 个分卷草图（只读）</summary>
+            <div class="story-plan-volume-list">
+              {% for volume in option.volume_sketches %}
+                <div>
+                  <span>VOLUME {{ "%02d"|format(volume.position) }}</span>
+                  <h3>{{ volume.title }}</h3>
+                  <p>{{ volume.purpose }}</p>
+                  <p><b>变化</b>{{ volume.start_state }} → {{ volume.end_state }}</p>
+                  <p><b>冲突</b>{{ volume.major_conflict }}</p>
+                  <p><b>回报</b>{{ volume.payoff }}</p>
+                  <small>承载：{{ volume.arc_titles|join('、') }}</small>
+                </div>
+              {% endfor %}
+            </div>
+          </details>
+
+          <form method="post" action="/story-plan-suggestions/{{ suggestion.id }}/apply" class="story-plan-apply">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="option_index" value="{{ option_index }}">
+            <div class="story-plan-apply-heading">
+              <div>
+                <strong>选择要带回工作台的草稿</strong>
+                <small>可以多次采纳，组合不同方案的部分。</small>
+              </div>
+            </div>
+            <label class="checkbox-line story-plan-blueprint-choice">
+              <input type="checkbox" name="apply_blueprint" value="yes" checked>
+              <span><b>全书蓝图</b> · 新增一个草稿修订，保留现有确认版</span>
+            </label>
+            <fieldset>
+              <legend>剧情线</legend>
+              {% for arc in option.plot_arcs %}
+                <label class="checkbox-line">
+                  <input type="checkbox" name="arc_indices" value="{{ loop.index0 }}" checked>
+                  <span>
+                    <b>{{ arc.title }}</b>
+                    · {{ arc.arc_type|story_arc_type_label }}
+                  </span>
+                </label>
+              {% endfor %}
+            </fieldset>
+            <button class="button primary" type="submit">采纳所选内容为新草稿</button>
+            <p class="story-plan-apply-warning">
+              不会确认、不创建正史、不自动创建分卷，也不会让 Writer 立即读取。
+            </p>
+          </form>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <section class="card empty-state">
+      <h2>已保存的方案无法读取</h2>
+      <p>{{ suggestion.result_error or '请返回工作台重新生成。' }}</p>
+    </section>
+  {% endif %}
+
+  {% if suggestion.applications %}
+    <section class="card story-plan-application-history">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">DRAFT APPLICATIONS</span>
+          <h2>已采纳记录</h2>
+        </div>
+        <span>{{ suggestion.applications|length }} 次</span>
+      </div>
+      <ol>
+        {% for application in suggestion.applications %}
+          <li>
+            <div>
+              <b>方案 {{ application.option_index + 1 }}</b>
+              <small>{{ application.created_at }}</small>
+            </div>
+            <p>
+              {% if application.apply_blueprint %}蓝图草稿{% endif %}
+              {% if application.apply_blueprint and application.applied_arcs %}＋{% endif %}
+              {% if application.applied_arcs %}
+                {{ application.applied_arcs|map(attribute='title')|join('、') }}
+              {% endif %}
+              {% if application.baseline_changed %} · 采纳时基线已变化{% endif %}
+            </p>
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {% if suggestion.status in ['queued', 'running'] %}
+    <script>
+      (() => {
+        const root = document.querySelector("[data-story-plan-suggestion-id]");
+        if (!root) return;
+        const suggestionId = root.dataset.storyPlanSuggestionId;
+        const poll = async () => {
+          try {
+            const response = await fetch(`/api/story-plan-suggestions/${suggestionId}`, {
+              headers: { "Accept": "application/json" },
+              credentials: "same-origin",
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.terminal) {
+              window.location.reload();
+              return;
+            }
+          } catch (_) {
+            // A transient polling failure should not replace the durable task.
+          }
+          window.setTimeout(poll, 1500);
+        };
+        window.setTimeout(poll, 1000);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

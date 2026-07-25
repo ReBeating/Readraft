@@ -1,0 +1,368 @@
+{% extends "base.html" %}
+{% block title %}长期因果分支 · {{ simulation.project_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a
+        class="back-link"
+        href="/causal-link-suggestions/{{ simulation.source_suggestion_id }}#proposal-{{ simulation.proposal_index }}"
+      >← 返回原因果候选</a>
+      <span class="eyebrow">LONG-HORIZON CAUSAL SANDBOX · READ ONLY</span>
+      <h1>长期因果分支推演</h1>
+      <p>
+        同一条待审因果候选，沿未来 {{ simulation.horizon_chapter_count }} 章
+        展开三种不同承接方式。沙盘本身不会改纲；作者采纳原始因果链接后，
+        可以把其中一条分支转成独立的逐章待审清单。
+      </p>
+    </div>
+    <div class="heading-actions">
+      <span class="status {{ simulation.status }}">{{ simulation.status|story_plan_status_label }}</span>
+    </div>
+  </section>
+
+  {% if simulation.unexpected_baseline_changed %}
+    <div class="alert warning">
+      这次推演冻结后，项目资料、正史、未来骨架、确认计划或因果链接发生了变化。
+      旧结果仍可作为历史沙盘阅读，但不能代表当前规划。
+    </div>
+  {% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if simulation.source_review %}
+    <div class="alert warning">
+      原候选后来已被你{{ '采纳' if simulation.source_review.decision == 'accepted' else '忽略' }}。
+      本页不会随作者决定自动改写，保留的是决定前冻结的三种分支。
+      {% if simulation.source_review.decision == 'accepted'
+            and simulation.source_review.causal_link_status != 'active' %}
+        对应链接已经归档，因此不能再建立新的落地清单。
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <section class="card causal-branch-source">
+    <div>
+      <span class="section-kicker">SELECTED CAUSAL CANDIDATE</span>
+      <h2>
+        第 {{ simulation.source_chapter.position }} 章《{{ simulation.source_chapter.title }}》
+        →
+        第 {{ simulation.target_chapter.position }} 章《{{ simulation.target_chapter.title }}》
+      </h2>
+    </div>
+    <div class="causal-branch-source-logic">
+      <p><small>候选起因</small>{{ simulation.selected_proposal.cause_text }}</p>
+      <i>→</i>
+      <p><small>候选结果</small>{{ simulation.selected_proposal.effect_text }}</p>
+    </div>
+    <p class="muted">
+      推演以这项解释为假设，不等于系统确认它为真；三种分支都必须保留可证伪条件和证据缺口。
+    </p>
+  </section>
+
+  <section class="card causal-review-boundary">
+    <div>
+      <span class="section-kicker">NO AUTOMATIC MUTATION</span>
+      <h2>这是作者决策前的沙盘</h2>
+    </div>
+    <p>
+      系统不会从本页修改章节标题、骨架、任务卡、剧情线、正文或因果链接。
+      若某种分支值得采用，系统只会先建立独立清单；每章仍须由你编辑并决定
+      “采用”或“不采用”，全部审完后才允许写入未来骨架与任务卡草稿。
+    </p>
+  </section>
+
+  {% if simulation.status in ['queued', 'running'] %}
+    <section
+      class="card generation-state"
+      data-causal-branch-simulation-id="{{ simulation.id }}"
+    >
+      <span class="status {{ simulation.status }}">{{ simulation.status|story_plan_status_label }}</span>
+      <h2>
+        {% if simulation.status == 'queued' %}
+          正在等待长期因果推演
+        {% else %}
+          正在展开未来 {{ simulation.horizon_chapter_count }} 章的三种分支
+        {% endif %}
+      </h2>
+      <p>
+        系统正在逐章核对冻结证据、人物知情、时间顺序、世界规则、
+        已确认剧情线和蓝图必须兑现项。页面会在任务结束后自动刷新。
+      </p>
+      {% if simulation.instruction %}
+        <div class="story-plan-focus-note">
+          <small>作者本次重点</small>
+          <p>{{ simulation.instruction }}</p>
+        </div>
+      {% endif %}
+    </section>
+  {% elif simulation.status == 'failed' %}
+    <section class="card empty-state">
+      <span class="section-kicker">SIMULATION FAILED</span>
+      <h2>这次没有得到通过冻结边界校验的三分支结果</h2>
+      <p>{{ simulation.error or '模型输出未通过 Schema、证据引用或章节范围校验。' }}</p>
+      <a
+        class="button primary"
+        href="/causal-link-suggestions/{{ simulation.source_suggestion_id }}#proposal-{{ simulation.proposal_index }}"
+      >返回候选调整后重试</a>
+    </section>
+  {% elif simulation.result %}
+    <section class="causal-branch-summary">
+      <span class="section-kicker">THREE-WAY COMPARISON</span>
+      <h2>三种分支如何不同</h2>
+      <p>{{ simulation.result.analysis_summary }}</p>
+      <blockquote>{{ simulation.result.comparison_summary }}</blockquote>
+      <div class="causal-branch-shared">
+        <strong>三种分支共同不能突破</strong>
+        <ul>
+          {% for item in simulation.result.shared_constraints %}<li>{{ item }}</li>{% endfor %}
+        </ul>
+      </div>
+    </section>
+
+    <div class="causal-branch-grid">
+      {% for branch in simulation.result.branches %}
+        <article
+          class="card causal-branch-card {{ branch.branch_key }}"
+          id="{{ branch.branch_key }}"
+        >
+          <header>
+            <span class="story-plan-option-number">{{ "%02d"|format(loop.index) }}</span>
+            <div>
+              <span class="section-kicker">{{ branch.branch_key|upper }}</span>
+              <h2>{{ branch.label }}</h2>
+            </div>
+            <b>{{ branch.intervention_label }}</b>
+          </header>
+
+          <p class="causal-branch-premise">{{ branch.premise }}</p>
+          <div class="causal-branch-reader">
+            <small>读者体验</small>
+            <p>{{ branch.reader_experience }}</p>
+          </div>
+          <div class="causal-branch-tradeoffs">
+            <strong>取舍</strong>
+            <ul>{% for item in branch.tradeoffs %}<li>{{ item }}</li>{% endfor %}</ul>
+          </div>
+
+          <section class="causal-branch-adoption-launcher">
+            <span class="section-kicker">AUTHOR-CONTROLLED ADOPTION</span>
+            {% if branch.adoption %}
+              <h3>这条分支已经建立落地清单</h3>
+              <p>
+                {{ branch.adoption.item_count }} 个逐章条目 ·
+                {{ branch.adoption.status_label }}
+                {% if branch.adoption.pending_count %}
+                  · 尚有 {{ branch.adoption.pending_count }} 项待决定
+                {% endif %}
+              </p>
+              <a
+                class="button primary"
+                href="/causal-branch-adoptions/{{ branch.adoption.id }}"
+              >继续逐项审核</a>
+            {% elif simulation.adoption_ready %}
+              <h3>把这条分支转成待审改纲清单</h3>
+              <p>
+                只提取本分支已经列出的逐章影响；不会立即写入章节，
+                也不会替你确认任务卡或生成正文。
+              </p>
+              <form
+                method="post"
+                action="/causal-branch-simulations/{{ simulation.id }}/branches/{{ branch.branch_key }}/adoptions"
+              >
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <label class="checkbox-card">
+                  <input type="checkbox" name="meaning_confirmed" value="true" required>
+                  <span>
+                    <b>我已核对作者采纳后的因果链接</b>
+                    <small>它的实际含义仍与本次推演所使用的候选一致。</small>
+                  </span>
+                </label>
+                <button class="button primary" type="submit">建立逐章待审清单</button>
+              </form>
+            {% elif simulation.source_review
+                  and simulation.source_review.decision == 'accepted'
+                  and simulation.source_review.causal_link_status == 'active'
+                  and not simulation.adoption_ready %}
+              <h3>当前规划已超出这次冻结沙盘</h3>
+              <p>
+                原因果链接仍有效，但章节或全书规划后来发生了变化。
+                请重新生成因果建议与三分支，避免用旧结果覆盖新工作。
+              </p>
+            {% elif not simulation.source_review %}
+              <h3>先确认原始因果关系</h3>
+              <p>
+                分支建立在一条尚未采纳的解释上。请先完成对立解释、
+                语义冲突和中间步骤核对，避免把假说直接写进任务卡。
+              </p>
+              <a
+                class="button secondary"
+                href="/causal-link-suggestions/{{ simulation.source_suggestion_id }}#proposal-{{ simulation.proposal_index }}"
+              >返回核对原因果候选</a>
+            {% else %}
+              <h3>这条候选没有进入规划</h3>
+              <p>原始因果候选已被忽略或链接已归档，本分支只保留为历史沙盘。</p>
+            {% endif %}
+          </section>
+
+          <section class="causal-branch-timeline">
+            <div class="section-heading">
+              <div>
+                <span class="section-kicker">CHAPTER CONSEQUENCES</span>
+                <h3>逐章影响</h3>
+              </div>
+              <span>{{ branch.chapter_impacts|length }} 章</span>
+            </div>
+            <ol>
+              {% for impact in branch.chapter_impacts %}
+                <li class="{{ impact.evidence_status }}">
+                  <div class="causal-branch-chapter-marker">
+                    <b>{{ "%03d"|format(impact.chapter_position) }}</b>
+                    <span>{{ impact.impact_label }}</span>
+                  </div>
+                  <div>
+                    <h4>《{{ impact.chapter_title }}》</h4>
+                    <p>{{ impact.planned_change }}</p>
+                    <small>{{ impact.causal_role }}</small>
+                    <div class="causal-branch-evidence-state">
+                      <b>{{ impact.evidence_status_label }}</b>
+                      {% if impact.unresolved_assumption %}
+                        <span>{{ impact.unresolved_assumption }}</span>
+                      {% endif %}
+                    </div>
+                    <details>
+                      <summary>查看 {{ impact.evidence|length }} 条冻结证据</summary>
+                      <ul>
+                        {% for evidence in impact.evidence %}
+                          <li>
+                            <small>{{ evidence.label }} · {{ evidence.id }}</small>
+                            <p>{{ evidence.value }}</p>
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    </details>
+                  </div>
+                </li>
+              {% endfor %}
+            </ol>
+          </section>
+
+          {% if branch.arc_trajectories %}
+            <section class="causal-branch-arcs">
+              <span class="section-kicker">PLOT-LINE TRAJECTORIES</span>
+              <h3>剧情线会怎样偏转</h3>
+              {% for trajectory in branch.arc_trajectories %}
+                <article>
+                  <header>
+                    <strong>《{{ trajectory.arc_title }}》</strong>
+                    <span>{{ trajectory.trajectory_label }}</span>
+                  </header>
+                  <div>
+                    <p><small>变化前</small>{{ trajectory.before_state }}</p>
+                    <i>→</i>
+                    <p><small>变化后</small>{{ trajectory.after_state }}</p>
+                  </div>
+                  <p><b>不确定性：</b>{{ trajectory.uncertainty }}</p>
+                  <small>
+                    承接章节：
+                    {% for chapter in trajectory.affected_chapters %}
+                      第 {{ chapter.position }} 章{% if not loop.last %}、{% endif %}
+                    {% endfor %}
+                  </small>
+                </article>
+              {% endfor %}
+            </section>
+          {% endif %}
+
+          <section class="causal-branch-knowledge">
+            <span class="section-kicker">CHARACTER KNOWLEDGE</span>
+            <h3>人物怎么知道</h3>
+            <p>{{ branch.knowledge_strategy }}</p>
+            {% if branch.knowledge_transfers %}
+              <ol>
+                {% for transfer in branch.knowledge_transfers %}
+                  <li>
+                    <div>
+                      <strong>{{ transfer.character_name }}</strong>
+                      <span>第 {{ transfer.chapter.position }} 章 · {{ transfer.evidence_status_label }}</span>
+                    </div>
+                    <p>{{ transfer.before_state }} → {{ transfer.after_state }}</p>
+                    <small>渠道：{{ transfer.channel }}</small>
+                    <b>风险：{{ transfer.risk }}</b>
+                  </li>
+                {% endfor %}
+              </ol>
+            {% endif %}
+          </section>
+
+          {% if branch.payoff_impacts %}
+            <section class="causal-branch-payoffs">
+              <span class="section-kicker">PAYOFF LEDGER</span>
+              <h3>蓝图回报</h3>
+              {% for payoff in branch.payoff_impacts %}
+                <article>
+                  <div>
+                    <strong>{{ payoff.payoff_text }}</strong>
+                    <span>{{ payoff.timing_label }}</span>
+                  </div>
+                  <p>{{ payoff.consequence }}</p>
+                  <small>
+                    预计承接：第 {{ payoff.delivery_chapter.position }} 章
+                    《{{ payoff.delivery_chapter.title }}》
+                  </small>
+                </article>
+              {% endfor %}
+            </section>
+          {% endif %}
+
+          <section class="causal-branch-failure">
+            <span class="section-kicker">FAILURE CONDITIONS</span>
+            <h3>什么时候这条分支不成立</h3>
+            <ul>{% for item in branch.failure_conditions %}<li>{{ item }}</li>{% endfor %}</ul>
+            <p><b>总体风险：</b>{{ branch.overall_risk }}</p>
+          </section>
+        </article>
+      {% endfor %}
+    </div>
+
+    {% if simulation.result.unresolved_gaps %}
+      <section class="card causal-unresolved-gaps">
+        <span class="section-kicker">UNRESOLVED GAPS</span>
+        <h2>冻结资料仍无法回答</h2>
+        <ul>{% for item in simulation.result.unresolved_gaps %}<li>{{ item }}</li>{% endfor %}</ul>
+      </section>
+    {% endif %}
+  {% elif simulation.result_error %}
+    <section class="card empty-state">
+      <h2>已保存结果无法安全读取</h2>
+      <p>{{ simulation.result_error }}</p>
+    </section>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {% if simulation.status in ['queued', 'running'] %}
+    <script>
+      (() => {
+        const root = document.querySelector("[data-causal-branch-simulation-id]");
+        if (!root) return;
+        const simulationId = root.dataset.causalBranchSimulationId;
+        const poll = async () => {
+          try {
+            const response = await fetch(`/api/causal-branch-simulations/${simulationId}`, {
+              headers: { "Accept": "application/json" },
+              credentials: "same-origin",
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.terminal) {
+              window.location.reload();
+              return;
+            }
+          } catch (_) {
+            // A later poll can recover from a transient local connection error.
+          }
+          window.setTimeout(poll, 1200);
+        };
+        window.setTimeout(poll, 900);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

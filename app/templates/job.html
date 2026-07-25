@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}分析任务 · {{ job.document_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/documents/{{ job.document_id }}">← 返回作品</a>
+      <h1>{{ job.document_title }}</h1>
+      <p>{{ job.provider }} / {{ job.model }}</p>
+    </div>
+    <a class="button" href="/jobs/{{ job.id }}/export.json">导出 JSON</a>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <section class="card progress-card" data-job-id="{{ job.id }}" data-terminal="{{ 'true' if job.status in ['completed','partial','failed'] else 'false' }}">
+    <div class="progress-top">
+      <div>
+        <span class="status {{ job.status }}" id="job-status">{{ job.status|status_label }}</span>
+        <h2 id="job-count">{{ job.completed_chapters + job.failed_chapters }} / {{ job.total_chapters }} 已处理</h2>
+      </div>
+      <strong id="job-percent">{{ (((job.completed_chapters + job.failed_chapters) / job.total_chapters * 100) if job.total_chapters else 0)|round(1) }}%</strong>
+    </div>
+    <div class="progress-track"><div id="job-progress" style="width: {{ (((job.completed_chapters + job.failed_chapters) / job.total_chapters * 100) if job.total_chapters else 0)|round(1) }}%"></div></div>
+    <div class="progress-stats">
+      <span><i class="dot success"></i>{{ job.completed_chapters }} 成功</span>
+      <span><i class="dot error"></i>{{ job.failed_chapters }} 失败</span>
+      <span>{{ job.input_tokens }} 输入 tokens · {{ job.output_tokens }} 输出 tokens</span>
+    </div>
+    {% if job.failed_chapters %}
+      <form method="post" action="/jobs/{{ job.id }}/retry">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button small" type="submit">重试失败章节</button>
+      </form>
+    {% endif %}
+  </section>
+
+  <section class="card table-card">
+    <div class="section-heading">
+      <h2>章节结果</h2>
+      <span>按原文顺序</span>
+    </div>
+    <div class="chapter-list">
+      {% for chapter in chapters %}
+        <div class="chapter-row">
+          <span class="chapter-number">{{ "%03d"|format(chapter.position) }}</span>
+          <div class="chapter-main">
+            <strong>{{ chapter.title }}</strong>
+            {% if chapter.analysis_status == 'failed' %}
+              <span class="error-text">本章失败，可在上方统一重试</span>
+            {% else %}
+              <span>{{ chapter.char_count|human_size }}</span>
+            {% endif %}
+          </div>
+          {% if chapter.analysis_status == 'completed' %}
+            <a class="text-link" href="/analyses/{{ chapter.analysis_id }}">查看拆解 →</a>
+          {% else %}
+            <span class="status {{ chapter.analysis_status or 'queued' }}">{{ (chapter.analysis_status or 'queued')|status_label }}</span>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}
+{% block scripts %}
+  {% if job.status not in ['completed', 'partial', 'failed'] %}
+  <script>
+    (() => {
+      const card = document.querySelector("[data-job-id]");
+      const jobId = card.dataset.jobId;
+      const labels = {queued: "排队中", running: "分析中", completed: "已完成", partial: "部分完成", failed: "失败"};
+      const poll = async () => {
+        try {
+          const response = await fetch(`/api/jobs/${jobId}`, {headers: {"Accept": "application/json"}});
+          if (!response.ok) return;
+          const data = await response.json();
+          document.querySelector("#job-count").textContent = `${data.processed} / ${data.total} 已处理`;
+          document.querySelector("#job-percent").textContent = `${data.percent}%`;
+          document.querySelector("#job-progress").style.width = `${data.percent}%`;
+          const status = document.querySelector("#job-status");
+          status.textContent = labels[data.status] || data.status;
+          status.className = `status ${data.status}`;
+          if (data.terminal) {
+            window.location.reload();
+          } else {
+            window.setTimeout(poll, 2000);
+          }
+        } catch (_) {
+          window.setTimeout(poll, 4000);
+        }
+      };
+      window.setTimeout(poll, 1500);
+    })();
+  </script>
+  {% endif %}
+{% endblock %}

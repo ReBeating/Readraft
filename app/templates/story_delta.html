@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}审核故事记忆 · {{ delta.chapter_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ delta.project_id }}/chapters/{{ delta.chapter_id }}">← 返回《{{ delta.project_title }}》第 {{ delta.chapter_position }} 章</a>
+      <span class="eyebrow">OBSERVER · STORY DELTA</span>
+      <h1>审核本章造成的变化</h1>
+      <p>这是 Observer 的提案，不是正史。请核对正文证据；只有你确认后，它才会进入后续写作使用的故事记忆。</p>
+    </div>
+    <span class="status {% if delta.status == 'projected' %}completed{% elif delta.status == 'rejected' or delta.status == 'superseded' %}failed{% else %}queued{% endif %}">
+      {% if delta.status == 'proposed' %}待审核
+      {% elif delta.status == 'author_edited' %}作者已修改
+      {% elif delta.status == 'projected' %}已写入正史
+      {% elif delta.status == 'rejected' %}已拒绝
+      {% elif delta.status == 'superseded' %}已失效
+      {% else %}{{ delta.status }}{% endif %}
+    </span>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if saved %}<div class="alert success">修改已保存，仍需点击“确认并写入正史记忆”。</div>{% endif %}
+  {% if delta.version_id != delta.canonical_version_id %}
+    <div class="alert warning">本提案对应的正文已不再是当前正史，不能写入记忆；请从当前正史重新提取。</div>
+  {% endif %}
+
+  <section class="memory-review-grid">
+    <div class="memory-review-main">
+      <article class="card summary-card">
+        <span class="section-kicker">CHAPTER MEMORY</span>
+        <h2>章节摘要</h2>
+        <p>{{ delta.payload.chapter_summary }}</p>
+        {% if delta.payload.keywords %}
+          <div class="memory-tags">
+            {% for keyword in delta.payload.keywords %}<span class="tag accent">{{ keyword }}</span>{% endfor %}
+          </div>
+        {% endif %}
+      </article>
+
+      <section class="card memory-section">
+        <div class="section-heading">
+          <h2>事件与状态变化</h2>
+          <span>逐条检查 evidence</span>
+        </div>
+
+        {% for event in delta.payload.events %}
+          <article class="memory-change">
+            <span class="tag">事件 {{ loop.index }}{% if event.event_key %} · {{ event.event_key }}{% endif %}</span>
+            <strong>{{ event.summary }}</strong>
+            <p>{{ event.evidence }}</p>
+            {% if event.participants %}<small>参与：{{ event.participants|join('、') }}{% if event.location %} · 地点：{{ event.location }}{% endif %}</small>{% endif %}
+            {% if event.cause_event_keys %}<small>直接原因事件：{{ event.cause_event_keys|join('、') }}</small>{% endif %}
+          </article>
+        {% endfor %}
+
+        {% for change in delta.payload.character_changes %}
+          <article class="memory-change">
+            <span class="tag accent">人物 · {{ change.aspect }}</span>
+            <strong>{{ change.character_name }}：{{ change.before or '未记录' }} → {{ change.after }}</strong>
+            <p>{{ change.evidence }}</p>
+          </article>
+        {% endfor %}
+
+        {% for change in delta.payload.relationship_changes %}
+          <article class="memory-change">
+            <span class="tag accent">关系</span>
+            <strong>{{ change.character_a }} ↔ {{ change.character_b }}：{{ change.before or '未记录' }} → {{ change.after }}</strong>
+            <p>{{ change.evidence }}</p>
+          </article>
+        {% endfor %}
+
+        {% for change in delta.payload.location_changes %}
+          <article class="memory-change">
+            <span class="tag accent">位置</span>
+            <strong>{{ change.subject_name }}：{{ change.from_location or '未记录' }} → {{ change.to_location }}</strong>
+            <p>{{ change.evidence }}</p>
+          </article>
+        {% endfor %}
+
+        {% for change in delta.payload.item_changes %}
+          <article class="memory-change">
+            <span class="tag accent">物品 · {{ change.action }}</span>
+            <strong>{{ change.item_name }}</strong>
+            <p>{{ change.state or change.evidence }}</p>
+            {% if change.state %}<small>证据：{{ change.evidence }}</small>{% endif %}
+          </article>
+        {% endfor %}
+
+        {% if not delta.payload.events and not delta.payload.character_changes and not delta.payload.relationship_changes and not delta.payload.location_changes and not delta.payload.item_changes %}
+          <p class="muted">Observer 没有提取到事件或客观状态变化。</p>
+        {% endif %}
+      </section>
+
+      <section class="card memory-section">
+        <div class="section-heading">
+          <h2>知情边界、剧情线与伏笔</h2>
+          <span>不会与客观事实混写</span>
+        </div>
+        {% for change in delta.payload.knowledge_changes %}
+          <article class="memory-change">
+            <span class="tag">知情 · {{ change.state }}</span>
+            <strong>{{ change.character_name }}：{{ change.fact }}</strong>
+            <p>{{ change.evidence }}</p>
+            {% if change.canonical_fact and change.canonical_fact != change.fact %}<small>标准事实：{{ change.canonical_fact }}</small>{% endif %}
+            {% if change.learned_via %}<small>获知方式：{{ change.learned_via }}</small>{% endif %}
+          </article>
+        {% endfor %}
+        {% for change in delta.payload.plot_thread_changes %}
+          <article class="memory-change">
+            <span class="tag">剧情线 · {{ change.action }}</span>
+            <strong>{{ change.thread_name }}</strong>
+            <p>{{ change["update"] }}</p>
+            <small>证据：{{ change.evidence }}</small>
+          </article>
+        {% endfor %}
+        {% for change in delta.payload.foreshadowing_changes %}
+          <article class="memory-change">
+            <span class="tag">伏笔 · {{ change.action }}</span>
+            <strong>{{ change.hook_name }}</strong>
+            <p>{{ change.description }}</p>
+            <small>证据：{{ change.evidence }}</small>
+          </article>
+        {% endfor %}
+        {% if not delta.payload.knowledge_changes and not delta.payload.plot_thread_changes and not delta.payload.foreshadowing_changes %}
+          <p class="muted">Observer 没有提取到知情、剧情线或伏笔变化。</p>
+        {% endif %}
+      </section>
+    </div>
+
+    <aside class="memory-review-side">
+      <form method="post" action="/story-deltas/{{ delta.id }}/save" class="card form-card delta-json-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <span class="section-kicker">AUTHOR EDIT</span>
+        <h2>编辑结构化提案</h2>
+        <p>可以直接修正 JSON。字段会在服务器端按严格 Schema 校验，额外字段和缺少的证据都会被拒绝。</p>
+        <label>
+          <span>Story Delta JSON</span>
+          <textarea name="payload_json" rows="28" maxlength="200000" spellcheck="false" {% if delta.status not in ['proposed', 'author_edited'] %}disabled{% endif %}>{{ payload_json }}</textarea>
+        </label>
+        {% if delta.status in ['proposed', 'author_edited'] %}
+          <button class="button full" type="submit">保存修改</button>
+        {% endif %}
+      </form>
+
+      {% if delta.status in ['proposed', 'author_edited'] %}
+        <section class="card memory-decision">
+          <h2>作者决定</h2>
+          <p>确认会把本章摘要、事件、事实、角色知情、剧情线和伏笔投影到正史 Memory。</p>
+          <form method="post" action="/story-deltas/{{ delta.id }}/accept">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="button primary full" type="submit" {% if delta.version_id != delta.canonical_version_id %}disabled{% endif %}>确认并写入正史记忆</button>
+          </form>
+          <form method="post" action="/story-deltas/{{ delta.id }}/reject">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="button danger full" type="submit">拒绝这份提案</button>
+          </form>
+        </section>
+      {% endif %}
+    </aside>
+  </section>
+{% endblock %}

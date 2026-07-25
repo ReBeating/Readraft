@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}AI 味审校 · {{ chapter.title or '未命名章节' }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}">← 返回章节编辑器</a>
+      <span class="eyebrow">STYLE AUDIT</span>
+      <h1>{{ chapter.title or '未命名章节' }}</h1>
+      <p>版本 {{ version.id[:8] }} · 软质量审校不会自动修改正文，也不会替代作者判断。</p>
+    </div>
+    {% if voice_profile and voice_profile.status == 'confirmed' %}
+      <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/style">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button {% if not audit %}primary{% endif %}" type="submit" {% if chapter.latest_job_status in ['queued','running'] %}disabled{% endif %}>
+          {% if audit %}重新执行审校{% else %}开始 AI 味审校{% endif %}
+        </button>
+      </form>
+    {% endif %}
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if not voice_profile or voice_profile.status != 'confirmed' %}
+    <div class="alert warning">
+      作品声纹尚未确认。<a href="/novels/{{ chapter.project_id }}#voice"><strong>先填写可执行声纹规则</strong></a>，再让审校器判断偏离。
+    </div>
+  {% endif %}
+
+  {% set workflow_context = 'style' %}
+  {% include "_chapter_workflow.html" %}
+
+  <section class="style-audit-summary">
+    <div>
+      <span class="section-kicker">READER EXPERIENCE</span>
+      <h2>
+        {% if not audit %}等待审校
+        {% elif audit.issue_count == 0 %}未定位到明显问题
+        {% else %}定位到 {{ audit.issue_count }} 个具体问题{% endif %}
+      </h2>
+      <p>{{ audit.summary if audit else '审校器会引用具体原句，说明证据、读者影响和修改方向；不会直接重写全文。' }}</p>
+    </div>
+    {% if audit %}
+      <dl>
+        <div><dt>可定位问题</dt><dd>{{ audit.issue_count }}</dd></div>
+        <div><dt>无效定位已丢弃</dt><dd>{{ audit.dropped_issue_count }}</dd></div>
+        <div><dt>审校模型</dt><dd>{{ audit.provider }} / {{ audit.model }}</dd></div>
+        <div><dt>版本状态</dt><dd>{% if version.style_status == 'reviewed' %}已逐项处理{% elif version.style_status == 'pass' %}通过{% else %}待处理{% endif %}</dd></div>
+      </dl>
+    {% endif %}
+  </section>
+
+  <section class="style-issue-list">
+    {% if issues %}
+      {% for issue in issues %}
+        <article class="card style-issue issue-{{ issue.status }}">
+          <div class="style-issue-top">
+            <div>
+              <span class="tag">{{ issue.issue_type|style_issue_label }}</span>
+              <span class="severity {{ issue.severity }}">{{ issue.severity }}</span>
+            </div>
+            <span>
+              {% if issue.status == 'open' %}待作者处理
+              {% elif issue.status == 'rewritten' %}已接受定点改写
+              {% elif issue.status == 'ignored' %}作者选择保留
+              {% else %}已失效{% endif %}
+            </span>
+          </div>
+          <blockquote>{{ issue.quote }}</blockquote>
+          <div class="style-evidence-grid">
+            <div><b>为什么像通用生成文本</b><p>{{ issue.evidence }}</p></div>
+            <div><b>对读者的影响</b><p>{{ issue.reader_impact }}</p></div>
+            <div><b>修改方向</b><p>{{ issue.rewrite_direction }}</p></div>
+          </div>
+          {% if issue.status == 'open' %}
+            <div class="style-issue-actions">
+              <a class="button primary" href="/style-issues/{{ issue.id }}">定点改写并比较</a>
+              <form method="post" action="/style-issues/{{ issue.id }}/ignore">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button class="button" type="submit">保留原文 / 忽略建议</button>
+              </form>
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    {% elif audit %}
+      <section class="card empty-style-state">
+        <h2>这一版没有需要强行修改的地方</h2>
+        <p>“未发现”不等于完美，只表示审校器没有找到足够具体、能引用原文证明的问题。作者仍可以继续手工编辑。</p>
+      </section>
+    {% else %}
+      <section class="card empty-style-state">
+        <h2>先定位，再决定是否修改</h2>
+        <p>我们不会要求模型把整章“改得更像人”。每条建议都必须落到具体段落、原句、读者影响和局部修改方向。</p>
+      </section>
+    {% endif %}
+  </section>
+{% endblock %}

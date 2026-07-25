@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}登录 · {{ app_name }}{% endblock %}
+{% block content %}
+  <section class="auth-layout">
+    <div class="hero-copy">
+      <h1>长篇小说<br><em>创作与管理工作台</em></h1>
+      <p>统一管理作品设定、章节正文、版本与创作对话，并通过个人 API 配置接入模型，辅助完成构思、创作、修订与分析。</p>
+      <div class="feature-strip">
+        <span>作品设定</span>
+        <span>章节与版本</span>
+        <span>AI 共创</span>
+      </div>
+    </div>
+    <div class="card auth-card">
+      <div class="card-heading">
+        <span class="step-number">01</span>
+        <div>
+          <h2>登录工作台</h2>
+          <p>登录后继续管理作品、设定与章节进度</p>
+        </div>
+      </div>
+      {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+      <form method="post" action="/login" class="form-stack">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ next_path }}">
+        <label>
+          <span>用户名</span>
+          <input name="username" autocomplete="username" required autofocus>
+        </label>
+        <label>
+          <span>密码</span>
+          <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button class="button primary full" type="submit">进入工作台</button>
+      </form>
+      {% if can_register %}
+        <p class="auth-switch">还没有账号？<a href="/register">创建一个</a></p>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

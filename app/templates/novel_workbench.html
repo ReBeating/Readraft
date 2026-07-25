@@ -1,0 +1,728 @@
+{% extends "base.html" %}
+{% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
+{% block body_class %}studio-surface studio-workbench-page{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260725-11">
+{% endblock %}
+{% block site_header %}{% endblock %}
+{% block status_banner %}{% endblock %}
+{% block site_footer %}{% endblock %}
+{% block main_class %}studio-workbench-host{% endblock %}
+{% block content %}
+  <div
+    class="studio-workbench"
+    data-studio-theme
+    data-workbench
+    data-project-id="{{ project.id }}"
+    data-onboarding="{{ 'true' if onboarding else 'false' }}"
+    {% if active_conversation and active_conversation.pending_message_id %}
+      data-pending-message-id="{{ active_conversation.pending_message_id }}"
+    {% endif %}
+  >
+    <header class="studio-workbench-toolbar">
+      <div class="studio-toolbar-side">
+        <a class="studio-icon-button" href="/dashboard" aria-label="返回书库">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6"></path>
+          </svg>
+        </a>
+        <button class="studio-icon-button" type="button" data-panel-toggle="directory" aria-label="关闭目录" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16"></path>
+          </svg>
+        </button>
+      </div>
+
+      <strong class="studio-toolbar-title">{{ display_title }}</strong>
+
+      <div class="studio-toolbar-side studio-toolbar-trailing">
+        <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+          <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+          </svg>
+          <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+        </button>
+        <button class="studio-icon-button" type="button" data-panel-toggle="ai" aria-label="关闭 AI 共创" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m12 3 1.1 3.4L16.5 7.5l-3.4 1.1L12 12l-1.1-3.4-3.4-1.1 3.4-1.1L12 3Z"></path>
+            <path d="m18 13 .8 2.2L21 16l-2.2.8L18 19l-.8-2.2L15 16l2.2-.8L18 13Z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="studio-workbench-layout">
+      <aside class="studio-directory" data-panel="directory">
+        <div class="studio-panel-title">
+          <strong>{{ display_title }}</strong>
+        </div>
+
+        <p class="studio-section-label">作品资料</p>
+        <a class="studio-directory-link {% if view == 'settings' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=settings{% if chapter %}&chapter_id={{ chapter.id }}{% endif %}">
+          <span>设定</span>
+          <small>›</small>
+        </a>
+
+        <p class="studio-section-label">章节</p>
+        <nav class="studio-chapter-list" aria-label="章节目录">
+          {% for item in chapters %}
+            <a
+              class="studio-chapter-link {% if chapter and chapter.id == item.id and view == 'body' %}active{% endif %}"
+              href="/novels/{{ project.id }}/workbench?chapter_id={{ item.id }}"
+            >
+              <span>第{{ item.position }}章 · {{ item.title or '未命名章节' }}</span>
+            </a>
+          {% else %}
+            <p class="studio-muted">还没有章节。</p>
+          {% endfor %}
+        </nav>
+
+        <details class="studio-new-chapter">
+          <summary>＋ 新建章节</summary>
+          <form method="post" action="/novels/{{ project.id }}/chapters">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="return_to_workbench" value="1">
+            <label>
+              <span>章节标题（可选）</span>
+              <input name="title" maxlength="120" placeholder="可以留空，之后再和 AI 讨论">
+            </label>
+            <button class="studio-button primary" type="submit">创建</button>
+          </form>
+        </details>
+      </aside>
+
+      <main class="studio-reading" data-panel="main">
+        {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
+        {% if saved %}<div class="studio-alert success">已保存。</div>{% endif %}
+
+        {% if view == 'settings' %}
+          <section class="studio-settings-view">
+            <div class="studio-view-heading">
+              <div>
+                <h1>设定</h1>
+                <p>这些内容会作为本书的长期创作上下文。</p>
+              </div>
+            </div>
+            <nav class="studio-settings-tabs" role="tablist" aria-label="设定分类">
+              {% for tab_key, tab_label in setting_tabs %}
+                <button
+                  id="settings-tab-{{ tab_key }}"
+                  type="button"
+                  role="tab"
+                  aria-controls="settings-panel-{{ tab_key }}"
+                  aria-selected="{{ 'true' if active_settings_tab == tab_key else 'false' }}"
+                  tabindex="{{ '0' if active_settings_tab == tab_key else '-1' }}"
+                  data-settings-tab="{{ tab_key }}"
+                >{{ tab_label }}</button>
+              {% endfor %}
+            </nav>
+
+            <form method="post" action="/novels/{{ project.id }}/settings" class="studio-settings-form">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="return_to_workbench" value="1">
+              <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}" data-settings-tab-input>
+
+              <section
+                id="settings-panel-core"
+                class="studio-settings-panel"
+                role="tabpanel"
+                aria-labelledby="settings-tab-core"
+                data-settings-panel="core"
+                {% if active_settings_tab != 'core' %}hidden{% endif %}
+              >
+                <header>
+                  <h2>作品核心</h2>
+                  <p>先确定这本书持续向读者提供什么，以及故事围绕什么矛盾展开。</p>
+                </header>
+                <div class="studio-settings-field-grid">
+                  <label>
+                    <span>书名</span>
+                    <input name="title" maxlength="120" value="{{ project.title }}" placeholder="可以暂时留空，之后和 AI 一起讨论">
+                  </label>
+                  <label>
+                    <span>题材</span>
+                    <input name="genre" maxlength="80" value="{{ project.genre }}" placeholder="例如：悬疑、科幻、都市">
+                  </label>
+                  <label class="studio-settings-wide">
+                    <span>故事核心</span>
+                    <textarea name="premise" rows="5" maxlength="4000" placeholder="从一个人物、一段画面、一个矛盾或一句话开始">{{ project.premise }}</textarea>
+                  </label>
+                  <label>
+                    <span>作品承诺</span>
+                    <textarea name="story_promise" rows="4" maxlength="4000" placeholder="读者持续阅读时，稳定能够获得什么体验？">{{ project.story_promise }}</textarea>
+                  </label>
+                  <label>
+                    <span>核心吸引力</span>
+                    <textarea name="core_appeal" rows="4" maxlength="4000" placeholder="谜团、关系张力、成长、世界探索……">{{ project.core_appeal }}</textarea>
+                  </label>
+                  <label class="studio-settings-wide">
+                    <span>目标读者</span>
+                    <textarea name="target_audience" rows="3" maxlength="1000" placeholder="这本书主要写给怎样的读者？">{{ project.target_audience }}</textarea>
+                  </label>
+                </div>
+              </section>
+
+              <section
+                id="settings-panel-world"
+                class="studio-settings-panel"
+                role="tabpanel"
+                aria-labelledby="settings-tab-world"
+                data-settings-panel="world"
+                {% if active_settings_tab != 'world' %}hidden{% endif %}
+              >
+                <header>
+                  <h2>世界规则</h2>
+                  <p>记录时代、地点、社会秩序、能力边界，以及剧情不能随意突破的客观限制。</p>
+                </header>
+                <label>
+                  <span>世界设定与运行规则</span>
+                  <textarea name="world_setting" rows="14" maxlength="20000" placeholder="可按时代与地点、社会结构、特殊规则、资源与限制、不可违背事项分段记录。">{{ project.world_setting }}</textarea>
+                </label>
+              </section>
+
+              <section
+                id="settings-panel-characters"
+                class="studio-settings-panel"
+                role="tabpanel"
+                aria-labelledby="settings-tab-characters"
+                data-settings-panel="characters"
+                {% if active_settings_tab != 'characters' %}hidden{% endif %}
+              >
+                <header>
+                  <h2>人物关系</h2>
+                  <p>人物卡会进入规划与写作上下文；关系变化仍应通过章节任务和正史逐步确认。</p>
+                </header>
+                {% if setting_characters %}
+                  <div class="studio-settings-card-grid">
+                    {% for character in setting_characters %}
+                      <article>
+                        <strong>{{ character.name }}</strong>
+                        <small>{{ character.role or '角色定位待补充' }}</small>
+                        {% if character.traits %}<p>{{ character.traits }}</p>{% endif %}
+                        {% if character.character_arc %}<p><b>人物弧光：</b>{{ character.character_arc }}</p>{% endif %}
+                      </article>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="studio-settings-empty">
+                    <strong>还没有人物卡</strong>
+                    <p>可以先在右侧讨论主角想要什么、害怕失去什么，以及人物之间最不稳定的关系。</p>
+                  </div>
+                {% endif %}
+              </section>
+
+              <section
+                id="settings-panel-structure"
+                class="studio-settings-panel"
+                role="tabpanel"
+                aria-labelledby="settings-tab-structure"
+                data-settings-panel="structure"
+                {% if active_settings_tab != 'structure' %}hidden{% endif %}
+              >
+                <header>
+                  <h2>故事结构</h2>
+                  <p>记录全书必须兑现的方向、核心悬问和主线推进约束。</p>
+                </header>
+                <label>
+                  <span>结局与结构约束</span>
+                  <textarea name="ending_constraint" rows="6" maxlength="4000" placeholder="终局必须兑现什么？哪些捷径或结果绝不能出现？">{{ project.ending_constraint }}</textarea>
+                </label>
+                {% if setting_story_blueprint and setting_story_blueprint.confirmed %}
+                  <div class="studio-structure-summary">
+                    <div>
+                      <small>核心悬问</small>
+                      <p>{{ setting_story_blueprint.confirmed.central_question or '待补充' }}</p>
+                    </div>
+                    <div>
+                      <small>主角长期目标</small>
+                      <p>{{ setting_story_blueprint.confirmed.protagonist_goal or '待补充' }}</p>
+                    </div>
+                    <div>
+                      <small>确认剧情线</small>
+                      <p>{{ setting_story_arcs|length }} 条</p>
+                    </div>
+                  </div>
+                {% else %}
+                  <div class="studio-settings-empty">
+                    <strong>全书蓝图尚未确认</strong>
+                    <p>可以先在右侧和 AI 收敛核心悬问、主角目标与冲突引擎。</p>
+                  </div>
+                {% endif %}
+              </section>
+
+              <section
+                id="settings-panel-style"
+                class="studio-settings-panel"
+                role="tabpanel"
+                aria-labelledby="settings-tab-style"
+                data-settings-panel="style"
+                {% if active_settings_tab != 'style' %}hidden{% endif %}
+              >
+                <header>
+                  <h2>文风约束</h2>
+                  <p>把叙述距离、句段节奏、对白习惯和禁用表达写成能够实际执行的规则。</p>
+                </header>
+                <div class="studio-settings-field-grid">
+                  <label>
+                    <span>叙事视角</span>
+                    <select name="point_of_view">
+                      {% for option in pov_options %}
+                        <option value="{{ option }}" {% if project.point_of_view == option %}selected{% endif %}>{{ option }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  <div class="studio-settings-status">
+                    <span>作品声纹</span>
+                    <strong>
+                      {% if setting_voice_profile and setting_voice_profile.status == 'confirmed' %}
+                        已确认
+                      {% elif setting_voice_profile %}
+                        草稿
+                      {% else %}
+                        尚未建立
+                      {% endif %}
+                    </strong>
+                  </div>
+                  <label class="studio-settings-wide">
+                    <span>叙事风格规范</span>
+                    <textarea name="style_guide" rows="10" maxlength="10000" placeholder="例如：少做情绪总结；人物先行动再解释；避免整齐排比；紧张段落允许停顿和无效交流。">{{ project.style_guide }}</textarea>
+                  </label>
+                </div>
+              </section>
+
+              <section
+                id="settings-panel-parameters"
+                class="studio-settings-panel"
+                role="tabpanel"
+                aria-labelledby="settings-tab-parameters"
+                data-settings-panel="parameters"
+                {% if active_settings_tab != 'parameters' %}hidden{% endif %}
+              >
+                <header>
+                  <h2>创作参数</h2>
+                  <p>这些参数控制默认篇幅、滚动规划范围，以及本书对 AI 的额外协作要求。</p>
+                </header>
+                <div class="studio-settings-field-grid">
+                  <label>
+                    <span>默认单章篇幅</span>
+                    <input type="number" name="target_chapter_chars" min="2000" max="12000" step="100" value="{{ project.target_chapter_chars or 3000 }}">
+                    <small>新章节默认继承此目标；每章任务卡仍可单独调整。</small>
+                  </label>
+                  <label>
+                    <span>规划章节范围</span>
+                    <input type="number" name="planning_horizon" min="3" max="50" value="{{ project.planning_horizon or 20 }}">
+                    <small>系统持续维护未来多少章的计划，建议 10–30 章。</small>
+                  </label>
+                  <label class="studio-settings-wide">
+                    <span>本书 AI 协作补充指令</span>
+                    <textarea name="ai_instructions" rows="9" maxlength="10000" placeholder="只填写这本书特有的协作边界，例如固定叙事禁区或信息释放顺序。">{{ project.ai_instructions }}</textarea>
+                  </label>
+                </div>
+              </section>
+
+              <div class="studio-settings-actions">
+                <button class="studio-button primary" type="submit">保存设定</button>
+              </div>
+            </form>
+          </section>
+        {% elif chapter %}
+          <section class="studio-manuscript-view">
+            <div class="studio-chapter-heading">
+              <small>第{{ chapter.position }}章</small>
+              <h1>{{ chapter.title or '未命名章节' }}</h1>
+            </div>
+            <form
+              method="post"
+              action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/save"
+              data-autosave-form
+            >
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="return_to_workbench" value="1">
+              <input type="hidden" name="change_summary" value="工作台自动保存">
+              <textarea
+                class="studio-manuscript"
+                name="content"
+                maxlength="200000"
+                aria-label="章节正文编辑器"
+                data-manuscript
+                data-previous-url="{% if previous_chapter %}/novels/{{ project.id }}/workbench?chapter_id={{ previous_chapter.id }}{% endif %}"
+                data-next-url="{% if next_chapter %}/novels/{{ project.id }}/workbench?chapter_id={{ next_chapter.id }}{% endif %}"
+              >{{ chapter_content }}</textarea>
+            </form>
+            <footer class="studio-chapter-footer">
+              <span>{{ chapter_index + 1 }} / {{ chapters|length }}</span>
+              <span data-save-status aria-live="polite">已保存</span>
+              <span data-char-count data-target="{{ chapter_target_chars }}">{{ chapter_effective_chars }} / 约 {{ chapter_target_chars }} 字</span>
+            </footer>
+            <span class="studio-edge-cue" data-edge-cue hidden></span>
+          </section>
+        {% else %}
+          <section class="studio-no-chapter">
+            <h1>从第一章开始</h1>
+            <p>在目录中新建章节；如果正文为空，可以先在右侧和 AI 讨论本章思路。</p>
+          </section>
+        {% endif %}
+      </main>
+
+      <aside class="studio-ai" data-panel="ai">
+        <div class="studio-panel-title">
+          <strong>共创对话</strong>
+          <div class="studio-chat-toolbar-actions">
+            <details class="studio-chat-history">
+              <summary aria-label="历史对话" title="历史对话">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16M4 12h16M4 18h10"></path>
+                </svg>
+              </summary>
+              <section class="studio-chat-history-panel">
+                <header>
+                  <strong>历史对话</strong>
+                  <span>{{ conversations|length }}</span>
+                </header>
+                <div class="studio-chat-history-list">
+                  {% for item in conversations %}
+                    <article class="{% if active_conversation and active_conversation.id == item.id %}active{% endif %}">
+                      <a href="/novels/{{ project.id }}/workbench?conversation_id={{ item.id }}{% if item.novel_chapter_id %}&chapter_id={{ item.novel_chapter_id }}{% else %}&view=settings{% endif %}">
+                        <strong>{{ item.title }}</strong>
+                        <small>
+                          {% if item.novel_chapter_id %}
+                            第{{ item.novel_chapter_position }}章 · {{ item.novel_chapter_title or '未命名章节' }}
+                          {% else %}
+                            全书设定
+                          {% endif %}
+                          {% if item.latest_status in ['queued', 'running'] %} · 回复中{% endif %}
+                        </small>
+                      </a>
+                      <form
+                        method="post"
+                        action="/novels/{{ project.id }}/assistant/conversations/{{ item.id }}/delete"
+                        data-delete-conversation-form
+                      >
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <input type="hidden" name="current_conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
+                        <input type="hidden" name="chapter_id" value="{% if chapter %}{{ chapter.id }}{% endif %}">
+                        <input type="hidden" name="return_view" value="{{ view }}">
+                        <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
+                        <button
+                          type="submit"
+                          aria-label="删除对话《{{ item.title }}》"
+                          title="删除对话"
+                          {% if item.latest_status in ['queued', 'running'] %}disabled{% endif %}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"></path>
+                          </svg>
+                        </button>
+                      </form>
+                    </article>
+                  {% else %}
+                    <p>还没有历史对话。</p>
+                  {% endfor %}
+                </div>
+                <footer>修改消息或重新生成会建立新分支，原记录不会被覆盖。</footer>
+              </section>
+            </details>
+            <form method="post" action="/novels/{{ project.id }}/assistant/new" class="studio-new-chat-form">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
+              <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
+              <button type="submit" aria-label="新建对话" title="新建对话" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>＋</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="studio-chat-scroll" data-chat-scroll>
+          {% if sent and active_conversation and active_conversation.pending_message_id %}
+            <p class="studio-chat-state">问题已发送，AI 正在组织回答。</p>
+          {% endif %}
+          {% if active_conversation and active_conversation.messages %}
+            {% for message in active_conversation.messages[-30:] %}
+              <article class="studio-chat-message {{ message.role }}">
+                <small>
+                  {% if message.role == 'user' %}
+                    你
+                  {% else %}
+                    AI
+                  {% endif %}
+                </small>
+                {% if message.quote %}
+                  <blockquote>{{ message.quote.quote_text }}</blockquote>
+                {% endif %}
+                {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
+                  <p>正在读取当前设定与章节……</p>
+                {% elif message.status == 'failed' %}
+                  <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
+                {% else %}
+                  <p>{{ message.content }}</p>
+                  {% set auto_commit = message.response.get('auto_commit') or {} %}
+                  {% if message.response.settings_patch %}
+                    <section class="studio-settings-candidate">
+                      <header>
+                        <strong>候选设定</strong>
+                        <span>{% if message.response.settings_patch_status == 'applied' %}已应用{% else %}尚未写入{% endif %}</span>
+                      </header>
+                      <dl>
+                        {% for key, value in message.response.settings_patch.items() %}
+                          <div>
+                            <dt>{{ setting_field_labels.get(key, key) }}</dt>
+                            <dd>{% if key == 'target_chapter_chars' %}约 {{ value }} 字{% elif key == 'planning_horizon' %}未来 {{ value }} 章{% else %}{{ value }}{% endif %}</dd>
+                          </div>
+                        {% endfor %}
+                      </dl>
+                      {% if message.response.settings_patch_status != 'applied' %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="return_to_workbench" value="1">
+                          <button class="studio-button primary" type="submit">应用到设定</button>
+                        </form>
+                      {% endif %}
+                    </section>
+                  {% endif %}
+                  {% if message.response.story_plan %}
+                    {% set blueprint = message.response.story_plan.blueprint %}
+                    <section class="studio-settings-candidate">
+                      <header>
+                        <strong>故事规划候选</strong>
+                        <span>{% if message.response.story_plan_status == 'applied' %}已采用{% else %}尚未写入{% endif %}</span>
+                      </header>
+                      <dl>
+                        <div>
+                          <dt>核心悬问</dt>
+                          <dd>{{ blueprint.central_question }}</dd>
+                        </div>
+                        <div>
+                          <dt>主角目标</dt>
+                          <dd>{{ blueprint.protagonist_goal }}</dd>
+                        </div>
+                        <div>
+                          <dt>冲突引擎</dt>
+                          <dd>{{ blueprint.core_conflict }}</dd>
+                        </div>
+                        <div>
+                          <dt>关键转折</dt>
+                          <dd>{{ blueprint.major_turns|join('；') }}</dd>
+                        </div>
+                        <div>
+                          <dt>必须兑现</dt>
+                          <dd>{{ blueprint.must_payoffs|join('；') }}</dd>
+                        </div>
+                      </dl>
+                      <p>{{ message.response.story_plan.rationale }}</p>
+                      {% if message.response.story_plan_status != 'applied' %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-story-plan">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <button class="studio-button primary" type="submit">采用为故事规划</button>
+                        </form>
+                      {% endif %}
+                    </section>
+                  {% endif %}
+                  {% if message.response.citations %}
+                    <section class="studio-chat-citations">
+                      <strong>回答依据</strong>
+                      {% for citation in message.response.citations %}
+                        <a href="{{ citation.url }}">
+                          <span>{{ citation.label }}</span>
+                          <q>{{ citation.quote }}</q>
+                          {% if citation.note %}<small>{{ citation.note }}</small>{% endif %}
+                        </a>
+                      {% endfor %}
+                    </section>
+                  {% endif %}
+                  {% if message.response.draft %}
+                    <section class="studio-draft-candidate">
+                      <header>
+                        <strong>{% if message.response.draft.mode == 'append' %}续写提交{% else %}章节提交{% endif %}</strong>
+                        <span>
+                          {% if auto_commit.get('status') == 'reverted' %}
+                            已撤回
+                          {% elif auto_commit.get('status') == 'applied' and message.applied_version_id %}
+                            已自动提交到工作稿
+                          {% elif message.applied_version_id %}
+                            已提交到工作稿
+                          {% elif auto_commit.get('status') == 'failed' %}
+                            自动提交失败
+                          {% else %}
+                            等待提交
+                          {% endif %}
+                        </span>
+                      </header>
+                      <div class="studio-draft-preview">{{ message.response.draft.content }}</div>
+                      {% if auto_commit.get('status') == 'failed' %}
+                        <p class="studio-commit-error">{{ auto_commit.get('error') }}</p>
+                      {% endif %}
+                      {% if auto_commit.get('status') == 'applied' and message.applied_version_id %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <button class="studio-button" type="submit">撤回这次提交</button>
+                        </form>
+                      {% elif not message.applied_version_id and auto_commit.get('status') != 'reverted' %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/save-draft">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="return_to_workbench" value="1">
+                          <button class="studio-button primary" type="submit">提交到工作稿</button>
+                        </form>
+                      {% endif %}
+                    </section>
+                  {% endif %}
+                  {% if message.response.rewrite %}
+                    <section class="studio-rewrite-candidate">
+                      <header>
+                        <strong>局部修订提交</strong>
+                        <span>
+                          {% if auto_commit.get('status') == 'reverted' %}
+                            已撤回
+                          {% elif auto_commit.get('status') == 'applied' and message.applied_version_id %}
+                            已自动提交到工作稿
+                          {% elif message.applied_version_id %}
+                            已提交到工作稿
+                          {% elif auto_commit.get('status') == 'failed' %}
+                            自动提交失败
+                          {% else %}
+                            等待提交
+                          {% endif %}
+                        </span>
+                      </header>
+                      <div class="studio-rewrite-preview">{{ message.response.rewrite.replacement_text }}</div>
+                      <p>{{ message.response.rewrite.rationale }}</p>
+                      {% if auto_commit.get('status') == 'failed' %}
+                        <p class="studio-commit-error">{{ auto_commit.get('error') }}</p>
+                      {% endif %}
+                      {% if auto_commit.get('status') == 'applied' and message.applied_version_id %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <button class="studio-button" type="submit">撤回这次提交</button>
+                        </form>
+                      {% elif not message.applied_version_id and auto_commit.get('status') != 'reverted' %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/save-rewrite">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="return_to_workbench" value="1">
+                          <button class="studio-button primary" type="submit">提交到工作稿</button>
+                        </form>
+                      {% endif %}
+                    </section>
+                  {% endif %}
+                {% endif %}
+                {% if message.role == 'assistant' and message.agent_steps %}
+                  <details class="studio-tool-trace">
+                    <summary>本轮执行 {{ message.agent_steps|length }} 步</summary>
+                    <ol>
+                      {% for step in message.agent_steps %}
+                        <li class="{{ step.outcome_status }}">
+                          <span>
+                            {% if step.action == 'finish' %}整理最终回答
+                            {% elif step.action == 'fallback' %}自动收束
+                            {% else %}{{ step.tool_label or step.tool_name or '工具调用' }}{% endif %}
+                          </span>
+                          <small>
+                            {% if step.outcome_status == 'completed' %}完成
+                            {% elif step.outcome_status == 'failed' %}失败
+                            {% elif step.outcome_status == 'denied' %}已拦截
+                            {% else %}已收束{% endif %}
+                            {% if step.latency_ms %} · {{ step.latency_ms }}ms{% endif %}
+                            {% if step.input_tokens or step.output_tokens %}
+                              · {{ step.input_tokens + step.output_tokens }} tokens
+                            {% endif %}
+                          </small>
+                          {% if step.error %}<em>{{ step.error }}</em>{% endif %}
+                        </li>
+                      {% endfor %}
+                    </ol>
+                  </details>
+                {% elif message.role == 'assistant' and message.tool_calls %}
+                  <details class="studio-tool-trace">
+                    <summary>本轮调用了 {{ message.tool_calls|length }} 项工具</summary>
+                    <ol>
+                      {% for call in message.tool_calls %}
+                        <li class="{{ call.status }}">
+                          <span>{{ call.tool_label }}</span>
+                          <small>
+                            {% if call.status == 'completed' %}完成
+                            {% elif call.status == 'failed' %}失败
+                            {% elif call.status == 'denied' %}已拦截
+                            {% else %}执行中{% endif %}
+                          </small>
+                          {% if call.error %}<em>{{ call.error }}</em>{% endif %}
+                        </li>
+                      {% endfor %}
+                    </ol>
+                  </details>
+                {% endif %}
+                {% if not active_conversation.pending_message_id %}
+                  <div class="studio-message-actions">
+                    {% if message.role == 'user' %}
+                      <details class="studio-message-edit">
+                        <summary>修改</summary>
+                        <form method="post" action="/assistant/messages/{{ message.id }}/branch">
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
+                          <label>
+                            <span>修改这条消息</span>
+                            <textarea name="question" rows="4" maxlength="8000" required>{{ message.content }}</textarea>
+                          </label>
+                          <small>将从这条消息之前建立新分支，原对话和已提交版本仍会保留。</small>
+                          <button class="studio-button primary" type="submit">修改并重新发送</button>
+                        </form>
+                      </details>
+                    {% elif message.status in ['completed', 'failed'] %}
+                      <form method="post" action="/assistant/messages/{{ message.id }}/regenerate">
+                        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                        <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
+                        <button class="studio-message-action" type="submit" title="在新分支重新生成，不覆盖原回复">重新生成</button>
+                      </form>
+                    {% endif %}
+                  </div>
+                {% endif %}
+              </article>
+            {% endfor %}
+          {% else %}
+            <div class="studio-chat-empty">
+              {% if view == 'settings' %}
+                <p>不必先想好书名。告诉 AI 一个角色、一段画面或你想获得的阅读感受，它会先整理成待确认设定。</p>
+              {% else %}
+                <p>可以讨论剧情、续写方向、人物反应或选中的正文。</p>
+              {% endif %}
+              {% if chapter and not chapter_content.strip() %}
+                <p>本章还没有正文。先说说你希望这一章完成什么，AI 会先整理写作思路，不会直接落稿。</p>
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+
+        <form id="studio-chat-form" method="post" action="/novels/{{ project.id }}/assistant/messages" class="studio-chat-composer" data-chat-form>
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="return_view" value="{{ view }}">
+          <input type="hidden" name="return_settings_tab" value="{{ active_settings_tab }}">
+          <input type="hidden" name="conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
+          <input type="hidden" name="novel_chapter_id" value="{% if chapter %}{{ chapter.id }}{% endif %}">
+          <input type="hidden" name="source_type" value="novel_version">
+          <input type="hidden" name="source_version_id" value="{% if working_version %}{{ working_version.id }}{% endif %}">
+          <input type="hidden" name="source_hash" value="{{ working_version_hash }}">
+          <input type="hidden" name="quote_start" data-quote-start value="">
+          <input type="hidden" name="quote_end" data-quote-end value="">
+          <input type="hidden" name="quote_text" data-quote-text value="">
+          <div class="studio-chat-quote" data-quote-preview hidden>
+            <span>已引用正文</span>
+            <q></q>
+            <button type="button" data-clear-quote aria-label="清除引用">×</button>
+          </div>
+          <div class="studio-chat-input">
+            <label class="sr-only" for="studio-chat-question">给 AI 的消息</label>
+            <textarea id="studio-chat-question" name="question" rows="5" maxlength="8000" required placeholder="和 AI 讨论剧情、创作或修订……"></textarea>
+            <button type="submit" aria-label="发送消息" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m4 4 16 8-16 8 3-8-3-8Z"></path>
+                <path d="M7 12h13"></path>
+              </svg>
+            </button>
+          </div>
+        </form>
+      </aside>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260725-5" defer></script>
+{% endblock %}

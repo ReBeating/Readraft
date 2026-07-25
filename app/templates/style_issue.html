@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}定点改写 · {{ issue.chapter_title }}{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <a class="back-link" href="/novels/{{ issue.project_id }}/chapters/{{ issue.chapter_id }}/versions/{{ issue.version_id }}/style">← 返回 AI 味审校报告</a>
+    <span class="eyebrow">TARGETED REWRITE</span>
+    <h1>{{ issue.issue_type|style_issue_label }}</h1>
+    <p>{{ issue.project_title }} · {{ issue.chapter_title }} · 只替换被定位的连续片段</p>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+  <section class="card selected-style-issue">
+    <div class="section-heading">
+      <h2>原文与修改目标</h2>
+      <span>{{ '待处理' if issue.status == 'open' else issue.status }}</span>
+    </div>
+    <blockquote>{{ issue.quote }}</blockquote>
+    <div class="style-evidence-grid">
+      <div><b>问题证据</b><p>{{ issue.evidence }}</p></div>
+      <div><b>读者影响</b><p>{{ issue.reader_impact }}</p></div>
+      <div><b>修改方向</b><p>{{ issue.rewrite_direction }}</p></div>
+    </div>
+  </section>
+
+  {% if issue.status == 'open' %}
+    <form method="post" action="/style-issues/{{ issue.id }}/rewrite" class="card targeted-rewrite-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <div>
+        <span class="section-kicker">OPTIONAL DIRECTION</span>
+        <h2>{% if candidates %}重新生成两个候选{% else %}生成两个局部候选{% endif %}</h2>
+        <p>模型只会收到原片段、附近上下文、问题方向和作品声纹，不会重写整章。</p>
+      </div>
+      <label>
+        <span>作者补充要求</span>
+        <textarea name="instruction" rows="3" maxlength="2000" placeholder="例如：保留这句里的海水气味；林岚此时不应表现出恐惧。"></textarea>
+      </label>
+      <button class="button primary" type="submit">生成 2 个定点改写候选</button>
+    </form>
+  {% endif %}
+
+  {% if candidates %}
+    <section class="rewrite-candidates">
+      {% for candidate in candidates %}
+        <article class="card rewrite-candidate candidate-{{ candidate.status }}">
+          <div class="section-heading">
+            <div>
+              <span class="section-kicker">OPTION {{ candidate.position }}</span>
+              <h2>候选 {{ candidate.position }}</h2>
+            </div>
+            <span>{% if candidate.status == 'candidate' %}等待选择{% elif candidate.status == 'accepted' %}已接受{% else %}已放弃{% endif %}</span>
+          </div>
+          <p class="rewrite-rationale">{{ candidate.rationale }}</p>
+          <div class="diff-grid">
+            <div>
+              <b>原文</b>
+              <p class="diff-text">{% for segment in candidate.diff.before %}<span class="{{ segment.kind }}">{{ segment.text }}</span>{% endfor %}</p>
+            </div>
+            <div>
+              <b>改写后</b>
+              <p class="diff-text">{% for segment in candidate.diff.after %}<span class="{{ segment.kind }}">{{ segment.text }}</span>{% endfor %}</p>
+            </div>
+          </div>
+          {% if candidate.status == 'candidate' and issue.status == 'open' %}
+            <form method="post" action="/style-rewrite-candidates/{{ candidate.id }}/accept">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="button primary full" type="submit">接受此候选，创建新正文版本</button>
+            </form>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  {% if issue.status == 'open' %}
+    <section class="card ignore-style-issue">
+      <h2>也可以保留原文</h2>
+      <p>忽略不是“失败”。这个选择会被记录为作者偏好，后续审校会减少类似建议。</p>
+      <form method="post" action="/style-issues/{{ issue.id }}/ignore">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <button class="button" type="submit">保留原文并记录偏好</button>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}

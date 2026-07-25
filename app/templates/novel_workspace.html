@@ -1,0 +1,1061 @@
+{% extends "base.html" %}
+{% block title %}{{ project.title }} · 创作工作台{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/dashboard">← 返回所有小说</a>
+      <span class="eyebrow">{{ project.genre }}</span>
+      <h1>{{ project.title }}</h1>
+      <p>{{ project.premise }}</p>
+      {% if project.story_promise %}<p class="story-promise"><strong>作品承诺：</strong>{{ project.story_promise }}</p>{% endif %}
+    </div>
+    <div class="heading-actions">
+      <a class="button" href="/novels/{{ project.id }}/assistant">和 AI 讨论创作</a>
+      <a class="button" href="/novels/{{ project.id }}/export.txt">导出全文</a>
+      <a class="button primary" href="#new-chapter">＋ 规划章节</a>
+    </div>
+  </section>
+
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if saved %}<div class="alert success">项目设定已保存。</div>{% endif %}
+  {% if voice_learned %}<div class="alert success">作者样章中的声纹建议已由你确认并写入作品声纹。</div>{% endif %}
+  {% if preference_learned %}<div class="alert success">你确认的手工改稿偏好已进入后续 Writer 与 AI 味审校上下文。</div>{% endif %}
+  {% if blueprint_saved %}<div class="alert success">全书蓝图修订已保存；只有确认版会进入后续 Planner 与 Writer。</div>{% endif %}
+  {% if arc_saved %}<div class="alert success">规划剧情线修订已保存；只有确认版会进入后续创作上下文。</div>{% endif %}
+  {% if story_plan_applied %}
+    <div class="alert success">
+      所选全书方案已写入新的未确认草稿。请检查、编辑并手动确认后，
+      它才会进入章节 Planner 与 Writer。
+    </div>
+  {% endif %}
+  {% if story_plan_baseline_changed %}
+    <div class="alert warning">
+      生成方案后，项目的确认计划、未来细纲或正史发生过变化。
+      系统仍只应用了草稿；确认前请重点核对冲突。
+    </div>
+  {% endif %}
+  {% if structure_applied %}
+    <div class="alert success">
+      所选分卷与滚动章节方案已应用到正史之后的未来骨架。
+      系统没有修改任何正文或正史；受影响任务卡仍需由你复查并确认。
+    </div>
+  {% endif %}
+  {% if structure_baseline_changed %}
+    <div class="alert warning">
+      生成方案后，原有未来骨架发生过变化；系统按你采纳前看到的最新差异应用，
+      并保留了未覆盖的更远章节。
+    </div>
+  {% endif %}
+  {% if structure_reverted %}
+    <div class="alert success">
+      这次滚动结构采纳已安全撤销；原有分卷、章节和任务卡状态已恢复。
+      由该方案新建的空章节文件已移入本地恢复区。
+    </div>
+  {% endif %}
+  {% if volume_saved %}
+    <div class="alert success">
+      分卷目标已保存。该卷中受影响的未来任务卡已退回草稿；
+      已有正文和正史没有被修改。
+    </div>
+  {% endif %}
+
+  <section class="studio-stats">
+    <div><strong>{{ project.total_chars|human_size }}</strong><span>当前正文</span></div>
+    <div><strong>{{ project.chapter_count }}</strong><span>规划章节</span></div>
+    <div><strong>{{ project.character_count }}</strong><span>人物卡</span></div>
+    <div><strong>{{ project.point_of_view }}</strong><span>叙事视角</span></div>
+  </section>
+
+  {% if next_chapter_workflow %}
+    {% set chapter_workflow = next_chapter_workflow %}
+    {% set workflow_context = 'workspace' %}
+    {% include "_chapter_workflow.html" %}
+  {% endif %}
+
+  <a class="card continuity-summary-card" href="/novels/{{ project.id }}/continuity">
+    <div>
+      <span class="section-kicker">CANON CONTINUITY</span>
+      <h2>正史状态与连续性</h2>
+      {% if continuity.latest_run and continuity.latest_run.replayed_chapter_count %}
+        <p>
+          已按章节顺序回放 {{ continuity.latest_run.replayed_chapter_count }} 章作者确认记忆；
+          {% if continuity.state.story_time %}故事时间到 {{ continuity.state.story_time.value }}。{% else %}故事时间尚未记录。{% endif %}
+        </p>
+      {% else %}
+        <p>确认章节正文和 Story Delta 后，这里会自动累积人物、关系、地点、物品、知情边界、剧情承诺、伏笔与事件因果链。</p>
+      {% endif %}
+    </div>
+    <div class="continuity-summary-metrics">
+      <span><strong>{{ continuity.counts.hard }}</strong>硬冲突</span>
+      <span><strong>{{ continuity.counts.warning }}</strong>待核对</span>
+      <span><strong>{{ continuity.counts.open_plot_threads + continuity.counts.open_foreshadowing }}</strong>未兑现承诺</span>
+      <b>查看状态账本 →</b>
+    </div>
+  </a>
+
+  <a class="card structure-health-summary-card {{ structure_health.status }}" href="/novels/{{ project.id }}/structure-health">
+    <div>
+      <span class="section-kicker">BOOK STRUCTURE HEALTH</span>
+      <h2>全书结构体检与窗口衔接</h2>
+      {% if structure_health.status == 'empty' %}
+        <p>尚未建立正史之后的未来章节骨架。先确认蓝图与主线，再生成第一段 10–30 章滚动结构。</p>
+      {% else %}
+        <p>
+          已核对正史边界后的全部 {{ structure_health.counts.future_chapters }} 章、
+          {{ structure_health.volumes|length }} 个未来分卷阶段和
+          {{ structure_health.counts.window_boundaries }} 个来源边界；
+          报告只提供证据与编辑入口，不会自动改纲。
+        </p>
+      {% endif %}
+    </div>
+    <div class="structure-health-summary-metrics">
+      <span><strong>{{ structure_health.counts.blocking }}</strong>硬缺口</span>
+      <span><strong>{{ structure_health.counts.warning }}</strong>待核对</span>
+      <span><strong>{{ structure_health.counts.future_chapters }}</strong>未来章节</span>
+      <b>{{ structure_health.status_label }} →</b>
+    </div>
+  </a>
+
+  <section class="card rolling-plan-card" id="rolling-plan">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">ROLLING PLAN</span>
+        <h2>未来 {{ rolling_plan.horizon }} 章滚动细纲</h2>
+      </div>
+      <span>{{ rolling_plan.confirmed_count }} 章任务卡已确认 · 尚缺 {{ rolling_plan.missing_count }} 章骨架</span>
+    </div>
+    <div class="rolling-progress">
+      <div style="width: {{ (rolling_plan.confirmed_count / rolling_plan.horizon * 100) if rolling_plan.horizon else 0 }}%"></div>
+    </div>
+    {% if rolling_plan.chapters %}
+      <div class="rolling-chapters">
+        {% for chapter in rolling_plan.chapters %}
+          <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}/task-card">
+            <span>{{ "%03d"|format(chapter.position) }}</span>
+            <strong>{{ chapter.title or '未命名章节' }}</strong>
+            {% if chapter.skeleton_role or chapter.skeleton_arc_titles %}
+              <small class="rolling-structure-meta">
+                {{ chapter.skeleton_role|chapter_structure_role_label }}
+                {% if chapter.skeleton_arc_titles %}
+                  · {{ chapter.skeleton_arc_titles|join('、') }}
+                {% endif %}
+              </small>
+            {% endif %}
+            <small>
+              {% if chapter.needs_recheck %}受前文影响，待复查
+              {% elif chapter.plan_status == 'confirmed' %}已确认 · {{ chapter.scene_count }} 个场景
+              {% else %}任务卡待确认{% endif %}
+            </small>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">还没有未来章节骨架。先在页面下方规划下一章，再由 Planner 拆成任务卡和场景节拍。</p>
+    {% endif %}
+  </section>
+
+  <section class="card story-planner-card" id="story-planner">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">DEEPSEEK STORY PLANNER</span>
+        <h2>生成三套可比较的全书方案</h2>
+      </div>
+      <span>模型提案 → 作者选择 → 草稿 → 手动确认</span>
+    </div>
+    <p class="section-intro">
+      Story Planner 会冻结当前已确认蓝图、剧情线、已发布正史、人物知情边界
+      和启用的抽象技法，一次提出三套结构。它不写正文、不自动确认、
+      不把规划当成正史；你可以只采纳某套方案的蓝图或几条剧情线。
+    </p>
+    <form method="post" action="/novels/{{ project.id }}/story-plan-suggestions" class="story-planner-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <label>
+        <span>这次希望怎么规划</span>
+        <select name="planning_mode">
+          <option value="create" {% if not story_blueprint.confirmed %}selected{% endif %}>从项目资料建立三套全书结构</option>
+          <option value="refine" {% if story_blueprint.confirmed %}selected{% endif %}>保留已确认方向，提出三种优化路径</option>
+          <option value="rethink">不改正史，重想未来结构</option>
+        </select>
+      </label>
+      <label class="story-planner-focus">
+        <span>本次重点或顾虑（可选）</span>
+        <textarea name="instruction" rows="4" maxlength="4000" placeholder="例如：希望 80 万字仍有持续发动机；感情线不能压过悬疑主线；中段要避免重复调查。这里是规划要求，不会直接进入正文。"></textarea>
+      </label>
+      <div class="story-planner-submit">
+        <div>
+          <strong>输出只会停在建议页</strong>
+          <small>
+            {% if using_mock %}
+              当前为本地 Mock，会生成可测试的三套示例方案。
+            {% else %}
+              使用 {{ '个人' if personal_api_configured else '服务器' }} DeepSeek 配置。
+            {% endif %}
+          </small>
+        </div>
+        <button class="button primary" type="submit">生成三套全书方案</button>
+      </div>
+    </form>
+
+    {% if story_plan_suggestions %}
+      <div class="story-plan-history">
+        <strong>最近方案</strong>
+        {% for suggestion in story_plan_suggestions %}
+          <a href="/story-plan-suggestions/{{ suggestion.id }}">
+            <div>
+              <b>{{ suggestion.planning_mode|story_planning_mode_label }}</b>
+              <small>
+                {{ suggestion.provider }} / {{ suggestion.model }}
+                {% if suggestion.application_count %}
+                  · 已采纳 {{ suggestion.application_count }} 次
+                {% endif %}
+              </small>
+            </div>
+            <span class="status {{ suggestion.status }}">{{ suggestion.status|story_plan_status_label }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="card story-blueprint-card" id="story-blueprint">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">STORY BLUEPRINT</span>
+        <h2>全书蓝图</h2>
+      </div>
+      <span class="blueprint-status {% if story_blueprint.confirmed %}confirmed{% else %}draft{% endif %}">
+        {% if story_blueprint.confirmed and story_blueprint.has_unconfirmed_changes %}
+          确认版生效中 · 有未确认修订
+        {% elif story_blueprint.confirmed %}
+          第 {{ story_blueprint.confirmed.revision }} 版已确认
+        {% elif story_blueprint.current %}
+          草稿，尚未进入创作上下文
+        {% else %}
+          尚未建立
+        {% endif %}
+      </span>
+    </div>
+    <p class="section-intro">
+      这里定义全书层面的核心悬问、长期目标、冲突引擎、关键转折和必须兑现项。
+      保存草稿不会改变当前生成；只有你确认的版本才会进入 Planner、Writer 和剧情调整。
+    </p>
+
+    {% if story_blueprint.confirmed %}
+      <div class="blueprint-summary">
+        <div>
+          <small>核心悬问</small>
+          <strong>{{ story_blueprint.confirmed.central_question }}</strong>
+        </div>
+        <div>
+          <small>主角长期目标</small>
+          <strong>{{ story_blueprint.confirmed.protagonist_goal }}</strong>
+        </div>
+        <div>
+          <small>冲突引擎</small>
+          <p>{{ story_blueprint.confirmed.core_conflict }}</p>
+        </div>
+        <div>
+          <small>终局状态</small>
+          <p>{{ story_blueprint.confirmed.ending_state }}</p>
+        </div>
+      </div>
+      {% if story_blueprint.confirmed.major_turns %}
+        <div class="blueprint-sequence">
+          {% for turn in story_blueprint.confirmed.major_turns %}
+            <span><b>{{ loop.index }}</b>{{ turn }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="empty-inline">
+        <strong>目前只有项目梗概，还没有可执行的全书结构</strong>
+        <p>先保存草稿，再确认一个你愿意让后续章节持续遵守的版本。</p>
+      </div>
+    {% endif %}
+
+    <details class="inline-details blueprint-editor" {% if not story_blueprint.current %}open{% endif %}>
+      <summary>
+        {% if story_blueprint.current %}编辑当前修订{% else %}＋ 建立全书蓝图{% endif %}
+      </summary>
+      <form method="post" action="/novels/{{ project.id }}/story-blueprint" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label>
+            <span>核心悬问</span>
+            <textarea name="central_question" rows="4" maxlength="2000" placeholder="读者跟随整部作品，最终必须得到回答的核心问题是什么？">{{ story_blueprint_form.central_question or '' }}</textarea>
+          </label>
+          <label>
+            <span>主角长期目标</span>
+            <textarea name="protagonist_goal" rows="4" maxlength="2000" placeholder="主角持续主动追求什么？">{{ story_blueprint_form.protagonist_goal or '' }}</textarea>
+          </label>
+          <label>
+            <span>全书冲突引擎</span>
+            <textarea name="core_conflict" rows="5" maxlength="3000" placeholder="什么力量会持续制造选择、阻力和代价，而不是只提供一次性事件？">{{ story_blueprint_form.core_conflict or '' }}</textarea>
+          </label>
+          <label>
+            <span>长期代价与风险</span>
+            <textarea name="stakes" rows="5" maxlength="3000" placeholder="失败会失去什么？推进调查、关系或成长需要付出什么？">{{ story_blueprint_form.stakes or '' }}</textarea>
+          </label>
+          <label>
+            <span>开篇状态</span>
+            <textarea name="opening_state" rows="5" maxlength="3000" placeholder="故事开始时，人物、关系和世界处于什么稳定但不可持续的状态？">{{ story_blueprint_form.opening_state or '' }}</textarea>
+          </label>
+          <label>
+            <span>终局状态</span>
+            <textarea name="ending_state" rows="5" maxlength="3000" placeholder="终局结束时，人物做出了什么选择，世界与关系发生了什么不可逆变化？">{{ story_blueprint_form.ending_state or '' }}</textarea>
+          </label>
+          <label>
+            <span>全书关键转折（每行一条，按顺序）</span>
+            <textarea name="major_turns" rows="7" maxlength="12000" placeholder="主角被迫进入主线&#10;中段认知被推翻&#10;旧方案彻底失败&#10;终局选择形成">{{ story_blueprint_form.major_turns|join('\n') if story_blueprint_form.major_turns else '' }}</textarea>
+          </label>
+          <label>
+            <span>必须兑现项（每行一条）</span>
+            <textarea name="must_payoffs" rows="7" maxlength="18000" placeholder="核心谜团的因果答案&#10;主角与关键人物关系的最终选择">{{ story_blueprint_form.must_payoffs|join('\n') if story_blueprint_form.must_payoffs else '' }}</textarea>
+          </label>
+          <label>
+            <span>禁止捷径（每行一条）</span>
+            <textarea name="forbidden_shortcuts" rows="7" maxlength="18000" placeholder="不能靠新角色突然解释全部真相&#10;不能让反派因低级失误直接失败">{{ story_blueprint_form.forbidden_shortcuts|join('\n') if story_blueprint_form.forbidden_shortcuts else '' }}</textarea>
+          </label>
+          <label>
+            <span>作者备注</span>
+            <textarea name="author_notes" rows="7" maxlength="6000" placeholder="记录仍在犹豫的方向；作者备注不会覆盖正史与章节任务卡。">{{ story_blueprint_form.author_notes or '' }}</textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button class="button" type="submit" name="action" value="save_draft">保存为新草稿修订</button>
+          <button class="button primary" type="submit" name="action" value="confirm">确认并用于后续创作</button>
+        </div>
+      </form>
+    </details>
+
+    {% if story_blueprint_versions %}
+      <details class="inline-details blueprint-history">
+        <summary>查看最近修订</summary>
+        <ol>
+          {% for version in story_blueprint_versions %}
+            <li>
+              <div>
+                <b>第 {{ version.revision }} 版</b>
+                <small>
+                  {{ '已确认' if version.version_status == 'confirmed' else '草稿' }}
+                  · {{ version.source }} · {{ version.created_at }}
+                </small>
+              </div>
+              {% if version.id != story_blueprint.current_version_id %}
+                <form method="post" action="/novels/{{ project.id }}/story-blueprint/versions/{{ version.id }}/restore">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="button small" type="submit">恢复为新草稿</button>
+                </form>
+              {% else %}
+                <span class="status completed">当前修订</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      </details>
+    {% endif %}
+  </section>
+
+  <section class="workspace-section planned-arcs-section" id="plot-arcs">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">PLANNED STORY ARCS</span>
+        <h2>主线、支线与人物关系线</h2>
+      </div>
+      <span>{{ planned_plot_arcs|length }} 条规划线</span>
+    </div>
+    <p class="section-intro">
+      这是写前计划，不是已经发生的正史。章节 Planner 会看到全部确认线；
+      Writer 只会看到本章任务卡用精确标题选中的线，避免每章同时推进所有支线。
+    </p>
+
+    {% if planned_plot_arcs %}
+      <div class="planned-arc-grid">
+        {% for arc in planned_plot_arcs %}
+          <article class="card planned-arc-card {{ arc.lifecycle_status }}" id="plot-arc-{{ arc.id }}">
+            <div class="planned-arc-heading">
+              <div>
+                <span class="section-kicker">
+                  {{ arc.arc_type|story_arc_type_label }} · 优先级 {{ arc.priority }}
+                </span>
+                <h3>{{ arc.title }}</h3>
+              </div>
+              <span class="status {{ 'completed' if arc.confirmed_version_id else 'queued' }}">
+                {% if arc.confirmed_version_id and arc.has_unconfirmed_changes %}
+                  确认版生效中 · 有草稿
+                {% elif arc.confirmed_version_id %}
+                  {{ arc.lifecycle_status|story_arc_lifecycle_label }}
+                {% else %}
+                  草稿，不进入上下文
+                {% endif %}
+              </span>
+            </div>
+            {% if arc.dramatic_question %}<p><b>悬问</b>{{ arc.dramatic_question }}</p>{% endif %}
+            {% if arc.promise %}<p><b>承诺</b>{{ arc.promise }}</p>{% endif %}
+            {% if arc.start_state or arc.target_payoff %}
+              <p><b>规划变化</b>{{ arc.start_state or '待补充' }} → {{ arc.target_payoff or '待补充' }}</p>
+            {% endif %}
+            {% if arc.involved_characters %}
+              <p><b>人物</b>{{ arc.involved_characters|join('、') }}</p>
+            {% endif %}
+            {% if arc.planned_turns %}
+              <ol class="arc-turns">
+                {% for turn in arc.planned_turns %}<li>{{ turn }}</li>{% endfor %}
+              </ol>
+            {% endif %}
+
+            <details class="inline-details">
+              <summary>编辑这条规划线</summary>
+              <form method="post" action="/novels/{{ project.id }}/plot-arcs/{{ arc.id }}" class="form-card embedded-form">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <div class="form-grid">
+                  <label>
+                    <span>类型</span>
+                    <select name="arc_type">
+                      {% for option in story_arc_type_options %}
+                        <option value="{{ option }}" {% if option == arc.arc_type %}selected{% endif %}>{{ option|story_arc_type_label }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  <label><span>名称</span><input name="title" value="{{ arc.title }}" maxlength="160" required></label>
+                  <label>
+                    <span>当前规划阶段</span>
+                    <select name="lifecycle_status">
+                      {% for option in story_arc_lifecycle_options %}
+                        <option value="{{ option }}" {% if option == arc.lifecycle_status %}selected{% endif %}>{{ option|story_arc_lifecycle_label }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  <label><span>优先级（1–5）</span><input type="number" name="priority" min="1" max="5" value="{{ arc.priority }}"></label>
+                </div>
+                <label><span>剧情线悬问</span><textarea name="dramatic_question" rows="4" maxlength="2000">{{ arc.dramatic_question }}</textarea></label>
+                <label><span>对读者的承诺</span><textarea name="promise" rows="4" maxlength="2000">{{ arc.promise }}</textarea></label>
+                <div class="form-grid">
+                  <label><span>起始状态</span><textarea name="start_state" rows="4" maxlength="2000">{{ arc.start_state }}</textarea></label>
+                  <label><span>目标回报</span><textarea name="target_payoff" rows="4" maxlength="3000">{{ arc.target_payoff }}</textarea></label>
+                  <label><span>涉及人物（每行一位）</span><textarea name="involved_characters" rows="5" maxlength="4000">{{ arc.involved_characters|join('\n') }}</textarea></label>
+                  <label><span>计划转折（每行一条）</span><textarea name="planned_turns" rows="5" maxlength="12000">{{ arc.planned_turns|join('\n') }}</textarea></label>
+                </div>
+                <label><span>作者备注</span><textarea name="author_notes" rows="4" maxlength="4000">{{ arc.author_notes }}</textarea></label>
+                <div class="form-actions">
+                  <button class="button" type="submit" name="action" value="save_draft">保存草稿修订</button>
+                  <button class="button primary" type="submit" name="action" value="confirm">确认并用于后续创作</button>
+                </div>
+              </form>
+              {% if arc.lifecycle_status != 'abandoned' %}
+                <form method="post" action="/novels/{{ project.id }}/plot-arcs/{{ arc.id }}/archive" class="archive-arc-form">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="button small" type="submit">放弃并退出创作上下文</button>
+                </form>
+              {% endif %}
+            </details>
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <details class="card inline-creator" {% if not planned_plot_arcs %}open{% endif %}>
+      <summary>＋ 添加规划剧情线</summary>
+      <form method="post" action="/novels/{{ project.id }}/plot-arcs" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label>
+            <span>类型</span>
+            <select name="arc_type">
+              {% for option in story_arc_type_options %}
+                <option value="{{ option }}">{{ option|story_arc_type_label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label><span>名称</span><input name="title" maxlength="160" required placeholder="父亲失踪之谜"></label>
+          <label>
+            <span>当前规划阶段</span>
+            <select name="lifecycle_status">
+              {% for option in story_arc_lifecycle_options %}
+                <option value="{{ option }}">{{ option|story_arc_lifecycle_label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label><span>优先级（1–5）</span><input type="number" name="priority" min="1" max="5" value="3"></label>
+        </div>
+        <label><span>剧情线悬问</span><textarea name="dramatic_question" rows="4" maxlength="2000" placeholder="这条线持续要求回答什么问题？"></textarea></label>
+        <label><span>对读者的承诺</span><textarea name="promise" rows="4" maxlength="2000" placeholder="读者持续跟进这条线，最终会得到什么揭示、胜利或关系变化？"></textarea></label>
+        <div class="form-grid">
+          <label><span>起始状态</span><textarea name="start_state" rows="4" maxlength="2000"></textarea></label>
+          <label><span>目标回报</span><textarea name="target_payoff" rows="4" maxlength="3000"></textarea></label>
+          <label><span>涉及人物（每行一位）</span><textarea name="involved_characters" rows="5" maxlength="4000"></textarea></label>
+          <label><span>计划转折（每行一条）</span><textarea name="planned_turns" rows="5" maxlength="12000"></textarea></label>
+        </div>
+        <label><span>作者备注</span><textarea name="author_notes" rows="4" maxlength="4000"></textarea></label>
+        <div class="form-actions">
+          <button class="button" type="submit" name="action" value="save_draft">保存草稿</button>
+          <button class="button primary" type="submit" name="action" value="confirm">确认并用于后续创作</button>
+        </div>
+      </form>
+    </details>
+  </section>
+
+  <section class="card rolling-structure-planner" id="rolling-structure">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">DEEPSEEK STRUCTURE PLANNER</span>
+        <h2>把确认计划展开为分卷与未来章节</h2>
+      </div>
+      <span>三套比较 → 精确差异 → 作者采纳</span>
+    </div>
+    <p class="section-intro">
+      这里读取确认版全书蓝图、可推进剧情线和作者确认正史，生成三套
+      未来 10–30 章结构。模型只提案；采纳前会逐项列出新建、更新和保留
+      的分卷、章节与任务卡，正文、候选版本和正史指针永远不在改动范围内。
+    </p>
+
+    {% if structure_ready %}
+      <form method="post" action="/novels/{{ project.id }}/story-structure-suggestions" class="story-planner-form structure-planner-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label>
+          <span>滚动窗口章数</span>
+          <input type="number" name="chapter_count" min="10" max="30" value="{{ structure_default_chapter_count }}" required>
+          <small>建议 20 章；方案会从当前正史下一章连续展开。</small>
+        </label>
+        <label class="story-planner-focus">
+          <span>这次结构重点或顾虑（可选）</span>
+          <textarea name="instruction" rows="4" maxlength="4000" placeholder="例如：前五章尽快建立追查目标；每卷都要有局部回报；关系线只在主线行动产生后果时推进。"></textarea>
+        </label>
+        <div class="story-planner-submit">
+          <div>
+            <strong>不会直接写正文或确认任务卡</strong>
+            <small>
+              {% if using_mock %}
+                当前为本地 Mock，可完整测试三方案、差异预览、采纳与撤销。
+              {% else %}
+                使用 {{ '个人' if personal_api_configured else '服务器' }} DeepSeek 配置。
+              {% endif %}
+            </small>
+          </div>
+          <button class="button primary" type="submit">生成三套分卷与章节骨架</button>
+        </div>
+      </form>
+    {% else %}
+      <div class="empty-inline structure-planner-gate">
+        <strong>先确认全书蓝图和至少一条可推进主线</strong>
+        <p>
+          未确认草稿不会进入结构生成。请在上方补全并确认蓝图，
+          再把一条 main 主线设为“计划中”或“推进中”并确认。
+        </p>
+      </div>
+    {% endif %}
+
+    {% if story_structure_suggestions %}
+      <div class="story-plan-history structure-plan-history">
+        <strong>最近滚动结构方案</strong>
+        {% for suggestion in story_structure_suggestions %}
+          <a href="/story-structure-suggestions/{{ suggestion.id }}">
+            <div>
+              <b>未来 {{ suggestion.chapter_count }} 章</b>
+              <small>
+                {{ suggestion.provider }} / {{ suggestion.model }}
+                {% if suggestion.active_application_count %}
+                  · {{ suggestion.active_application_count }} 次采纳仍生效
+                {% endif %}
+              </small>
+            </div>
+            <span class="status {{ suggestion.status }}">{{ suggestion.status|story_plan_status_label }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="workspace-section project-techniques-section" id="techniques">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">WRITING METHODS</span>
+        <h2>本书启用的写作技法</h2>
+      </div>
+      <a class="text-link" href="/techniques">管理技法库 →</a>
+    </div>
+    <p class="section-intro">这里只显示作者主动绑定的方法。Planner、Writer 和审校器按范围与阶段读取抽象规则，并同时读取原创性边界。</p>
+    {% if project_techniques %}
+      <div class="project-technique-grid">
+        {% for binding in project_techniques %}
+          <a class="card project-technique-card {{ binding.status }}" href="/techniques/{{ binding.technique_id }}">
+            <div>
+              <span class="tag">{{ binding.dimension|technique_dimension_label }}</span>
+              <span class="status {{ binding.status }}">{{ '启用' if binding.status == 'enabled' else '停用' }}</span>
+            </div>
+            <strong>{{ binding.name }}</strong>
+            <p>{{ binding.execution_rule }}</p>
+            <small>
+              {{ binding.scope_type|technique_scope_label }}
+              · {{ binding.usage_modes|map('technique_usage_label')|join(' / ') }}
+              · 优先级 {{ binding.priority }}
+            </small>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <section class="card empty-impact">
+        <h3>尚未给本书启用技法</h3>
+        <p>可以从拆文分析保存技法卡，也可以在个人技法库手动建立，再选择应用范围。</p>
+        <a class="button" href="/techniques">打开技法库</a>
+      </section>
+    {% endif %}
+  </section>
+
+  <section class="workspace-section reader-decisions-section" id="reader-decisions">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">READER DECISIONS</span>
+        <h2>读者意见与剧情调整</h2>
+      </div>
+      <span>{{ reader_requests|length }} 条意见</span>
+    </div>
+    <p class="section-intro">读者意见不会直接进入 Writer。Planner 先给出三个带代价的未来走向，只有你采纳的方案才会更新滚动细纲；涉及已发表正史的方案会被阻止。</p>
+
+    {% if reader_requests %}
+      <div class="reader-request-list">
+        {% for item in reader_requests %}
+          <a class="card reader-request-row" href="/reader-requests/{{ item.id }}">
+            <div>
+              <span>{{ item.request_type|reader_request_type_label }} · {{ item.impact_scope|reader_scope_label }}</span>
+              <strong>{{ item.raw_text }}</strong>
+              <small>{{ '硬性优先' if item.priority == 'hard' else '软性参考' }} · {{ item.proposal_count }} 个当前方案</small>
+            </div>
+            <span class="status {{ item.status }}">{{ item.status|reader_status_label }} →</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <details class="card inline-creator" {% if not reader_requests %}open{% endif %}>
+      <summary>＋ 录入一条读者意见</summary>
+      <form method="post" action="/novels/{{ project.id }}/reader-requests" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label><span>读者原始意见</span><textarea name="raw_text" rows="4" maxlength="8000" required placeholder="例如：希望女主不要这么快原谅搭档；当前调查线连续三章没有实质进展。"></textarea></label>
+        <div class="form-grid">
+          <label>
+            <span>意见类型</span>
+            <select name="request_type">
+              <option value="plot">剧情</option>
+              <option value="pace">节奏</option>
+              <option value="character">人物</option>
+              <option value="relationship">关系</option>
+              <option value="world">世界设定</option>
+              <option value="payoff">回报 / 爽点</option>
+              <option value="other">其他</option>
+            </select>
+          </label>
+          <label>
+            <span>影响范围</span>
+            <select name="impact_scope">
+              <option value="next_chapter">下一章</option>
+              <option value="next_three" selected>未来三章</option>
+              <option value="current_volume">当前分卷</option>
+              <option value="long_term">长期主线</option>
+            </select>
+          </label>
+          <label>
+            <span>优先级</span>
+            <select name="priority">
+              <option value="soft" selected>软性参考</option>
+              <option value="hard">硬性优先</option>
+            </select>
+          </label>
+        </div>
+        <label><span>不可破坏的约束（每行一条）</span><textarea name="constraints" rows="4" maxlength="6000" placeholder="不得改变父亲已经死亡的正史事实&#10;不得让林岚提前知道寄信人"></textarea></label>
+        <label><span>作者备注</span><textarea name="author_note" rows="3" maxlength="4000" placeholder="说明你赞同、怀疑或希望保留的部分。"></textarea></label>
+        <button class="button primary" type="submit">保存并评估</button>
+      </form>
+    </details>
+
+    {% if impact_reports %}
+      <div class="impact-report-index">
+        <strong>最近的旧章正史影响报告</strong>
+        {% for report in impact_reports %}
+          <a href="/canon-impact-reports/{{ report.id }}">
+            <span>第 {{ report.chapter_position }} 章 · {{ report.chapter_title }}</span>
+            <small>{{ report.downstream_count }} 个后续正史章节 · {{ report.item_count }} 项依赖</small>
+            <b>{{ report.status }}</b>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <details class="card workspace-panel">
+    <summary>
+      <span><strong>项目设定</strong><small>梗概、世界规则与统一文风</small></span>
+      <span>编辑</span>
+    </summary>
+    <form method="post" action="/novels/{{ project.id }}/settings" class="form-card embedded-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label><span>书名</span><input name="title" value="{{ project.title }}" maxlength="120" required></label>
+        <label><span>题材</span><input name="genre" value="{{ project.genre }}" maxlength="80"></label>
+        <label>
+          <span>叙事视角</span>
+          <select name="point_of_view">
+            {% for option in pov_options %}
+              <option value="{{ option }}" {% if project.point_of_view == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label><span>单章目标字数</span><input type="number" name="target_chapter_chars" min="2000" max="12000" step="100" value="{{ project.target_chapter_chars }}"></label>
+        <label><span>滚动规划窗口</span><input type="number" name="planning_horizon" min="3" max="50" value="{{ project.planning_horizon or 20 }}"><small>始终维护未来多少章的任务卡，建议 10–30。</small></label>
+        <label><span>目标读者</span><input name="target_audience" value="{{ project.target_audience }}" maxlength="1000" placeholder="例如：喜欢现实派悬疑与慢热关系线的读者"></label>
+      </div>
+      <label><span>核心梗概</span><textarea name="premise" rows="4" maxlength="4000" required>{{ project.premise }}</textarea></label>
+      <label><span>作品承诺</span><textarea name="story_promise" rows="3" maxlength="4000" placeholder="读者持续阅读这部作品，稳定能获得什么体验？">{{ project.story_promise }}</textarea></label>
+      <label><span>核心吸引力 / 情绪价值</span><textarea name="core_appeal" rows="3" maxlength="4000" placeholder="谜团、反击、成长、关系张力、世界探索……">{{ project.core_appeal }}</textarea></label>
+      <label><span>结局约束</span><textarea name="ending_constraint" rows="3" maxlength="4000" placeholder="终局必须兑现或绝不能破坏的承诺。">{{ project.ending_constraint }}</textarea></label>
+      <label><span>世界设定</span><textarea name="world_setting" rows="6" maxlength="20000">{{ project.world_setting }}</textarea></label>
+      <label><span>文风要求</span><textarea name="style_guide" rows="4" maxlength="10000">{{ project.style_guide }}</textarea></label>
+      <label><span>本书 AI 协作补充指令</span><textarea name="ai_instructions" rows="4" maxlength="10000">{{ project.ai_instructions }}</textarea></label>
+      <button class="button primary" type="submit">保存项目设定</button>
+    </form>
+  </details>
+
+  <section class="card voice-profile-card" id="voice">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">VOICE PROFILE</span>
+        <h2>作品声纹</h2>
+      </div>
+      <span class="voice-status {{ voice_profile.status if voice_profile else 'draft' }}">
+        {% if voice_profile and voice_profile.status == 'confirmed' %}已确认，可执行 AI 味审校{% else %}草稿，尚未进入审校{% endif %}
+      </span>
+    </div>
+    <p>不要只写“细腻、冷峻”。把句段节奏、叙述距离、人物说话方式、允许的留白与禁用表达写成可执行规则。</p>
+    <form method="post" action="/novels/{{ project.id }}/voice" class="form-card embedded-form">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label>
+          <span>叙述规则</span>
+          <textarea name="narration_rules" rows="5" maxlength="6000" placeholder="例如：第三人称紧贴林岚，只写她能观察或推断的内容；心理描写必须由当前刺激触发。">{{ voice_profile.narration_rules if voice_profile else project.style_guide }}</textarea>
+        </label>
+        <label>
+          <span>句段节奏</span>
+          <textarea name="sentence_rhythm" rows="5" maxlength="4000" placeholder="例如：调查段落以短句推进，信息反转前允许一个较长复句；避免连续三段同长度。">{{ voice_profile.sentence_rhythm if voice_profile else '' }}</textarea>
+        </label>
+        <label>
+          <span>人物对话声音</span>
+          <textarea name="dialogue_voice" rows="5" maxlength="6000" placeholder="分角色记录说话长度、停顿、回避方式和口头习惯。">{{ voice_profile.dialogue_voice if voice_profile else '' }}</textarea>
+        </label>
+        <label>
+          <span>感官与意象来源</span>
+          <textarea name="sensory_palette" rows="5" maxlength="4000" placeholder="例如：优先使用港口劳动、盐雾、旧金属和潮湿纸张；不使用通用星空、深渊意象。">{{ voice_profile.sensory_palette if voice_profile else '' }}</textarea>
+        </label>
+        <label>
+          <span>比喻策略</span>
+          <textarea name="metaphor_policy" rows="4" maxlength="4000" placeholder="密度、来源和不允许的万能比喻。">{{ voice_profile.metaphor_policy if voice_profile else '' }}</textarea>
+        </label>
+        <label>
+          <span>允许的省略与留白</span>
+          <textarea name="allowed_omissions" rows="4" maxlength="4000" placeholder="哪些动机不解释，哪些情绪可以停在动作或对话潜台词上。">{{ voice_profile.allowed_omissions if voice_profile else '' }}</textarea>
+        </label>
+        <label>
+          <span>希望保留的表达方式（每行一条）</span>
+          <textarea name="preferred_patterns" rows="5" maxlength="6000">{{ voice_profile.preferred_patterns|join('\n') if voice_profile else '' }}</textarea>
+        </label>
+        <label>
+          <span>禁用词与禁用句式（每行一条）</span>
+          <textarea name="banned_expressions" rows="5" maxlength="6000" placeholder="不禁&#10;内心深处&#10;仿佛在诉说着">{{ voice_profile.banned_expressions|join('\n') if voice_profile else '' }}</textarea>
+        </label>
+      </div>
+      <label>
+        <span>作者补充说明</span>
+        <textarea name="author_notes" rows="4" maxlength="6000">{{ voice_profile.author_notes if voice_profile else '' }}</textarea>
+      </label>
+      <div class="form-actions">
+        <button class="button" type="submit" name="action" value="save_draft">保存草稿</button>
+        <button class="button primary" type="submit" name="action" value="confirm">确认并用于审校</button>
+      </div>
+    </form>
+    <div class="voice-learning-panel" id="voice-learning">
+      <div class="section-heading compact">
+        <div>
+          <span class="section-kicker">AUTHOR SAMPLE</span>
+          <h3>从我的样章提取声纹</h3>
+        </div>
+        <span>只生成建议，不自动改写声纹</span>
+      </div>
+      <p>
+        粘贴一段你自己的小说文字，系统会引用可逐字核对的短证据，把写作习惯
+        转成可执行规则。没有样章证据的维度必须留空，最终仍由你编辑和确认。
+      </p>
+      <details class="inline-details">
+        <summary>＋ 分析一段我的写作</summary>
+        <form method="post" action="/novels/{{ project.id }}/voice/suggestions" class="form-card embedded-form voice-sample-form">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <label>
+            <span>样章名称</span>
+            <input name="sample_title" maxlength="120" required placeholder="例如：我写的第三章片段">
+          </label>
+          <label>
+            <span>作者样章（500–30,000 字）</span>
+            <textarea name="sample_text" rows="12" minlength="500" maxlength="30000" required placeholder="粘贴你自己创作、且有权用于分析的小说正文。"></textarea>
+          </label>
+          <label>
+            <span>希望重点保留或明确避免的方向（可选）</span>
+            <textarea name="author_intent" rows="4" maxlength="2000" placeholder="例如：保留动作先于解释的习惯；不要使用“命运的齿轮”。只有这里明确禁止的表达才可能进入禁用列表。"></textarea>
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" name="rights_confirmed" value="yes" required>
+            <span>我确认这段样章是我创作或有权用于分析的文本。</span>
+          </label>
+          <button class="button primary" type="submit">提取可审核声纹建议</button>
+        </form>
+      </details>
+      {% if voice_suggestions %}
+        <div class="voice-suggestion-list">
+          {% for suggestion in voice_suggestions %}
+            <a href="/voice-suggestions/{{ suggestion.id }}">
+              <div>
+                <strong>{{ suggestion.sample_title }}</strong>
+                <small>{{ suggestion.sample_char_count|human_size }} · {{ suggestion.provider }} / {{ suggestion.model }}</small>
+              </div>
+              <span class="status {{ suggestion.status }}">{{ suggestion.status|voice_suggestion_status_label }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+    {% if style_preferences %}
+      <div class="learned-preferences">
+        <strong>最近沉淀的作者选择</strong>
+        <ul>
+          {% for preference in style_preferences %}
+            <li>
+              <span>
+                {% if preference.decision == 'accepted_rewrite' %}接受改写
+                {% elif preference.decision == 'confirmed_manual_edit' %}确认手工改稿偏好
+                {% else %}忽略建议{% endif %}
+              </span>
+              <p>{{ preference.guidance }}</p>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="card editing-preferences-card" id="editing-preferences">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">EDITING MEMORY</span>
+        <h2>编辑记忆与去 AI 味偏好</h2>
+      </div>
+      <span>
+        {{ editing_memory_summary.stable_count or 0 }} 条稳定偏好 ·
+        {{ editing_memory_summary.single_count or 0 }} 条单次规则
+      </span>
+    </div>
+    <p>
+      在章节或场景编辑器手工保存新版本后，点击“从这次改稿学习”。
+      单次规则仍须由你逐项确认；当同类选择在多次改稿中重复出现时，
+      可在编辑记忆页归并为稳定偏好、标注冲突，并观察后续审校中的同期趋势。
+      Writer 只接收抽象规则，不会收到人物名、剧情句子等证据原文。
+    </p>
+    <div class="editing-memory-overview">
+      <div>
+        <strong>{{ editing_memory_summary.stable_count or 0 }}</strong>
+        <span>稳定偏好</span>
+      </div>
+      <div>
+        <strong>{{ editing_memory_summary.single_count or 0 }}</strong>
+        <span>单次确认规则</span>
+      </div>
+      <div>
+        <strong>{{ editing_memory_summary.conflict_count or 0 }}</strong>
+        <span>冲突证据</span>
+      </div>
+    </div>
+    <div class="form-actions">
+      <a class="button primary" href="/novels/{{ project.id }}/editing-memory">管理编辑记忆</a>
+      {% if editing_preference_suggestions %}
+        <a class="button" href="/editing-preference-suggestions/{{ editing_preference_suggestions[0].id }}">查看最近学习任务</a>
+      {% endif %}
+    </div>
+
+    {% if editing_preferences %}
+      <div class="confirmed-editing-preferences">
+        <strong>Writer 当前还会读取的单次确认规则（最近 {{ [editing_preferences|length, 3]|min }} 条）</strong>
+        <ol>
+          {% for preference in editing_preferences[:3] %}
+            <li>
+              <div>
+                <span>{{ preference.category|edit_preference_category_label }}</span>
+                <p>{{ preference.guidance }}</p>
+                <small>适用：{{ preference.applicability }}</small>
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="workspace-section" id="volumes">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">VOLUMES</span>
+        <h2>分卷与阶段目标</h2>
+      </div>
+      <span>{{ volumes|length }} 卷</span>
+    </div>
+
+    {% if volumes %}
+      <div class="volume-grid">
+        {% for volume in volumes %}
+          <article class="card volume-card" id="volume-{{ volume.id }}">
+            <span class="section-kicker">VOLUME {{ "%02d"|format(volume.position) }} · {{ volume.chapter_count }} 章</span>
+            <h3>{{ volume.title }}</h3>
+            {% if volume.goal %}<p><b>目标</b>{{ volume.goal }}</p>{% endif %}
+            {% if volume.major_conflict %}<p><b>冲突</b>{{ volume.major_conflict }}</p>{% endif %}
+            {% if volume.start_state or volume.end_state %}<p><b>变化</b>{{ volume.start_state or '待补充' }} → {{ volume.end_state or '待补充' }}</p>{% endif %}
+            {% if volume.payoff %}<p><b>回报</b>{{ volume.payoff }}</p>{% endif %}
+            <details class="volume-edit-panel">
+              <summary>编辑分卷目标</summary>
+              <form method="post" action="/novels/{{ project.id }}/volumes/{{ volume.id }}/edit" class="form-card compact-form">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <label><span>分卷名</span><input name="title" value="{{ volume.title }}" maxlength="120" required></label>
+                <label><span>本卷目标</span><textarea name="goal" rows="3" maxlength="4000">{{ volume.goal }}</textarea></label>
+                <div class="form-grid">
+                  <label><span>开卷状态</span><textarea name="start_state" rows="3" maxlength="4000">{{ volume.start_state }}</textarea></label>
+                  <label><span>收卷状态</span><textarea name="end_state" rows="3" maxlength="4000">{{ volume.end_state }}</textarea></label>
+                  <label><span>主要冲突</span><textarea name="major_conflict" rows="3" maxlength="4000">{{ volume.major_conflict }}</textarea></label>
+                  <label><span>本卷回报</span><textarea name="payoff" rows="3" maxlength="4000">{{ volume.payoff }}</textarea></label>
+                </div>
+                {% if volume.future_chapter_count %}
+                  <small>
+                    保存后，本卷 {{ volume.future_chapter_count }} 个未来章节中的已确认任务卡
+                    会退回草稿；{{ volume.canonical_chapter_count }} 个正史章节不会改变。
+                  </small>
+                {% else %}
+                  <small>当前分卷没有需要失效的未来任务卡。</small>
+                {% endif %}
+                <button class="button small" type="submit">保存分卷修订</button>
+              </form>
+            </details>
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <details class="card inline-creator" {% if not volumes %}open{% endif %}>
+      <summary>＋ 添加分卷</summary>
+      <form method="post" action="/novels/{{ project.id }}/volumes" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <label><span>分卷名</span><input name="title" maxlength="120" required placeholder="第一卷 回到雾港"></label>
+        <label><span>本卷目标</span><textarea name="goal" rows="3" maxlength="4000"></textarea></label>
+        <div class="form-grid">
+          <label><span>开卷状态</span><textarea name="start_state" rows="4" maxlength="4000"></textarea></label>
+          <label><span>收卷状态</span><textarea name="end_state" rows="4" maxlength="4000"></textarea></label>
+          <label><span>主要冲突</span><textarea name="major_conflict" rows="4" maxlength="4000"></textarea></label>
+          <label><span>本卷回报</span><textarea name="payoff" rows="4" maxlength="4000" placeholder="本卷承诺给读者的揭示、胜利或情绪兑现。"></textarea></label>
+        </div>
+        <button class="button primary" type="submit">保存分卷</button>
+      </form>
+    </details>
+  </section>
+
+  <section class="workspace-section" id="characters">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">CHARACTERS</span>
+        <h2>人物卡</h2>
+      </div>
+      <span>{{ characters|length }} 位</span>
+    </div>
+
+    {% if characters %}
+      <div class="character-grid">
+        {% for character in characters %}
+          <article class="card character-card">
+            <div class="character-top">
+              <div><strong>{{ character.name }}</strong><span>{{ character.role or '角色定位待补充' }}</span></div>
+              <form method="post" action="/novels/{{ project.id }}/characters/{{ character.id }}/delete">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button class="icon-button" type="submit" aria-label="删除 {{ character.name }}">×</button>
+              </form>
+            </div>
+            {% if character.traits %}<p><b>性格</b>{{ character.traits }}</p>{% endif %}
+            {% if character.background %}<p><b>背景</b>{{ character.background }}</p>{% endif %}
+            {% if character.character_arc %}<p><b>弧光</b>{{ character.character_arc }}</p>{% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <details class="card inline-creator" {% if not characters %}open{% endif %}>
+      <summary>＋ 添加人物</summary>
+      <form method="post" action="/novels/{{ project.id }}/characters" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label><span>人物名</span><input name="name" maxlength="60" required></label>
+          <label><span>角色定位</span><input name="role" maxlength="300" placeholder="主角 / 对手 / 引路人"></label>
+        </div>
+        <label><span>性格特征</span><textarea name="traits" rows="3" maxlength="1000"></textarea></label>
+        <label><span>人物背景</span><textarea name="background" rows="4" maxlength="4000"></textarea></label>
+        <label><span>人物弧光</span><textarea name="character_arc" rows="3" maxlength="2000" placeholder="从什么状态走向什么状态"></textarea></label>
+        <button class="button primary" type="submit">保存人物</button>
+      </form>
+    </details>
+  </section>
+
+  <section class="workspace-section" id="chapters">
+    <div class="section-heading">
+      <div>
+        <span class="section-kicker">CHAPTERS</span>
+        <h2>章节大纲与正文</h2>
+      </div>
+      <span>{{ chapters|length }} 章</span>
+    </div>
+
+    {% if chapters %}
+      <div class="chapter-list card">
+        {% for chapter in chapters %}
+          <a class="chapter-row chapter-link" href="/novels/{{ project.id }}/chapters/{{ chapter.id }}">
+            <span class="chapter-number">{{ "%03d"|format(chapter.position) }}</span>
+            <div class="chapter-main">
+              <strong>{{ chapter.title or '未命名章节' }}</strong>
+              <span>
+                {% if chapter.volume_title %}{{ chapter.volume_title }} · {% endif %}
+                {{ chapter.outline or '尚未填写章节大纲' }}
+              </span>
+            </div>
+            {% if chapter.latest_job_status in ['queued', 'running'] %}
+              <span class="status running">AI 写作中</span>
+            {% elif chapter.char_count %}
+              <span>{{ chapter.char_count|human_size }} →</span>
+            {% elif chapter.plan_status == 'confirmed' %}
+              <span class="status completed">{{ chapter.scene_count }} 个节拍</span>
+            {% else %}
+              <span class="status queued">任务卡待确认</span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <details class="card inline-creator" id="new-chapter" {% if not chapters %}open{% endif %}>
+      <summary>＋ 规划下一章</summary>
+      <form method="post" action="/novels/{{ project.id }}/chapters" class="form-card embedded-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        {% if volumes %}
+          <label>
+            <span>所属分卷</span>
+            <select name="volume_id">
+              <option value="">暂不归卷</option>
+              {% for volume in volumes %}<option value="{{ volume.id }}">第 {{ volume.position }} 卷 · {{ volume.title }}</option>{% endfor %}
+            </select>
+          </label>
+        {% endif %}
+        <label><span>章节名（可选）</span><input name="title" maxlength="120" placeholder="可以留空，之后再和 AI 讨论"></label>
+        <label><span>章节大纲</span><textarea name="outline" rows="5" maxlength="6000" placeholder="本章发生什么、主要转折与结尾推动……"></textarea></label>
+        <label><span>必须出现的关键点</span><textarea name="key_points" rows="3" maxlength="4000" placeholder="逐行列出不可遗漏的信息或场景"></textarea></label>
+        <button class="button primary" type="submit">创建章节并开始写作</button>
+      </form>
+    </details>
+  </section>
+{% endblock %}
