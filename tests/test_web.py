@@ -871,14 +871,21 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         assert 'class="studio-chat-input"' in workbench.text
         assert "studio-agent-switcher" not in workbench.text
         assert 'name="agent_role"' not in workbench.text
-        for tool_path in (
+        for export_path in (
+            f"/novels/{project_id}/export.txt",
+            f"/novels/{project_id}/export.novelai.zip",
+        ):
+            assert f'href="{export_path}"' in workbench.text
+        for legacy_path in (
             f"/novels/{project_id}#story-planner",
             f"/novels/{project_id}/structure-health",
             f"/novels/{project_id}/continuity",
             f"/novels/{project_id}/editing-memory",
-            f"/novels/{project_id}/export.txt",
         ):
-            assert f'href="{tool_path}"' in workbench.text
+            assert f'href="{legacy_path}"' not in workbench.text
+        assert '<p class="studio-section-label">创作系统</p>' not in (
+            workbench.text
+        )
         assert (
             'name="title" maxlength="120" required'
             not in workbench.text
