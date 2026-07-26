@@ -1626,6 +1626,10 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
         assert "导出正文" in dashboard.text
         assert "导出归档" in dashboard.text
         assert dashboard.text.count('class="studio-export-icon"') == 2
+        assert re.search(r">\s*导出正文\s*<", dashboard.text) is None
+        assert re.search(r">\s*导出归档\s*<", dashboard.text) is None
+        assert 'aria-label="导出正文"' in dashboard.text
+        assert 'aria-label="导出归档"' in dashboard.text
         assert '<span aria-hidden="true">›</span>' not in dashboard.text
         assert (
             f'href="/novels/{project_id}/export.novelai.zip"'

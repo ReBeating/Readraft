@@ -2,7 +2,7 @@
 {% block title %}我的书 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-10">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-11">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -80,17 +80,23 @@
                   </span>
                 </a>
                 <nav class="studio-book-actions" aria-label="《{{ project.title or '未命名作品' }}》文件操作">
-                  <a href="/novels/{{ project.id }}/export.txt">
+                  <a
+                    href="/novels/{{ project.id }}/export.txt"
+                    aria-label="导出正文"
+                    title="导出正文"
+                  >
                     <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
+                      <path d="M6 3h8l4 4v14H6V3ZM14 3v5h4M9 12h6M9 16h6"></path>
                     </svg>
-                    导出正文
                   </a>
-                  <a href="/novels/{{ project.id }}/export.novelai.zip">
+                  <a
+                    href="/novels/{{ project.id }}/export.novelai.zip"
+                    aria-label="导出归档"
+                    title="导出归档"
+                  >
                     <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
+                      <path d="M4 8h16v12H4V8ZM3 4h18v4H3M9 12h6"></path>
                     </svg>
-                    导出归档
                   </a>
                 </nav>
                 <form class="studio-delete-book-form" data-delete-project-form method="post" action="/novels/{{ project.id }}/delete">
