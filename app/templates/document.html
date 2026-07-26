@@ -2,7 +2,7 @@
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-16">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-18">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -40,7 +40,10 @@
         </button>
       </div>
 
-      <strong class="studio-toolbar-title">{{ document.title }}</strong>
+      <div class="studio-toolbar-title-group">
+        <strong class="studio-toolbar-title">{{ document.title }}</strong>
+        {% include "_version_switcher.html" %}
+      </div>
 
       <div class="studio-toolbar-side studio-toolbar-trailing">
         <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
@@ -52,30 +55,6 @@
             <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4-1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
           </svg>
         </button>
-        {% if work and writing_mode_project %}
-          <a
-            class="studio-icon-button"
-            href="/novels/{{ writing_mode_project.project_id }}/workbench"
-            aria-label="切换到创作模式"
-            title="创作模式"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20ZM13.8 6.7l3.5 3.5M14.8 5.7l1.4-1.4a2 2 0 0 1 2.8 0l.7.7a2 2 0 0 1 0 2.8l-1.4 1.4"></path>
-            </svg>
-          </a>
-        {% endif %}
-        {% if work %}
-          <a
-            class="studio-icon-button {% if view == 'archive' %}active{% endif %}"
-            href="/documents/{{ document.id }}?view=archive&archive_tab=analysis"
-            aria-label="作品档案"
-            title="作品档案"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 7.5h16V20H4V7.5ZM6 4h12l2 3.5H4L6 4ZM9 11h6"></path>
-            </svg>
-          </a>
-        {% endif %}
         <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
@@ -103,23 +82,35 @@
           <strong>{{ document.title }}</strong>
         </div>
 
-        <p class="studio-section-label">作品</p>
+        <p class="studio-section-label">工作区</p>
         <a
           class="studio-directory-link {% if view == 'body' %}active{% endif %}"
           href="/documents/{{ document.id }}{% if chapter %}?chapter_id={{ chapter.id }}{% endif %}"
         >
-          <span>阅读内容</span>
+          <span>正文</span>
           <small>›</small>
         </a>
-        {% if work %}
-          <a
-            class="studio-directory-link {% if view == 'archive' %}active{% endif %}"
-            href="/documents/{{ document.id }}?view=archive&archive_tab=analysis"
-          >
-            <span>作品档案</span>
-            <small>›</small>
-          </a>
-        {% endif %}
+        <a
+          class="studio-directory-link {% if view == 'archive' and active_archive_tab == 'creative' %}active{% endif %}"
+          href="/documents/{{ document.id }}?view=archive&archive_tab=creative"
+        >
+          <span>作品资料</span>
+          <small>›</small>
+        </a>
+        <a
+          class="studio-directory-link {% if view == 'archive' and active_archive_tab == 'analysis' %}active{% endif %}"
+          href="/documents/{{ document.id }}?view=archive&archive_tab=analysis"
+        >
+          <span>分析与笔记</span>
+          <small>›</small>
+        </a>
+        <a
+          class="studio-directory-link {% if view == 'archive' and active_archive_tab == 'versions' %}active{% endif %}"
+          href="/documents/{{ document.id }}?view=archive&archive_tab=versions"
+        >
+          <span>版本</span>
+          <small>›</small>
+        </a>
 
         <p class="studio-section-label">章节</p>
         <nav class="studio-chapter-list" aria-label="章节目录">
@@ -159,24 +150,25 @@
             <section class="studio-manuscript-view studio-reader-manuscript-view">
               <div class="studio-chapter-heading studio-reader-chapter-heading">
                 <div>
-                  <small>
-                    {% if document_edition and document_edition.kind == 'snapshot' %}阅读版{% else %}导入原文{% endif %}
-                    · 第{{ chapter.position }}章
-                  </small>
+                  <small>{{ current_version.label }} · 只读 · 第{{ chapter.position }}章</small>
                   <h1>{{ chapter.title or '未命名章节' }}</h1>
                 </div>
-                <div class="studio-reader-branch-actions">
-                  <form method="post" action="/documents/{{ document.id }}/writing-branches">
+                {% if work and not work.main_version %}
+                  <div class="studio-reader-branch-actions">
+                  <form method="post" action="/works/{{ work.id }}/main">
                     <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="base_version_id" value="{{ current_version.id }}">
                     <input type="hidden" name="intent" value="rewrite">
-                    <button class="studio-button" type="submit">改写</button>
+                    <button class="studio-button" type="submit">创建 main 并改写</button>
                   </form>
-                  <form method="post" action="/documents/{{ document.id }}/writing-branches">
+                  <form method="post" action="/works/{{ work.id }}/main">
                     <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="base_version_id" value="{{ current_version.id }}">
                     <input type="hidden" name="intent" value="sequel">
-                    <button class="studio-button" type="submit">续写</button>
+                    <button class="studio-button primary" type="submit">创建 main 并续写</button>
                   </form>
-                </div>
+                  </div>
+                {% endif %}
               </div>
               <textarea
                 class="studio-manuscript studio-reader-manuscript"
@@ -380,5 +372,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-5" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-7" defer></script>
 {% endblock %}

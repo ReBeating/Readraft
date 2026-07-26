@@ -2,7 +2,7 @@
 {% block title %}导入 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-16">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-18">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -48,7 +48,7 @@
 
         <div class="studio-import-heading">
           <h2>选择文件</h2>
-          <p>支持 TXT、Markdown 和 novelAI 作品归档。</p>
+          <p>文本会作为不可修改的“原始版本”导入；需要改写或续写时再创建 main。</p>
         </div>
 
         <label class="studio-import-file">
@@ -69,26 +69,8 @@
           <input name="title" value="{{ title or '' }}" maxlength="120" placeholder="不填则使用文件名">
         </label>
 
-        <fieldset class="studio-import-mode" data-import-mode>
-          <legend>导入后先做什么</legend>
-          <label>
-            <input type="radio" name="initial_mode" value="read" {% if initial_mode != 'write' %}checked{% endif %}>
-            <span>
-              <strong>阅读与分析</strong>
-              <small>保留只读原文，之后仍可创建改写或续写分支。</small>
-            </span>
-          </label>
-          <label>
-            <input type="radio" name="initial_mode" value="write" {% if initial_mode == 'write' %}checked{% endif %}>
-            <span>
-              <strong>作为创作稿</strong>
-              <small>章节直接进入可编辑工作台。</small>
-            </span>
-          </label>
-        </fieldset>
-
         <p class="studio-import-archive-note" data-import-archive-note hidden>
-          作品归档会按原结构恢复，不需要选择模式。
+          作品归档会恢复完整的 main、Tag、作品资料和分析记录。
         </p>
 
         <div class="studio-api-actions">
@@ -100,5 +82,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-5" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-7" defer></script>
 {% endblock %}

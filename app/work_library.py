@@ -3,9 +3,8 @@ from __future__ import annotations
 import hashlib
 import shutil
 import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from .chapter_splitter import ChapterChunk
 from .db import Database
@@ -76,9 +75,8 @@ def create_writing_project_from_chunks(
     title: str,
     chunks: Iterable[ChapterChunk],
     work_id: Optional[str] = None,
-    source_edition_id: Optional[str] = None,
-    branch_intent: str = "original",
-    edition_label: str = "创作稿",
+    base_version_id: Optional[str] = None,
+    intent: str = "original",
 ) -> str:
     project_id = uuid.uuid4().hex
     user_root = novels_dir / str(user_id)
@@ -99,9 +97,8 @@ def create_writing_project_from_chunks(
             point_of_view="第三人称限知",
             target_chapter_chars=3000,
             work_id=work_id,
-            source_edition_id=source_edition_id,
-            branch_intent=branch_intent,
-            edition_label=edition_label,
+            base_version_id=base_version_id,
+            intent=intent,
         )
         _create_editable_chapters(
             database=database,
@@ -134,10 +131,11 @@ def create_reading_document_from_chunks(
     max_documents: Optional[int] = None,
     max_stored_chars: Optional[int] = None,
     work_id: Optional[str] = None,
-    source_edition_id: Optional[str] = None,
-    edition_kind: str = "source",
-    branch_intent: str = "original",
-    edition_label: str = "导入原文",
+    base_version_id: Optional[str] = None,
+    ref_name: str = "source",
+    version_label: str = "原始版本",
+    intent: str = "original",
+    creative_snapshot: Optional[Mapping[str, Any]] = None,
 ) -> str:
     chunk_list = list(chunks)
     document_id = uuid.uuid4().hex
@@ -168,10 +166,14 @@ def create_reading_document_from_chunks(
             max_documents=max_documents,
             max_stored_chars=max_stored_chars,
             work_id=work_id,
-            source_edition_id=source_edition_id,
-            edition_kind=edition_kind,
-            branch_intent=branch_intent,
-            edition_label=edition_label,
+            base_version_id=base_version_id,
+            ref_name=ref_name,
+            version_label=version_label,
+            intent=intent,
+            content_hash=hashlib.sha256(
+                source_text.encode("utf-8")
+            ).hexdigest(),
+            creative_snapshot=creative_snapshot,
         )
     except Exception:
         shutil.rmtree(document_dir, ignore_errors=True)
@@ -179,7 +181,7 @@ def create_reading_document_from_chunks(
     return document_id
 
 
-def create_writing_branch_from_document(
+def create_main_from_version(
     *,
     database: Database,
     novels_dir: Path,
@@ -192,48 +194,49 @@ def create_writing_branch_from_document(
     document = database.get_document(user_id, document_id)
     work = database.get_work_for_document(user_id, document_id)
     if not document or not work:
-        raise ValueError("导入原文不存在")
-    source_edition = next(
-        (
-            edition
-            for edition in work["editions"]
-            if str(edition.get("document_id") or "") == document_id
-        ),
-        None,
+        raise ValueError("固定版本不存在")
+    if work.get("main_version"):
+        raise ValueError("作品已经存在 main 分支")
+    base_version = database.get_work_version_for_document(
+        user_id, document_id
     )
-    if not source_edition:
-        raise ValueError("找不到原文所属版本")
+    if not base_version or str(base_version.get("ref_type") or "") != "tag":
+        raise ValueError("只能从固定版本创建 main")
     base_title = str(document.get("title") or "未命名作品").strip()
-    suffix = "改写稿" if intent == "rewrite" else "续写"
-    title = f"{base_title} · {suffix}"
-    if intent == "rewrite":
-        source_chapters = database.list_chapters(user_id, document_id)
-        chunks = [
+    source_chapters = database.list_chapters(user_id, document_id)
+    chunks = [
+        ChapterChunk(
+            title=str(chapter.get("title") or ""),
+            text=Path(str(chapter["content_path"])).read_text(
+                encoding="utf-8"
+            ),
+            kind=str(chapter.get("kind") or "chapter"),
+            source_start=int(chapter.get("source_start") or 0),
+            source_end=int(chapter.get("source_end") or 0),
+            part_number=int(chapter.get("part_number") or 1),
+            part_count=int(chapter.get("part_count") or 1),
+        )
+        for chapter in source_chapters
+    ]
+    if intent == "sequel" and chunks:
+        chunks.append(
             ChapterChunk(
-                title=str(chapter.get("title") or ""),
-                text=Path(str(chapter["content_path"])).read_text(
-                    encoding="utf-8"
-                ),
-                kind=str(chapter.get("kind") or "chapter"),
-                source_start=int(chapter.get("source_start") or 0),
-                source_end=int(chapter.get("source_end") or 0),
-                part_number=int(chapter.get("part_number") or 1),
-                part_count=int(chapter.get("part_count") or 1),
+                title=f"第{len(chunks) + 1}章",
+                text="",
+                kind="chapter",
+                source_start=int(document.get("char_count") or 0),
+                source_end=int(document.get("char_count") or 0),
             )
-            for chapter in source_chapters
-        ]
-    else:
-        chunks = []
+        )
     return create_writing_project_from_chunks(
         database=database,
         novels_dir=novels_dir,
         user_id=user_id,
-        title=title,
+        title=base_title,
         chunks=chunks,
         work_id=str(work["id"]),
-        source_edition_id=str(source_edition["id"]),
-        branch_intent=intent,
-        edition_label=suffix,
+        base_version_id=str(base_version["id"]),
+        intent=intent,
     )
 
 
@@ -271,37 +274,66 @@ def _snapshot_chunks(
     return "\n\n".join(pieces), chunks
 
 
-def create_reading_snapshot(
+def _default_tag_label(number: int) -> str:
+    names = {
+        1: "一稿",
+        2: "二稿",
+        3: "三稿",
+        4: "四稿",
+        5: "五稿",
+        6: "六稿",
+        7: "七稿",
+        8: "八稿",
+        9: "九稿",
+        10: "十稿",
+    }
+    return names.get(number, f"第 {number} 稿")
+
+
+def create_version_tag(
     *,
     database: Database,
     documents_dir: Path,
     user_id: int,
     project_id: str,
+    label: str = "",
     max_documents: Optional[int] = None,
     max_stored_chars: Optional[int] = None,
 ) -> str:
     project = database.get_novel_project(user_id, project_id)
     work = database.get_work_for_project(user_id, project_id)
     if not project or not work:
-        raise ValueError("创作稿不存在")
-    source_edition = next(
-        (
-            edition
-            for edition in work["editions"]
-            if str(edition.get("project_id") or "") == project_id
-        ),
-        None,
+        raise ValueError("main 分支不存在")
+    main_version = database.get_work_version_for_project(
+        user_id, project_id
     )
-    if not source_edition:
-        raise ValueError("找不到创作稿所属版本")
+    if (
+        not main_version
+        or str(main_version.get("ref_name") or "") != "main"
+        or not bool(main_version.get("is_editable"))
+    ):
+        raise ValueError("只有 main 分支可以创建固定版本")
     source_text, chunks = _snapshot_chunks(
         database.list_novel_chapters(user_id, project_id)
     )
     if not source_text.strip() or not chunks:
-        raise ValueError("作品还没有可生成阅读版的正文")
+        raise ValueError("main 还没有可固定为 Tag 的正文")
 
     title = str(project.get("title") or "未命名作品").strip()
-    label = f"阅读版 · {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    tag_number = database.next_work_tag_number(
+        user_id, str(work["id"])
+    )
+    clean_label = str(label or "").strip() or _default_tag_label(tag_number)
+    if len(clean_label) > 80:
+        raise ValueError("版本名称不能超过 80 个字符")
+    if any(
+        str(version.get("label") or "").casefold() == clean_label.casefold()
+        for version in work["tag_versions"]
+    ):
+        raise ValueError("已经存在同名固定版本")
+    creative_snapshot = database.build_project_creative_snapshot(
+        user_id, project_id
+    )
     return create_reading_document_from_chunks(
         database=database,
         documents_dir=documents_dir,
@@ -314,8 +346,9 @@ def create_reading_snapshot(
         max_documents=max_documents,
         max_stored_chars=max_stored_chars,
         work_id=str(work["id"]),
-        source_edition_id=str(source_edition["id"]),
-        edition_kind="snapshot",
-        branch_intent="snapshot",
-        edition_label=label,
+        base_version_id=str(main_version["id"]),
+        ref_name=f"version-{tag_number}",
+        version_label=clean_label,
+        intent="snapshot",
+        creative_snapshot=creative_snapshot,
     )

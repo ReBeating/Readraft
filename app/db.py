@@ -355,24 +355,34 @@ def has_active_document_ai_task(
     return row is not None
 
 
-def _attach_work_edition(
+def _attach_work_version(
     connection: sqlite3.Connection,
     *,
     user_id: int,
     title: str,
-    kind: str,
+    ref_type: str,
+    ref_name: str,
     label: str,
-    branch_intent: str,
+    intent: str,
     project_id: Optional[str] = None,
     document_id: Optional[str] = None,
     work_id: Optional[str] = None,
-    source_edition_id: Optional[str] = None,
-    is_primary: bool = False,
+    base_version_id: Optional[str] = None,
+    content_hash: str = "",
+    creative_snapshot: Optional[Mapping[str, Any]] = None,
     origin: str = "created",
     now: Optional[str] = None,
 ) -> tuple[str, str]:
     if (project_id is None) == (document_id is None):
         raise ValueError("作品版本必须且只能关联一个内容对象")
+    if ref_type not in {"branch", "tag"}:
+        raise ValueError("不支持的版本类型")
+    if ref_type == "branch" and (
+        ref_name != "main" or project_id is None
+    ):
+        raise ValueError("只有 main 可以作为可编辑分支")
+    if ref_type == "tag" and document_id is None:
+        raise ValueError("固定版本必须保存为只读文档")
     timestamp = now or utc_now()
     target_work_id = work_id or uuid.uuid4().hex
     if work_id:
@@ -386,7 +396,8 @@ def _attach_work_edition(
         connection.execute(
             """
             INSERT INTO works(
-                id, user_id, title, origin, last_mode, created_at, updated_at
+                id, user_id, title, origin, last_ref_name,
+                created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -394,46 +405,58 @@ def _attach_work_edition(
                 user_id,
                 title,
                 origin,
-                "write" if project_id else "read",
+                ref_name,
                 timestamp,
                 timestamp,
             ),
         )
-        is_primary = True
-    if source_edition_id:
-        source = connection.execute(
+    if base_version_id:
+        base = connection.execute(
             """
-            SELECT 1 FROM work_editions
+            SELECT 1 FROM work_versions
             WHERE id=? AND work_id=?
             """,
-            (source_edition_id, target_work_id),
+            (base_version_id, target_work_id),
         ).fetchone()
-        if not source:
-            raise ValueError("来源版本不属于当前作品")
-    if is_primary:
-        connection.execute(
-            "UPDATE work_editions SET is_primary=0 WHERE work_id=?",
+        if not base:
+            raise ValueError("基础版本不属于当前作品")
+    if ref_name == "main":
+        existing_main = connection.execute(
+            """
+            SELECT 1 FROM work_versions
+            WHERE work_id=? AND ref_name='main'
+            """,
             (target_work_id,),
-        )
-    edition_id = uuid.uuid4().hex
+        ).fetchone()
+        if existing_main:
+            raise ValueError("作品已经存在 main 分支")
+    version_id = uuid.uuid4().hex
     connection.execute(
         """
-        INSERT INTO work_editions(
-            id, work_id, kind, label, project_id, document_id,
-            source_edition_id, branch_intent, is_primary,
+        INSERT INTO work_versions(
+            id, work_id, ref_type, ref_name, label,
+            project_id, document_id, base_version_id, intent,
+            is_editable, content_hash, creative_snapshot_json,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            edition_id,
+            version_id,
             target_work_id,
-            kind,
+            ref_type,
+            ref_name,
             label,
             project_id,
             document_id,
-            source_edition_id,
-            branch_intent,
-            int(is_primary),
+            base_version_id,
+            intent,
+            int(ref_type == "branch" and ref_name == "main"),
+            content_hash,
+            json.dumps(
+                dict(creative_snapshot or {}),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
             timestamp,
             timestamp,
         ),
@@ -442,18 +465,18 @@ def _attach_work_edition(
         """
         UPDATE works
         SET title=CASE WHEN TRIM(title)='' THEN ? ELSE title END,
-            last_mode=?,
+            last_ref_name=?,
             updated_at=?
         WHERE id=?
         """,
         (
             title,
-            "write" if project_id else "read",
+            ref_name,
             timestamp,
             target_work_id,
         ),
     )
-    return target_work_id, edition_id
+    return target_work_id, version_id
 
 
 class Database:
@@ -920,10 +943,8 @@ class Database:
         planning_horizon: int = 20,
         ai_instructions: str = "",
         work_id: Optional[str] = None,
-        source_edition_id: Optional[str] = None,
-        branch_intent: str = "original",
-        edition_label: str = "创作稿",
-        is_primary_edition: bool = False,
+        base_version_id: Optional[str] = None,
+        intent: str = "original",
     ) -> str:
         now = utc_now()
         with self.connection() as connection:
@@ -967,17 +988,17 @@ class Database:
                 """,
                 (uuid.uuid4().hex, project_id, style_guide, now, now),
             )
-            _attach_work_edition(
+            _attach_work_version(
                 connection,
                 user_id=user_id,
                 title=title,
-                kind="writing",
-                label=edition_label,
-                branch_intent=branch_intent,
+                ref_type="branch",
+                ref_name="main",
+                label="main",
+                intent=intent,
                 project_id=project_id,
                 work_id=work_id,
-                source_edition_id=source_edition_id,
-                is_primary=is_primary_edition,
+                base_version_id=base_version_id,
                 origin="created",
                 now=now,
             )
@@ -988,11 +1009,11 @@ class Database:
         self, connection: sqlite3.Connection, row: Mapping[str, Any]
     ) -> Dict[str, Any]:
         work = dict(row)
-        editions = [
+        versions = [
             dict(item)
             for item in connection.execute(
                 """
-                SELECT e.*, e.rowid AS edition_rowid,
+                SELECT version.*, version.rowid AS version_rowid,
                     p.title AS project_title,
                     p.genre AS project_genre,
                     p.updated_at AS project_updated_at,
@@ -1018,113 +1039,121 @@ class Database:
                         JOIN analysis_jobs j ON j.id=a.job_id
                         WHERE j.document_id=d.id AND a.status='completed'
                     ) AS completed_analysis_count
-                FROM work_editions e
-                LEFT JOIN novel_projects p ON p.id=e.project_id
-                LEFT JOIN documents d ON d.id=e.document_id
-                WHERE e.work_id=?
-                ORDER BY e.is_primary DESC, e.created_at DESC, e.id
+                FROM work_versions version
+                LEFT JOIN novel_projects p ON p.id=version.project_id
+                LEFT JOIN documents d ON d.id=version.document_id
+                WHERE version.work_id=?
+                ORDER BY
+                    CASE
+                        WHEN version.ref_name='main' THEN 0
+                        WHEN version.ref_name='source' THEN 1
+                        WHEN version.ref_type='tag' THEN 2
+                        ELSE 3
+                    END,
+                    version.created_at DESC,
+                    version.id
                 """,
                 (str(work["id"]),),
             ).fetchall()
         ]
-        writing_editions = [
-            item for item in editions if item.get("project_id")
-        ]
-        reading_editions = [
-            item for item in editions if item.get("document_id")
-        ]
-        primary_edition = next(
-            (item for item in editions if bool(item.get("is_primary"))),
-            editions[0] if editions else None,
-        )
-        primary_project = next(
+        main_version = next(
             (
                 item
-                for item in writing_editions
-                if bool(item.get("is_primary"))
+                for item in versions
+                if str(item.get("ref_type") or "") == "branch"
+                and str(item.get("ref_name") or "") == "main"
+                and bool(item.get("is_editable"))
             ),
-            writing_editions[0] if writing_editions else None,
+            None,
         )
-        primary_document = next(
+        tag_versions = [
+            item
+            for item in versions
+            if str(item.get("ref_type") or "") == "tag"
+        ]
+        legacy_versions = [
+            item
+            for item in versions
+            if str(item.get("ref_type") or "") == "legacy"
+        ]
+        source_version = next(
             (
                 item
-                for item in reading_editions
-                if bool(item.get("is_primary"))
+                for item in tag_versions
+                if str(item.get("ref_name") or "") == "source"
             ),
-            reading_editions[0] if reading_editions else None,
+            None,
         )
-        active_project = (
-            max(
-                writing_editions,
-                key=lambda item: (
-                    str(item.get("created_at") or ""),
-                    int(item.get("edition_rowid") or 0),
-                ),
-            )
-            if writing_editions
-            else None
-        )
-        active_document = (
-            max(
-                reading_editions,
-                key=lambda item: (
-                    str(item.get("created_at") or ""),
-                    int(item.get("edition_rowid") or 0),
-                ),
-            )
-            if reading_editions
-            else None
-        )
-        edition_index = {
+        version_index = {
             str(item["id"]): item
-            for item in editions
+            for item in versions
         }
-        for edition in editions:
-            source = edition_index.get(
-                str(edition.get("source_edition_id") or "")
+        for version in versions:
+            base = version_index.get(
+                str(version.get("base_version_id") or "")
             )
-            edition["source_edition"] = source
-            edition["source_label"] = (
-                str(source.get("label") or "")
-                if source
-                else ""
+            version["base_version"] = base
+            version["base_label"] = (
+                str(base.get("label") or "") if base else ""
             )
+            version["creative_snapshot"] = _load_json(
+                version.get("creative_snapshot_json"), {}
+            )
+            if version.get("project_id"):
+                version["open_url"] = (
+                    f"/novels/{version['project_id']}/workbench"
+                )
+            elif version.get("document_id"):
+                version["open_url"] = f"/documents/{version['document_id']}"
+            else:
+                version["open_url"] = f"/works/{work['id']}"
+            version["is_current"] = (
+                str(version.get("ref_name") or "")
+                == str(work.get("last_ref_name") or "")
+            )
+
+        current_version = next(
+            (
+                item
+                for item in versions
+                if str(item.get("ref_name") or "")
+                == str(work.get("last_ref_name") or "")
+            ),
+            main_version
+            or source_version
+            or (tag_versions[0] if tag_versions else None)
+            or (legacy_versions[0] if legacy_versions else None),
+        )
         display_title = str(work.get("title") or "").strip()
-        if not display_title and primary_edition:
+        if not display_title and current_version:
             display_title = str(
-                primary_edition.get("project_title")
-                or primary_edition.get("document_title")
+                current_version.get("project_title")
+                or current_version.get("document_title")
                 or ""
             ).strip()
         work.update(
             {
                 "title": display_title,
-                "editions": editions,
-                "writing_editions": writing_editions,
-                "reading_editions": reading_editions,
-                "primary_edition": primary_edition,
-                "primary_project": primary_project,
-                "primary_document": primary_document,
-                "active_project": active_project,
-                "active_document": active_document,
-                "has_writing": bool(writing_editions),
-                "has_reading": bool(reading_editions),
+                "versions": versions,
+                "main_version": main_version,
+                "tag_versions": tag_versions,
+                "legacy_versions": legacy_versions,
+                "source_version": source_version,
+                "current_version": current_version,
+                "has_main": bool(main_version),
+                "has_source": bool(source_version),
+                "tag_count": len(tag_versions),
                 "analysis_count": sum(
                     int(item.get("completed_analysis_count") or 0)
-                    for item in reading_editions
+                    for item in tag_versions
                 ),
             }
         )
-        last_mode = str(work.get("last_mode") or "")
-        if last_mode == "read" and active_document:
-            resume_url = f"/documents/{active_document['document_id']}"
-        elif active_project:
-            resume_url = f"/novels/{active_project['project_id']}/workbench"
-        elif active_document:
-            resume_url = f"/documents/{active_document['document_id']}"
-        else:
-            resume_url = f"/works/{work['id']}/archive"
-        work["resume_url"] = resume_url
+        work["resume_url"] = (
+            str(current_version["open_url"])
+            if current_version
+            else f"/works/{work['id']}/archive"
+        )
         return work
 
     def list_works(self, user_id: int) -> List[Dict[str, Any]]:
@@ -1136,15 +1165,17 @@ class Database:
                         w.updated_at,
                         COALESCE((
                             SELECT MAX(p.updated_at)
-                            FROM work_editions e
-                            JOIN novel_projects p ON p.id=e.project_id
-                            WHERE e.work_id=w.id
+                            FROM work_versions version
+                            JOIN novel_projects p
+                              ON p.id=version.project_id
+                            WHERE version.work_id=w.id
                         ), w.updated_at),
                         COALESCE((
                             SELECT MAX(d.created_at)
-                            FROM work_editions e
-                            JOIN documents d ON d.id=e.document_id
-                            WHERE e.work_id=w.id
+                            FROM work_versions version
+                            JOIN documents d
+                              ON d.id=version.document_id
+                            WHERE version.work_id=w.id
                         ), w.updated_at)
                     ) AS activity_at
                 FROM works w
@@ -1173,8 +1204,8 @@ class Database:
                 """
                 SELECT w.*
                 FROM works w
-                JOIN work_editions e ON e.work_id=w.id
-                WHERE e.project_id=? AND w.user_id=?
+                JOIN work_versions version ON version.work_id=w.id
+                WHERE version.project_id=? AND w.user_id=?
                 """,
                 (project_id, user_id),
             ).fetchone()
@@ -1188,12 +1219,209 @@ class Database:
                 """
                 SELECT w.*
                 FROM works w
-                JOIN work_editions e ON e.work_id=w.id
-                WHERE e.document_id=? AND w.user_id=?
+                JOIN work_versions version ON version.work_id=w.id
+                WHERE version.document_id=? AND w.user_id=?
                 """,
                 (document_id, user_id),
             ).fetchone()
             return self._hydrate_work(connection, row) if row else None
+
+    def get_work_version(
+        self, user_id: int, version_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT version.*
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                WHERE version.id=? AND work.user_id=?
+                """,
+                (version_id, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        version = dict(row)
+        version["creative_snapshot"] = _load_json(
+            version.get("creative_snapshot_json"), {}
+        )
+        return version
+
+    def get_work_version_for_project(
+        self, user_id: int, project_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT version.*
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                WHERE version.project_id=? AND work.user_id=?
+                """,
+                (project_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_work_version_for_document(
+        self, user_id: int, document_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT version.*
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                WHERE version.document_id=? AND work.user_id=?
+                """,
+                (document_id, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        version = dict(row)
+        version["creative_snapshot"] = _load_json(
+            version.get("creative_snapshot_json"), {}
+        )
+        return version
+
+    def is_main_project(self, user_id: int, project_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                WHERE version.project_id=? AND work.user_id=?
+                  AND version.ref_type='branch'
+                  AND version.ref_name='main'
+                  AND version.is_editable=1
+                """,
+                (project_id, user_id),
+            ).fetchone()
+        return row is not None
+
+    def next_work_tag_number(self, user_id: int, work_id: str) -> int:
+        with self.connection() as connection:
+            owner = connection.execute(
+                "SELECT 1 FROM works WHERE id=? AND user_id=?",
+                (work_id, user_id),
+            ).fetchone()
+            if not owner:
+                raise ValueError("作品不存在")
+            rows = connection.execute(
+                """
+                SELECT ref_name FROM work_versions
+                WHERE work_id=? AND ref_type='tag'
+                  AND ref_name LIKE 'version-%'
+                """,
+                (work_id,),
+            ).fetchall()
+        numbers = []
+        for row in rows:
+            suffix = str(row["ref_name"])[len("version-") :]
+            if suffix.isdigit():
+                numbers.append(int(suffix))
+        return max(numbers, default=0) + 1
+
+    def build_project_creative_snapshot(
+        self, user_id: int, project_id: str
+    ) -> Dict[str, Any]:
+        with self.connection() as connection:
+            project = connection.execute(
+                """
+                SELECT id, title, genre, premise, world_setting,
+                       style_guide, ai_instructions, point_of_view,
+                       target_chapter_chars, story_promise,
+                       target_audience, core_appeal, ending_constraint,
+                       planning_horizon
+                FROM novel_projects
+                WHERE id=? AND user_id=?
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            if not project:
+                raise ValueError("main 分支不存在")
+            characters = connection.execute(
+                """
+                SELECT position, name, role, traits, background,
+                       character_arc
+                FROM novel_characters
+                WHERE project_id=?
+                ORDER BY position, created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
+            chapters = connection.execute(
+                """
+                SELECT position, title, outline, key_points, status
+                FROM novel_chapters
+                WHERE project_id=?
+                ORDER BY position, created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
+            voice = connection.execute(
+                """
+                SELECT narration_rules, sentence_rhythm, dialogue_voice,
+                       sensory_palette, metaphor_policy,
+                       allowed_omissions, preferred_patterns_json,
+                       banned_expressions_json, author_notes, status
+                FROM novel_voice_profiles
+                WHERE project_id=?
+                ORDER BY
+                    CASE WHEN status='confirmed' THEN 0 ELSE 1 END,
+                    updated_at DESC,
+                    rowid DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            blueprint = connection.execute(
+                """
+                SELECT version.*
+                FROM novel_story_blueprint_heads head
+                JOIN novel_story_blueprint_versions version
+                  ON version.id=head.confirmed_version_id
+                WHERE head.project_id=?
+                  AND version.project_id=head.project_id
+                """,
+                (project_id,),
+            ).fetchone()
+            arcs = connection.execute(
+                """
+                SELECT arc.position, version.*
+                FROM novel_plot_arcs arc
+                JOIN novel_plot_arc_versions version
+                  ON version.id=arc.confirmed_version_id
+                WHERE arc.project_id=?
+                  AND version.project_id=arc.project_id
+                ORDER BY arc.position, arc.created_at, arc.id
+                """,
+                (project_id,),
+            ).fetchall()
+            rules = connection.execute(
+                """
+                SELECT entry.category, entry.title, entry.content,
+                       entry.evidence, entry.provenance
+                FROM work_versions version
+                JOIN work_archive_entries entry
+                  ON entry.work_id=version.work_id
+                WHERE version.project_id=?
+                  AND entry.entry_type='creative_rule'
+                  AND entry.status='confirmed'
+                ORDER BY entry.updated_at, entry.id
+                """,
+                (project_id,),
+            ).fetchall()
+        return {
+            "schema": "novelai-creative-snapshot-v1",
+            "project": dict(project),
+            "characters": [dict(row) for row in characters],
+            "chapters": [dict(row) for row in chapters],
+            "voice": dict(voice) if voice else None,
+            "story_blueprint": dict(blueprint) if blueprint else None,
+            "plot_arcs": [dict(row) for row in arcs],
+            "confirmed_rules": [dict(row) for row in rules],
+        }
 
     def ensure_project_work(
         self,
@@ -1205,10 +1433,10 @@ class Database:
         with self.connection() as connection:
             existing = connection.execute(
                 """
-                SELECT e.work_id, e.id
-                FROM work_editions e
-                JOIN works w ON w.id=e.work_id
-                WHERE e.project_id=? AND w.user_id=?
+                SELECT version.work_id, version.id
+                FROM work_versions version
+                JOIN works w ON w.id=version.work_id
+                WHERE version.project_id=? AND w.user_id=?
                 """,
                 (project_id, user_id),
             ).fetchone()
@@ -1224,13 +1452,14 @@ class Database:
             if not project:
                 raise ValueError("作品不存在")
             connection.execute("BEGIN IMMEDIATE")
-            result = _attach_work_edition(
+            result = _attach_work_version(
                 connection,
                 user_id=user_id,
                 title=str(project["title"] or ""),
-                kind="writing",
-                label="创作稿",
-                branch_intent="original",
+                ref_type="branch",
+                ref_name="main",
+                label="main",
+                intent="original",
                 project_id=project_id,
                 origin=origin,
                 now=str(project["updated_at"] or utc_now()),
@@ -1238,29 +1467,45 @@ class Database:
             connection.commit()
             return result
 
-    def set_work_mode(
-        self, *, user_id: int, work_id: str, mode: str
+    def set_work_version(
+        self, *, user_id: int, work_id: str, version_id: str
     ) -> bool:
-        if mode not in {"read", "write"}:
-            raise ValueError("不支持的作品模式")
         with self.connection() as connection:
+            version = connection.execute(
+                """
+                SELECT ref_name FROM work_versions
+                WHERE id=? AND work_id=?
+                """,
+                (version_id, work_id),
+            ).fetchone()
+            if not version:
+                raise ValueError("版本不属于当前作品")
             cursor = connection.execute(
                 """
-                UPDATE works SET last_mode=?, updated_at=?
+                UPDATE works SET last_ref_name=?, updated_at=?
                 WHERE id=? AND user_id=?
                 """,
-                (mode, utc_now(), work_id, user_id),
+                (
+                    str(version["ref_name"]),
+                    utc_now(),
+                    work_id,
+                    user_id,
+                ),
             )
             connection.commit()
             return cursor.rowcount == 1
 
     def list_work_archive_entries(
-        self, user_id: int, work_id: str
+        self,
+        user_id: int,
+        work_id: str,
+        content_version_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT entry.*, edition.label AS edition_label,
+                SELECT entry.*, version.label AS version_label,
+                    version.ref_name AS version_ref_name,
                     (
                         SELECT adopted.id
                         FROM work_archive_entries adopted
@@ -1270,15 +1515,25 @@ class Database:
                     ) AS adopted_setting_id
                 FROM work_archive_entries entry
                 JOIN works w ON w.id=entry.work_id
-                LEFT JOIN work_editions edition
-                  ON edition.id=entry.edition_id
+                LEFT JOIN work_versions version
+                  ON version.id=entry.content_version_id
                 WHERE entry.work_id=? AND w.user_id=?
+                  AND (
+                    entry.entry_type='creative_rule'
+                    OR ? IS NULL
+                    OR entry.content_version_id=?
+                  )
                 ORDER BY
                     CASE WHEN entry.entry_type='creative_rule' THEN 0 ELSE 1 END,
                     entry.updated_at DESC,
                     entry.id
                 """,
-                (work_id, user_id),
+                (
+                    work_id,
+                    user_id,
+                    content_version_id,
+                    content_version_id,
+                ),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1291,7 +1546,7 @@ class Database:
         title: str,
         content: str,
         evidence: str = "",
-        edition_id: Optional[str] = None,
+        content_version_id: Optional[str] = None,
         category: str = "general",
     ) -> str:
         if entry_type not in WORK_ARCHIVE_ANALYSIS_TYPES:
@@ -1307,20 +1562,21 @@ class Database:
             ).fetchone()
             if not owner:
                 raise ValueError("作品不存在")
-            if edition_id:
-                edition = connection.execute(
+            if content_version_id:
+                version = connection.execute(
                     """
-                    SELECT 1 FROM work_editions
+                    SELECT 1 FROM work_versions
                     WHERE id=? AND work_id=?
                     """,
-                    (edition_id, work_id),
+                    (content_version_id, work_id),
                 ).fetchone()
-                if not edition:
+                if not version:
                     raise ValueError("档案来源版本不存在")
             connection.execute(
                 """
                 INSERT INTO work_archive_entries(
-                    id, work_id, edition_id, entry_type, title, content,
+                    id, work_id, content_version_id,
+                    entry_type, title, content,
                     provenance, status, evidence, category,
                     created_at, updated_at
                 ) VALUES (
@@ -1330,7 +1586,7 @@ class Database:
                 (
                     entry_id,
                     work_id,
-                    edition_id,
+                    content_version_id,
                     entry_type,
                     title,
                     content,
@@ -1377,6 +1633,17 @@ class Database:
             if str(source["entry_type"]) not in WORK_ARCHIVE_ANALYSIS_TYPES:
                 connection.rollback()
                 raise ValueError("只有分析与笔记可以采纳为创作设定")
+            main = connection.execute(
+                """
+                SELECT id FROM work_versions
+                WHERE work_id=? AND ref_name='main'
+                  AND ref_type='branch' AND is_editable=1
+                """,
+                (work_id,),
+            ).fetchone()
+            if not main:
+                connection.rollback()
+                raise ValueError("请先创建 main 分支，再采纳为作品资料")
             existing = connection.execute(
                 """
                 SELECT id FROM work_archive_entries
@@ -1396,7 +1663,8 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO work_archive_entries(
-                    id, work_id, edition_id, entry_type, title, content,
+                    id, work_id, content_version_id,
+                    entry_type, title, content,
                     provenance, status, evidence, source_ref, category,
                     adopted_from_entry_id, adopted_at, created_at, updated_at
                 ) VALUES (
@@ -1407,7 +1675,7 @@ class Database:
                 (
                     setting_id,
                     work_id,
-                    source["edition_id"],
+                    str(main["id"]),
                     str(title or source["title"] or "").strip(),
                     clean_content,
                     str(source["evidence"] or ""),
@@ -1454,17 +1722,17 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             source = connection.execute(
                 """
-                SELECT analysis.id, edition.id AS edition_id,
+                SELECT analysis.id, version.id AS content_version_id,
                        document.title AS document_title,
                        chapter.position, chapter.title AS chapter_title
                 FROM chapter_analyses analysis
                 JOIN analysis_jobs job ON job.id=analysis.job_id
                 JOIN chapters chapter ON chapter.id=analysis.chapter_id
                 JOIN documents document ON document.id=chapter.document_id
-                JOIN work_editions edition
-                  ON edition.document_id=document.id
-                JOIN works work ON work.id=edition.work_id
-                WHERE analysis.id=? AND edition.work_id=?
+                JOIN work_versions version
+                  ON version.document_id=document.id
+                JOIN works work ON work.id=version.work_id
+                WHERE analysis.id=? AND version.work_id=?
                   AND work.user_id=? AND analysis.status='completed'
                 """,
                 (analysis_id, work_id, user_id),
@@ -1472,6 +1740,17 @@ class Database:
             if not source:
                 connection.rollback()
                 raise ValueError("章节分析不存在")
+            main = connection.execute(
+                """
+                SELECT id FROM work_versions
+                WHERE work_id=? AND ref_name='main'
+                  AND ref_type='branch' AND is_editable=1
+                """,
+                (work_id,),
+            ).fetchone()
+            if not main:
+                connection.rollback()
+                raise ValueError("请先创建 main 分支，再采纳为作品资料")
             existing = connection.execute(
                 """
                 SELECT id FROM work_archive_entries
@@ -1491,7 +1770,8 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO work_archive_entries(
-                    id, work_id, edition_id, entry_type, title, content,
+                    id, work_id, content_version_id,
+                    entry_type, title, content,
                     provenance, status, evidence, source_ref, category,
                     source_analysis_id, adopted_at, created_at, updated_at
                 ) VALUES (
@@ -1502,7 +1782,7 @@ class Database:
                 (
                     setting_id,
                     work_id,
-                    source["edition_id"],
+                    str(main["id"]),
                     str(title or source["chapter_title"] or "").strip(),
                     clean_content,
                     evidence,
@@ -1565,7 +1845,10 @@ class Database:
         return True
 
     def list_work_analyses(
-        self, user_id: int, work_id: str
+        self,
+        user_id: int,
+        work_id: str,
+        content_version_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         with self.connection() as connection:
             rows = connection.execute(
@@ -1573,7 +1856,9 @@ class Database:
                 SELECT a.id, a.result_json, a.finished_at,
                     c.id AS chapter_id, c.position, c.title AS chapter_title,
                     d.id AS document_id, d.title AS document_title,
-                    e.id AS edition_id, e.label AS edition_label,
+                    version.id AS content_version_id,
+                    version.label AS version_label,
+                    version.ref_name AS version_ref_name,
                     (
                         SELECT adopted.id
                         FROM work_archive_entries adopted
@@ -1581,13 +1866,15 @@ class Database:
                           AND adopted.entry_type='creative_rule'
                         LIMIT 1
                     ) AS adopted_setting_id
-                FROM work_editions e
-                JOIN works w ON w.id=e.work_id
-                JOIN documents d ON d.id=e.document_id
+                FROM work_versions version
+                JOIN works w ON w.id=version.work_id
+                JOIN documents d ON d.id=version.document_id
                 JOIN chapters c ON c.document_id=d.id
                 JOIN chapter_analyses a ON a.chapter_id=c.id
                 JOIN analysis_jobs j ON j.id=a.job_id
-                WHERE e.work_id=? AND w.user_id=? AND a.status='completed'
+                WHERE version.work_id=? AND w.user_id=?
+                  AND (? IS NULL OR version.id=?)
+                  AND a.status='completed'
                   AND j.id=(
                       SELECT newest.id
                       FROM analysis_jobs newest
@@ -1595,9 +1882,14 @@ class Database:
                       ORDER BY newest.created_at DESC, newest.rowid DESC
                       LIMIT 1
                   )
-                ORDER BY e.created_at DESC, c.position
+                ORDER BY version.created_at DESC, c.position
                 """,
-                (work_id, user_id),
+                (
+                    work_id,
+                    user_id,
+                    content_version_id,
+                    content_version_id,
+                ),
             ).fetchall()
         results: List[Dict[str, Any]] = []
         for row in rows:
@@ -1622,8 +1914,8 @@ class Database:
                 """
                 SELECT p.id
                 FROM novel_projects p
-                JOIN work_editions e ON e.project_id=p.id
-                WHERE e.work_id=?
+                JOIN work_versions version ON version.project_id=p.id
+                WHERE version.work_id=?
                 """,
                 (work_id,),
             ).fetchall()
@@ -1631,8 +1923,8 @@ class Database:
                 """
                 SELECT d.id, d.source_path
                 FROM documents d
-                JOIN work_editions e ON e.document_id=d.id
-                WHERE e.work_id=?
+                JOIN work_versions version ON version.document_id=d.id
+                WHERE version.work_id=?
                 """,
                 (work_id,),
             ).fetchall()
@@ -1728,9 +2020,10 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             project = connection.execute(
                 """
-                SELECT p.id, e.work_id
+                SELECT p.id, version.work_id
                 FROM novel_projects p
-                LEFT JOIN work_editions e ON e.project_id=p.id
+                LEFT JOIN work_versions version
+                  ON version.project_id=p.id
                 WHERE p.id=? AND p.user_id=?
                 """,
                 (project_id, user_id),
@@ -1757,7 +2050,7 @@ class Database:
                     """
                     DELETE FROM works
                     WHERE id=? AND NOT EXISTS(
-                        SELECT 1 FROM work_editions
+                        SELECT 1 FROM work_versions
                         WHERE work_id=works.id
                     )
                     """,
@@ -1822,8 +2115,9 @@ class Database:
                     UPDATE works
                     SET title=?, updated_at=?
                     WHERE id IN (
-                        SELECT work_id FROM work_editions
-                        WHERE project_id=? AND is_primary=1
+                        SELECT work_id FROM work_versions
+                        WHERE project_id=? AND ref_name='main'
+                          AND is_editable=1
                     )
                     """,
                     (title, utc_now(), project_id),
@@ -2640,10 +2934,10 @@ class Database:
                 SELECT entry.id, entry.category, entry.title,
                        entry.content, entry.evidence, entry.provenance,
                        entry.updated_at
-                FROM work_editions edition
+                FROM work_versions version
                 JOIN work_archive_entries entry
-                  ON entry.work_id=edition.work_id
-                WHERE edition.project_id=?
+                  ON entry.work_id=version.work_id
+                WHERE version.project_id=?
                   AND entry.entry_type='creative_rule'
                   AND entry.status='confirmed'
                 ORDER BY
@@ -4528,11 +4822,12 @@ class Database:
         max_documents: Optional[int] = None,
         max_stored_chars: Optional[int] = None,
         work_id: Optional[str] = None,
-        source_edition_id: Optional[str] = None,
-        edition_kind: str = "source",
-        branch_intent: str = "original",
-        edition_label: str = "导入原文",
-        is_primary_edition: bool = False,
+        base_version_id: Optional[str] = None,
+        ref_name: str = "source",
+        version_label: str = "原始版本",
+        intent: str = "original",
+        content_hash: str = "",
+        creative_snapshot: Optional[Mapping[str, Any]] = None,
     ) -> str:
         document_id = source_path.parent.name
         chunk_list = list(chunks)
@@ -4607,17 +4902,19 @@ class Database:
                         chunk.part_count,
                     ),
                 )
-            _attach_work_edition(
+            _attach_work_version(
                 connection,
                 user_id=user_id,
                 title=title,
-                kind=edition_kind,
-                label=edition_label,
-                branch_intent=branch_intent,
+                ref_type="tag",
+                ref_name=ref_name,
+                label=version_label,
+                intent=intent,
                 document_id=document_id,
                 work_id=work_id,
-                source_edition_id=source_edition_id,
-                is_primary=is_primary_edition,
+                base_version_id=base_version_id,
+                content_hash=content_hash,
+                creative_snapshot=creative_snapshot,
                 origin="imported",
             )
             connection.commit()

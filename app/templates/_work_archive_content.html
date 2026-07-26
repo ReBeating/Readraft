@@ -1,13 +1,13 @@
 <section class="studio-archive-view" aria-labelledby="work-archive-title">
   <div class="studio-view-heading studio-archive-view-heading">
     <div>
-      <span class="studio-section-label">作品档案</span>
+      <span class="studio-section-label">作品版本库</span>
       <h1 id="work-archive-title">{{ work.title or '未命名作品' }}</h1>
-      <p>阅读分析、作者确认的创作设定和版本来源统一保存在这里。</p>
+      <p>{{ current_version.label }} · {% if current_version.is_editable %}main 可编辑分支{% else %}固定 Tag，只读{% endif %}</p>
     </div>
   </div>
 
-  <nav class="studio-archive-tabs" aria-label="作品档案分类">
+  <nav class="studio-archive-tabs" aria-label="作品版本库分类">
     {% for tab_key, tab_label in archive_tabs %}
       <a
         class="{% if active_archive_tab == tab_key %}active{% endif %}"
@@ -18,12 +18,16 @@
   </nav>
 
   {% if archive_error %}<div class="studio-alert error" role="alert">{{ archive_error }}</div>{% endif %}
-  {% if archive_saved %}<div class="studio-alert success" role="status">已保存到分析与笔记。</div>{% endif %}
+  {% if archive_saved %}<div class="studio-alert success" role="status">已保存。</div>{% endif %}
   {% if archive_adopted %}<div class="studio-alert success" role="status">已采纳为创作设定。</div>{% endif %}
   {% if archive_removed %}<div class="studio-alert success" role="status">已移除。</div>{% endif %}
 
   {% if active_archive_tab == 'creative' %}
-    {% include "_creative_settings_content.html" %}
+    {% if archive_readonly %}
+      {% include "_creative_snapshot_content.html" %}
+    {% else %}
+      {% include "_creative_settings_content.html" %}
+    {% endif %}
   {% elif active_archive_tab == 'analysis' %}
     <section class="studio-archive-section">
       <div class="studio-archive-section-heading">
@@ -36,6 +40,7 @@
           <form method="post" action="/works/{{ work.id }}/archive">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+            <input type="hidden" name="content_version_id" value="{{ current_version.id }}">
             <label>
               <span>记录性质</span>
               <select name="entry_type">
@@ -52,15 +57,9 @@
                 {% endfor %}
               </select>
             </label>
-            <label>
-              <span>来源版本（可选）</span>
-              <select name="edition_id">
-                <option value="">整部作品</option>
-                {% for edition in work.editions %}
-                  <option value="{{ edition.id }}">{{ edition.label }}</option>
-                {% endfor %}
-              </select>
-            </label>
+            <p class="studio-version-note-scope">
+              关联版本：<strong>{{ current_version.label }}</strong>
+            </p>
             <label>
               <span>标题（可选）</span>
               <input name="title" maxlength="120">
@@ -108,11 +107,11 @@
                 <p>{{ entry.content }}</p>
                 <footer>
                   <span>
-                    {% if entry.edition_label %}{{ entry.edition_label }}{% endif %}
-                    {% if entry.evidence %}{% if entry.edition_label %} · {% endif %}依据：{{ entry.evidence }}{% endif %}
+                    {% if entry.version_label %}{{ entry.version_label }}{% endif %}
+                    {% if entry.evidence %}{% if entry.version_label %} · {% endif %}依据：{{ entry.evidence }}{% endif %}
                   </span>
                   <div>
-                    {% if not entry.adopted_setting_id %}
+                    {% if not entry.adopted_setting_id and work.main_version %}
                       <details class="studio-adopt-control">
                         <summary>采纳为设定</summary>
                         <form method="post" action="/works/{{ work.id }}/archive/entries/{{ entry.id }}/adopt">
@@ -133,6 +132,8 @@
                           <button class="studio-button primary" type="submit">确认采纳</button>
                         </form>
                       </details>
+                    {% elif not entry.adopted_setting_id %}
+                      <span class="studio-muted">创建 main 后可采纳</span>
                     {% endif %}
                     <form
                       method="post"
@@ -171,7 +172,7 @@
               </a>
               {% if analysis.adopted_setting_id %}
                 <span class="studio-adopted-badge">已采纳</span>
-              {% else %}
+              {% elif work.main_version %}
                 <details class="studio-adopt-control">
                   <summary>采纳为设定</summary>
                   <form method="post" action="/works/{{ work.id }}/archive/analyses/{{ analysis.id }}/adopt">
@@ -196,6 +197,8 @@
                     <button class="studio-button primary" type="submit">确认采纳</button>
                   </form>
                 </details>
+              {% else %}
+                <span class="studio-muted">创建 main 后可采纳</span>
               {% endif %}
             </article>
           {% endfor %}
@@ -203,7 +206,7 @@
       {% else %}
         <div class="studio-settings-empty">
           <strong>还没有章节分析</strong>
-          <p>在阅读模式运行全书分析后，结果会按章节汇总到这里。</p>
+          <p>对当前固定版本运行全书分析后，结果会按章节汇总到这里。</p>
         </div>
       {% endif %}
     </section>
@@ -211,77 +214,85 @@
     <section class="studio-archive-section">
       <div class="studio-archive-section-heading">
         <div>
-          <h2>版本与来源</h2>
-          <p>每个版本都保留用途、来源版本和分支关系。</p>
+          <h2>版本</h2>
+          <p>main 是唯一可编辑分支；原始版本和稿次 Tag 永久只读。</p>
         </div>
-        <span>{{ work.editions|length }}</span>
+        <span>{{ work.versions|length }}</span>
       </div>
-      <div class="studio-edition-list">
-        {% for edition in work.editions %}
-          <article class="studio-edition-card">
-            <header>
-              <span>
-                {% if edition.kind == 'source' %}原文
-                {% elif edition.kind == 'snapshot' %}阅读快照
-                {% elif edition.branch_intent == 'rewrite' %}改写稿
-                {% elif edition.branch_intent == 'sequel' %}续写稿
-                {% else %}创作稿{% endif %}
-              </span>
-              {% if edition.is_primary %}<b>主版本</b>{% endif %}
-            </header>
-            <strong>{{ edition.label }}</strong>
-            <small>
-              {% if edition.project_id %}
-                {{ edition.project_chapter_count }} 章 · {{ edition.project_char_count|human_size }} · 可编辑
-              {% else %}
-                {{ edition.document_chapter_count }} 章 · {{ edition.document_char_count|human_size }} · 只读
-              {% endif %}
-            </small>
-            <dl>
-              <div>
-                <dt>建立时间</dt>
-                <dd>{{ (edition.created_at or '')[:16]|replace('T', ' ') }}</dd>
-              </div>
-              <div>
-                <dt>来源</dt>
-                <dd>
-                  {% if edition.source_edition %}
-                    {{ edition.source_edition.label }}
-                    {% if edition.branch_intent == 'rewrite' %} · 改写
-                    {% elif edition.branch_intent == 'sequel' %} · 续写
-                    {% elif edition.branch_intent == 'snapshot' %} · 阅读快照
+      {% if current_version.is_editable and current_version.ref_name == 'main' %}
+        <form class="studio-create-tag" method="post" action="/works/{{ work.id }}/tags" data-save-before-submit>
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <label>
+            <span>固定当前 main</span>
+            <input name="label" maxlength="80" placeholder="版本名，例如：一稿（留空自动命名）">
+          </label>
+          <button class="studio-button primary" type="submit">创建 Tag</button>
+        </form>
+      {% endif %}
+      <div class="studio-version-list">
+        {% for version in work.versions %}
+          {% if version.ref_type != 'legacy' %}
+            <article class="studio-version-card {% if version.id == current_version.id %}current{% endif %}">
+              <header>
+                <span>
+                  {% if version.ref_name == 'main' %}分支
+                  {% elif version.ref_name == 'source' %}原始版本
+                  {% else %}Tag{% endif %}
+                </span>
+                {% if version.id == current_version.id %}<b>当前</b>{% endif %}
+              </header>
+              <strong>{{ version.label }}</strong>
+              <small>
+                {% if version.project_id %}
+                  {{ version.project_chapter_count }} 章 · {{ version.project_char_count|human_size }} · 可编辑
+                {% else %}
+                  {{ version.document_chapter_count }} 章 · {{ version.document_char_count|human_size }} · 只读
+                {% endif %}
+              </small>
+              <dl>
+                <div>
+                  <dt>建立时间</dt>
+                  <dd>{{ (version.created_at or '')[:16]|replace('T', ' ') }}</dd>
+                </div>
+                <div>
+                  <dt>基础版本</dt>
+                  <dd>
+                    {% if version.base_version %}
+                      {{ version.base_version.label }}
+                      {% if version.intent == 'rewrite' %} · 改写
+                      {% elif version.intent == 'sequel' %} · 续写
+                      {% elif version.intent == 'snapshot' %} · 固定 main{% endif %}
+                    {% elif version.ref_name == 'source' %}
+                      外部导入
+                    {% else %}
+                      从本作品开始
                     {% endif %}
-                  {% else %}
-                    {% if edition.kind == 'source' %}外部导入{% else %}从本作品开始{% endif %}
-                  {% endif %}
-                </dd>
-              </div>
-            </dl>
-            <footer>
-              <a
-                class="studio-button"
-                href="{% if edition.project_id %}/novels/{{ edition.project_id }}/workbench{% else %}/documents/{{ edition.document_id }}{% endif %}"
-                data-save-before-navigation
-              >打开</a>
-              {% if edition.project_id %}
-                <form method="post" action="/novels/{{ edition.project_id }}/reading-snapshots">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                  <button class="studio-button" type="submit">生成阅读快照</button>
-                </form>
-              {% else %}
-                <form method="post" action="/documents/{{ edition.document_id }}/writing-branches">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                  <input type="hidden" name="intent" value="rewrite">
-                  <button class="studio-button" type="submit">创建改写稿</button>
-                </form>
-                <form method="post" action="/documents/{{ edition.document_id }}/writing-branches">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                  <input type="hidden" name="intent" value="sequel">
-                  <button class="studio-button primary" type="submit">从此续写</button>
-                </form>
-              {% endif %}
-            </footer>
-          </article>
+                  </dd>
+                </div>
+              </dl>
+              <footer>
+                <a
+                  class="studio-button"
+                  href="/works/{{ work.id }}/versions/{{ version.id }}"
+                  data-save-before-navigation
+                >打开</a>
+                {% if version.ref_type == 'tag' and not work.main_version %}
+                  <form method="post" action="/works/{{ work.id }}/main">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="base_version_id" value="{{ version.id }}">
+                    <input type="hidden" name="intent" value="rewrite">
+                    <button class="studio-button" type="submit">创建 main 并改写</button>
+                  </form>
+                  <form method="post" action="/works/{{ work.id }}/main">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="base_version_id" value="{{ version.id }}">
+                    <input type="hidden" name="intent" value="sequel">
+                    <button class="studio-button primary" type="submit">创建 main 并续写</button>
+                  </form>
+                {% endif %}
+              </footer>
+            </article>
+          {% endif %}
         {% else %}
           <div class="studio-settings-empty">
             <strong>还没有版本</strong>

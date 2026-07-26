@@ -39,7 +39,7 @@ from .db import Database, has_active_project_ai_task
 
 
 WORK_ARCHIVE_FORMAT = "novelai-work"
-WORK_ARCHIVE_VERSION = 1
+WORK_ARCHIVE_VERSION = 2
 WORK_PATH_PREFIX = "work://"
 WORK_EXCLUDED_TABLES = {
     "users",
@@ -62,7 +62,7 @@ WorkArchiveError = ArchiveError
 class WorkArchiveSummary:
     work_id: str
     title: str
-    edition_count: int
+    version_count: int
     table_count: int
     row_count: int
     file_count: int
@@ -73,7 +73,7 @@ class WorkArchiveSummary:
 class ImportedWork:
     work_id: str
     title: str
-    edition_count: int
+    version_count: int
     row_count: int
     file_count: int
 
@@ -151,28 +151,28 @@ def _select_work_rows(
     ).fetchone()
     if not work:
         raise WorkArchiveError("作品不存在或不属于当前账号")
-    editions = connection.execute(
+    versions = connection.execute(
         """
-        SELECT * FROM work_editions
+        SELECT * FROM work_versions
         WHERE work_id=?
         ORDER BY created_at, id
         """,
         (work_id,),
     ).fetchall()
-    if not editions:
+    if not versions:
         raise WorkArchiveError("作品没有可归档的版本")
 
     project_ids = sorted(
         {
             str(row["project_id"])
-            for row in editions
+            for row in versions
             if row["project_id"]
         }
     )
     document_ids = sorted(
         {
             str(row["document_id"])
-            for row in editions
+            for row in versions
             if row["document_id"]
         }
     )
@@ -212,8 +212,8 @@ def _select_work_rows(
         tables=tables,
         selected=selected,
         selected_keys=selected_keys,
-        table_name="work_editions",
-        candidates=editions,
+        table_name="work_versions",
+        candidates=versions,
     )
     if project_ids:
         for batch in _chunks(project_ids):
@@ -255,7 +255,7 @@ def _select_work_rows(
     if selected_projects != set(project_ids):
         raise WorkArchiveError("作品包含不可访问的创作版本")
     if selected_documents != set(document_ids):
-        raise WorkArchiveError("作品包含不可访问的阅读版本")
+        raise WorkArchiveError("作品包含不可访问的只读 Tag")
 
     changed = True
     while changed:
@@ -499,7 +499,7 @@ def create_work_archive(
                 "tables": rows,
                 "files": public_files,
                 "counts": {
-                    "editions": len(rows.get("work_editions", [])),
+                    "versions": len(rows.get("work_versions", [])),
                     "tables": len(rows),
                     "rows": row_count,
                     "files": len(files),
@@ -543,7 +543,7 @@ def create_work_archive(
     return WorkArchiveSummary(
         work_id=work_id,
         title=str(work.get("title") or ""),
-        edition_count=len(rows.get("work_editions", [])),
+        version_count=len(rows.get("work_versions", [])),
         table_count=len(rows),
         row_count=row_count,
         file_count=len(files),
@@ -605,30 +605,30 @@ def _validate_manifest_shape(manifest: Any) -> Dict[str, Any]:
         or work_rows[0].get("id") != work["id"]
     ):
         raise WorkArchiveError("作品归档的根作品记录不唯一")
-    editions = tables.get("work_editions")
-    if not isinstance(editions, list) or not editions:
+    versions = tables.get("work_versions")
+    if not isinstance(versions, list) or not versions:
         raise WorkArchiveError("作品归档没有版本记录")
-    edition_ids = {
+    version_ids = {
         str(row.get("id") or "")
-        for row in editions
+        for row in versions
         if isinstance(row, dict)
     }
-    if "" in edition_ids or len(edition_ids) != len(editions):
+    if "" in version_ids or len(version_ids) != len(versions):
         raise WorkArchiveError("作品归档包含无效或重复版本")
-    for edition in editions:
-        if edition.get("work_id") != work["id"]:
+    for version in versions:
+        if version.get("work_id") != work["id"]:
             raise WorkArchiveError("作品归档包含其他作品的版本")
-        project_id = edition.get("project_id")
-        document_id = edition.get("document_id")
+        project_id = version.get("project_id")
+        document_id = version.get("document_id")
         if bool(project_id) == bool(document_id):
             raise WorkArchiveError("作品归档包含无效版本指向")
         if project_id and project_id not in project_ids:
             raise WorkArchiveError("创作版本缺少对应作品数据")
         if document_id and document_id not in document_ids:
-            raise WorkArchiveError("阅读版本缺少对应文档数据")
-        source_edition_id = edition.get("source_edition_id")
-        if source_edition_id and source_edition_id not in edition_ids:
-            raise WorkArchiveError("版本来源不在当前作品归档中")
+            raise WorkArchiveError("只读 Tag 缺少对应文档数据")
+        base_version_id = version.get("base_version_id")
+        if base_version_id and base_version_id not in version_ids:
+            raise WorkArchiveError("基础版本不在当前作品归档中")
 
     archived_project_ids = {
         str(row.get("id") or "")
@@ -641,7 +641,7 @@ def _validate_manifest_shape(manifest: Any) -> Dict[str, Any]:
     if archived_project_ids != set(project_ids):
         raise WorkArchiveError("作品归档的创作版本清单不一致")
     if archived_document_ids != set(document_ids):
-        raise WorkArchiveError("作品归档的阅读版本清单不一致")
+        raise WorkArchiveError("作品归档的 Tag 清单不一致")
     _validate_inactive_rows(tables)
     return manifest
 
@@ -819,7 +819,7 @@ def _remap_import_rows(
     for source_document_id in manifest["roots"]["documents"]:
         target_document_id = id_map.get(source_document_id)
         if not target_document_id:
-            raise WorkArchiveError("作品归档缺少阅读版本标识映射")
+            raise WorkArchiveError("作品归档缺少 Tag 标识映射")
         target_roots[f"documents/{source_document_id}"] = (
             documents_dir / str(user_id) / target_document_id
         )
@@ -1072,7 +1072,7 @@ def import_work_archive(
     return ImportedWork(
         work_id=target_work_id,
         title=str(manifest["work"].get("title") or ""),
-        edition_count=len(manifest["tables"]["work_editions"]),
+        version_count=len(manifest["tables"]["work_versions"]),
         row_count=sum(
             len(rows) for rows in manifest["tables"].values()
         ),

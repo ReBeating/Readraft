@@ -256,55 +256,6 @@
       <button class="studio-button primary" type="submit">保存创作设定</button>
     </div>
   </form>
-{% else %}
-  {% set confirmed_without_project = namespace(count=0) %}
-  {% for entry in archive_entries %}
-    {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' %}
-      {% set confirmed_without_project.count = confirmed_without_project.count + 1 %}
-    {% endif %}
-  {% endfor %}
-  {% if confirmed_without_project.count %}
-    <section class="studio-archive-section">
-      <div class="studio-archive-section-heading">
-        <div>
-          <h2>已确认创作设定</h2>
-          <p>创建创作版本后，这些设定会自动进入写作上下文。</p>
-        </div>
-        <span>{{ confirmed_without_project.count }}</span>
-      </div>
-      {% for category_key, category_label in archive_categories %}
-        {% set category_count = namespace(value=0) %}
-        {% for entry in archive_entries %}
-          {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' and entry.category == category_key %}
-            {% set category_count.value = category_count.value + 1 %}
-          {% endif %}
-        {% endfor %}
-        {% if category_count.value %}
-          <h3 class="studio-rule-category-title">{{ category_label }}</h3>
-          {% set rule_category = category_key %}
-          {% include "_confirmed_archive_rules.html" %}
-        {% endif %}
-      {% endfor %}
-    </section>
-  {% endif %}
-  <div class="studio-settings-empty studio-archive-empty">
-    <strong>还没有创作版本</strong>
-    <p>先从任一阅读版本创建改写或续写，创作设定会在整个作品内共享。</p>
-    {% if work.active_document %}
-      <div class="studio-empty-actions">
-        <form method="post" action="/documents/{{ work.active_document.document_id }}/writing-branches">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <input type="hidden" name="intent" value="rewrite">
-          <button class="studio-button" type="submit">创建改写稿</button>
-        </form>
-        <form method="post" action="/documents/{{ work.active_document.document_id }}/writing-branches">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <input type="hidden" name="intent" value="sequel">
-          <button class="studio-button primary" type="submit">从此续写</button>
-        </form>
-      </div>
-    {% endif %}
-  </div>
 {% endif %}
 
 {% for entry in archive_entries %}

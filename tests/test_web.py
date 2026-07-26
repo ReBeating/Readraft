@@ -89,15 +89,15 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
         assert dashboard.text.count('action="/novels/new/blank"') == 1
         assert "studio-empty-actions" not in dashboard.text
 
-        upload = client.get("/upload")
+        upload = client.get("/import")
         imported = client.post(
-            "/upload",
+            "/import",
             data={
                 "title": "无 Key 参考文本",
                 "csrf": csrf_from(upload.text),
             },
             files={
-                "source_file": (
+                "work_file": (
                     "reference.txt",
                     "第一章\n这段内容不能由测试模型分析。".encode(),
                     "text/plain",
@@ -139,12 +139,12 @@ def test_full_mock_workflow(tmp_path):
         )
         assert response.status_code == 303
 
-        page = client.get("/upload")
+        page = client.get("/import")
         response = client.post(
-            "/upload",
+            "/import",
             data={"title": "测试小说", "csrf": csrf_from(page.text)},
             files={
-                "source_file": (
+                "work_file": (
                     "novel.txt",
                     "第一章 开始\n这是第一章的正文内容。\n第二章 继续\n这是第二章的正文内容。".encode(),
                     "text/plain",
@@ -200,8 +200,9 @@ def test_full_mock_workflow(tmp_path):
         analysis_id = analysis_match.group(1)
         assert (
             f"/works/{work['id']}/archive/analyses/{analysis_id}/adopt"
-            in archive.text
+            not in archive.text
         )
+        assert "创建 main 后可采纳" in archive.text
         adopted = client.post(
             f"/works/{work['id']}/archive/analyses/{analysis_id}/adopt",
             data={
@@ -217,19 +218,41 @@ def test_full_mock_workflow(tmp_path):
             follow_redirects=False,
         )
         assert adopted.status_code == 303
-        assert "adopted=true" in adopted.headers["location"]
+        assert "error=" in adopted.headers["location"]
 
         branch = client.post(
-            f"/documents/{document_id}/writing-branches",
+            f"/works/{work['id']}/main",
             data={
+                "base_version_id": work["source_version"]["id"],
                 "intent": "rewrite",
                 "csrf": csrf_from(archive.text),
             },
             follow_redirects=False,
         )
+        assert branch.status_code == 303
         project_id = branch.headers["location"].split("/novels/", 1)[1].split(
             "/", 1
         )[0]
+        source_archive = client.get(
+            f"/documents/{document_id}"
+            "?view=archive&archive_tab=analysis"
+        )
+        adopted = client.post(
+            f"/works/{work['id']}/archive/analyses/{analysis_id}/adopt",
+            data={
+                "category": "structure",
+                "title": "开篇推进规则",
+                "content": "每章先建立一个可核对的新问题，再延迟解释。",
+                "return_to": (
+                    f"/documents/{document_id}"
+                    "?view=archive&archive_tab=analysis"
+                ),
+                "csrf": csrf_from(source_archive.text),
+            },
+            follow_redirects=False,
+        )
+        assert adopted.status_code == 303
+        assert "adopted=true" in adopted.headers["location"]
         chapters = client.app.state.database.list_novel_chapters(
             int(user["id"]), project_id
         )
@@ -479,12 +502,12 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
         )
         assert response.status_code == 303
 
-        page = client.get("/upload")
+        page = client.get("/import")
         response = client.post(
-            "/upload",
+            "/import",
             data={"title": "参考小说", "csrf": csrf_from(page.text)},
             files={
-                "source_file": (
+                "work_file": (
                     "reference.txt",
                     (
                         "第一章 线索\n"
@@ -1611,8 +1634,8 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         )
 
         dashboard = client.get("/dashboard")
-        assert 'data-delete-project-form' in dashboard.text
-        assert f'action="/novels/{project_id}/delete"' in dashboard.text
+        assert 'data-delete-work-form' in dashboard.text
+        assert f'action="/works/{work["id"]}/delete"' in dashboard.text
         assert "退出登录" in dashboard.text
         dashboard_theme_position = dashboard.text.index(
             "data-theme-toggle"
@@ -1691,33 +1714,49 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
         workbench = client.get(created.headers["location"])
         assert "导出作品归档" not in workbench.text
         dashboard = client.get("/dashboard")
-        assert "导出正文" in dashboard.text
-        assert "导出完整作品归档" in dashboard.text
+        assert "导出 main 正文（TXT）" in dashboard.text
+        assert "导出作品版本库（ZIP）" in dashboard.text
         assert 'class="studio-book-controls"' in dashboard.text
-        assert dashboard.text.count('class="studio-export-icon"') == 2
-        assert re.search(r">\s*导出正文\s*<", dashboard.text) is None
-        assert re.search(r">\s*导出完整作品归档\s*<", dashboard.text) is None
-        assert 'aria-label="导出正文"' in dashboard.text
-        assert 'aria-label="导出完整作品归档"' in dashboard.text
-        assert 'data-tooltip="导出正文（TXT）"' in dashboard.text
-        assert (
-            'data-tooltip="导出完整作品归档（ZIP）"'
-            in dashboard.text
-        )
-        assert ">TXT</span>" in dashboard.text
-        assert ">ZIP</span>" in dashboard.text
+        assert 'class="studio-book-menu"' in dashboard.text
+        assert 'class="studio-mode-actions"' not in dashboard.text
+        assert 'data-tooltip="阅读"' not in dashboard.text
+        assert 'data-tooltip="创作"' not in dashboard.text
+        assert 'data-tooltip="作品档案"' not in dashboard.text
         assert '<span aria-hidden="true">›</span>' not in dashboard.text
         assert (
             f'href="/works/{work["id"]}/export.novelai.zip"'
             in dashboard.text
         )
         assert client.get("/projects/import").status_code == 404
+        assert client.get("/upload").status_code == 404
+        assert client.post("/upload").status_code == 404
+        assert (
+            client.post("/documents/removed/writing-branches").status_code
+            == 404
+        )
+        assert (
+            client.post("/novels/removed/reading-snapshots").status_code
+            == 404
+        )
         assert (
             client.get(
                 f"/novels/{project_id}/export.novelai.zip"
             ).status_code
             == 404
         )
+        with application.state.database.connection() as connection:
+            tables = {
+                str(row["name"])
+                for row in connection.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type='table'
+                      AND name IN ('work_editions', 'work_versions')
+                    """
+                ).fetchall()
+            }
+        assert tables == {"work_versions"}
 
         exported = client.get(
             f"/works/{work['id']}/export.novelai.zip"
@@ -1731,7 +1770,6 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
         imported = client.post(
             "/import",
             data={
-                "initial_mode": "read",
                 "csrf": csrf_from(import_page.text),
             },
             files={
@@ -1755,7 +1793,7 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
         assert len(works) == 2
 
 
-def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
+def test_import_creates_readonly_source_then_one_editable_main(
     tmp_path,
 ):
     application = create_app(make_settings(tmp_path))
@@ -1774,12 +1812,12 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert response.status_code == 303
 
         import_page = client.get("/import")
-        assert "导入后先做什么" in import_page.text
+        assert "原始版本" in import_page.text
+        assert "导入后先做什么" not in import_page.text
         imported = client.post(
             "/import",
             data={
                 "title": "雨夜来信",
-                "initial_mode": "read",
                 "csrf": csrf_from(import_page.text),
             },
             files={
@@ -1797,9 +1835,9 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert imported.status_code == 303
         assert imported.headers["location"].startswith("/documents/")
         reader = client.get(imported.headers["location"])
-        assert "改写" in reader.text
-        assert "续写" in reader.text
-        assert "作品档案" in reader.text
+        assert "创建 main 并改写" in reader.text
+        assert "创建 main 并续写" in reader.text
+        assert "作品资料" in reader.text
         assert 'data-workbench' in reader.text
         assert 'data-panel="directory"' in reader.text
         assert 'data-panel="ai"' in reader.text
@@ -1826,9 +1864,17 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert "阅读对话" in embedded_chat.text
         assert 'data-panel="directory"' in embedded_chat.text
 
+        user = application.state.database.get_user_by_username(
+            "统一作品用户"
+        )
+        works = application.state.database.list_works(int(user["id"]))
+        assert len(works) == 1
+        assert not works[0]["has_main"]
+        assert works[0]["source_version"]["document_id"] == document_id
         rewritten = client.post(
-            f"/documents/{document_id}/writing-branches",
+            f"/works/{works[0]['id']}/main",
             data={
+                "base_version_id": works[0]["source_version"]["id"],
                 "intent": "rewrite",
                 "csrf": csrf_from(reader.text),
             },
@@ -1837,14 +1883,12 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert rewritten.status_code == 303
         assert rewritten.headers["location"].startswith("/novels/")
 
-        user = application.state.database.get_user_by_username(
-            "统一作品用户"
-        )
         works = application.state.database.list_works(int(user["id"]))
         assert len(works) == 1
-        assert works[0]["has_reading"]
-        assert works[0]["has_writing"]
-        assert len(works[0]["editions"]) == 2
+        assert works[0]["has_main"]
+        assert len(works[0]["versions"]) == 2
+        assert len(works[0]["tag_versions"]) == 1
+        assert works[0]["source_version"]["label"] == "原始版本"
         project_id = rewritten.headers["location"].split("/novels/", 1)[1].split(
             "/", 1
         )[0]
@@ -1858,18 +1902,15 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
 
         dashboard = client.get("/dashboard")
         assert dashboard.text.count("studio-work-row") == 1
-        assert "阅读分析" in dashboard.text
-        assert "创作" in dashboard.text
-        assert 'data-tooltip="阅读"' in dashboard.text
-        assert 'data-tooltip="创作"' in dashboard.text
-        assert 'data-tooltip="作品档案"' in dashboard.text
-        assert re.search(r">\s*创作\s*<", dashboard.text) is None
-        assert re.search(r">\s*档案\s*<", dashboard.text) is None
+        assert "main" in dashboard.text
+        assert "2 个 Tag" not in dashboard.text
+        assert "1 个 Tag" in dashboard.text
+        assert 'class="studio-mode-actions"' not in dashboard.text
         archive = client.get(f"/works/{works[0]['id']}/archive")
         assert archive.url.path == f"/novels/{project_id}/workbench"
         assert archive.url.params["view"] == "archive"
         assert archive.url.params["archive_tab"] == "creative"
-        assert "创作设定" in archive.text
+        assert "作品资料" in archive.text
         assert 'data-panel="directory"' in archive.text
         assert 'data-panel="ai"' in archive.text
 
@@ -1877,8 +1918,9 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
             f"/novels/{project_id}/workbench"
             "?view=archive&archive_tab=versions"
         )
-        assert "导入原文" in versions.text
-        assert "改写稿" in versions.text
+        assert "原始版本" in versions.text
+        assert "main" in versions.text
+        assert "创建 Tag" in versions.text
         analysis_archive = client.get(
             f"/novels/{project_id}/workbench"
             "?view=archive&archive_tab=analysis"
@@ -1891,6 +1933,7 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
                 "title": "节奏观察",
                 "content": "第一章先给结果，再延迟解释。",
                 "evidence": "第 1 章",
+                "content_version_id": works[0]["main_version"]["id"],
                 "return_to": (
                     f"/novels/{project_id}/workbench"
                     "?view=archive&archive_tab=analysis"
@@ -1971,7 +2014,7 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         ]
 
 
-def test_imported_writing_draft_can_create_reading_snapshot(tmp_path):
+def test_imported_source_can_create_main_and_fixed_tag(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         register = client.get("/register")
@@ -1987,12 +2030,11 @@ def test_imported_writing_draft_can_create_reading_snapshot(tmp_path):
         )
         assert response.status_code == 303
 
-        import_page = client.get("/import?mode=write")
+        import_page = client.get("/import")
         imported = client.post(
             "/import",
             data={
                 "title": "海边录音",
-                "initial_mode": "write",
                 "csrf": csrf_from(import_page.text),
             },
             files={
@@ -2005,33 +2047,99 @@ def test_imported_writing_draft_can_create_reading_snapshot(tmp_path):
             follow_redirects=False,
         )
         assert imported.status_code == 303
-        assert imported.headers["location"].startswith("/novels/")
-        project_id = imported.headers["location"].split("/novels/", 1)[1].split(
-            "/", 1
-        )[0]
-        workbench = client.get(imported.headers["location"])
-        assert "作品档案" in workbench.text
-        assert "生成阅读版" in workbench.text
-
-        snapshot = client.post(
-            f"/novels/{project_id}/reading-snapshots",
-            data={"csrf": csrf_from(workbench.text)},
-            follow_redirects=False,
-        )
-        assert snapshot.status_code == 303
-        assert snapshot.headers["location"].startswith("/documents/")
-        reader = client.get(snapshot.headers["location"])
-        assert "阅读版" in reader.text
-        assert "切换到创作模式" in reader.text
-
+        assert imported.headers["location"].startswith("/documents/")
+        source_reader = client.get(imported.headers["location"])
         user = application.state.database.get_user_by_username(
             "阅读版本用户"
         )
+        work = application.state.database.list_works(int(user["id"]))[0]
+        created_main = client.post(
+            f"/works/{work['id']}/main",
+            data={
+                "base_version_id": work["source_version"]["id"],
+                "intent": "rewrite",
+                "csrf": csrf_from(source_reader.text),
+            },
+            follow_redirects=False,
+        )
+        assert created_main.status_code == 303
+        assert created_main.headers["location"].startswith("/novels/")
+        work = application.state.database.get_work(
+            int(user["id"]), str(work["id"])
+        )
+        assert work and work["main_version"]
+        workbench = client.get(created_main.headers["location"])
+        saved_settings = client.post(
+            f"/novels/{work['main_version']['project_id']}/settings",
+            data={
+                "title": "海边录音",
+                "premise": "录音中的失踪者留下了第一版线索。",
+                "point_of_view": "第三人称限知",
+                "target_chapter_chars": "3000",
+                "planning_horizon": "20",
+                "csrf": csrf_from(workbench.text),
+            },
+            follow_redirects=False,
+        )
+        assert saved_settings.status_code == 303
+        workbench = client.get(created_main.headers["location"])
+        tagged = client.post(
+            f"/works/{work['id']}/tags",
+            data={
+                "label": "一稿",
+                "csrf": csrf_from(workbench.text),
+            },
+            follow_redirects=False,
+        )
+        assert tagged.status_code == 303
+        assert tagged.headers["location"].startswith("/documents/")
+        tag_page = client.get(tagged.headers["location"])
+        assert "一稿" in tag_page.text
+        assert "只读" in tag_page.text
+
         works = application.state.database.list_works(int(user["id"]))
         assert len(works) == 1
-        assert len(works[0]["writing_editions"]) == 1
-        assert len(works[0]["reading_editions"]) == 1
-        assert works[0]["reading_editions"][0]["kind"] == "snapshot"
+        assert works[0]["main_version"]
+        assert len(works[0]["tag_versions"]) == 2
+        fixed = next(
+            version
+            for version in works[0]["tag_versions"]
+            if version["label"] == "一稿"
+        )
+        assert fixed["base_version"]["ref_name"] == "main"
+        assert fixed["creative_snapshot"]["project"]["title"] == "海边录音"
+        assert (
+            fixed["creative_snapshot"]["project"]["premise"]
+            == "录音中的失踪者留下了第一版线索。"
+        )
+
+        main_page = client.get(created_main.headers["location"])
+        changed_settings = client.post(
+            f"/novels/{work['main_version']['project_id']}/settings",
+            data={
+                "title": "海边录音",
+                "premise": "main 已经改成完全不同的第二版线索。",
+                "point_of_view": "第三人称限知",
+                "target_chapter_chars": "3000",
+                "planning_horizon": "20",
+                "csrf": csrf_from(main_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert changed_settings.status_code == 303
+        refreshed = application.state.database.get_work(
+            int(user["id"]), str(work["id"])
+        )
+        assert refreshed
+        unchanged_tag = next(
+            version
+            for version in refreshed["tag_versions"]
+            if version["label"] == "一稿"
+        )
+        assert (
+            unchanged_tag["creative_snapshot"]["project"]["premise"]
+            == "录音中的失踪者留下了第一版线索。"
+        )
 
 
 def test_full_mock_novel_writing_workflow(tmp_path):

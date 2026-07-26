@@ -121,9 +121,9 @@ from .version_diff import build_version_diff
 from .workflow import ChapterWorkflowService
 from .writing import build_default_writer
 from .work_library import (
+    create_main_from_version,
     create_reading_document_from_chunks,
-    create_reading_snapshot,
-    create_writing_branch_from_document,
+    create_version_tag,
     create_writing_project_from_chunks,
 )
 
@@ -156,9 +156,9 @@ WORKBENCH_SETTING_TAB_KEYS = frozenset(
     key for key, _label in WORKBENCH_SETTING_TABS
 )
 WORK_ARCHIVE_TABS = (
-    ("creative", "创作设定"),
+    ("creative", "作品资料"),
     ("analysis", "分析与笔记"),
-    ("versions", "版本与来源"),
+    ("versions", "版本"),
 )
 WORK_ARCHIVE_TAB_KEYS = frozenset(
     key for key, _label in WORK_ARCHIVE_TABS
@@ -374,22 +374,27 @@ def _work_archive_destination(
     saved: bool = False,
     error: Optional[str] = None,
 ) -> str:
-    active_document = work.get("active_document")
-    active_project = work.get("active_project")
-    if str(work.get("last_mode") or "") == "read" and active_document:
+    current_version = work.get("current_version")
+    main_version = work.get("main_version")
+    if current_version and current_version.get("document_id"):
         destination = _document_workbench_path(
-            str(active_document["document_id"]),
+            str(current_version["document_id"]),
             view="archive",
             archive_tab="analysis",
         )
-    elif active_project:
+    elif current_version and current_version.get("project_id"):
         destination = _workbench_path(
-            str(active_project["project_id"]),
+            str(current_version["project_id"]),
             archive_tab="creative",
         )
-    elif active_document:
+    elif main_version:
+        destination = _workbench_path(
+            str(main_version["project_id"]),
+            archive_tab="creative",
+        )
+    elif work.get("source_version"):
         destination = _document_workbench_path(
-            str(active_document["document_id"]),
+            str(work["source_version"]["document_id"]),
             view="archive",
             archive_tab="analysis",
         )
@@ -2156,19 +2161,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @application.get("/import", response_class=HTMLResponse)
     async def unified_import_page(
         request: Request,
-        mode: str = "read",
         error: Optional[str] = None,
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        initial_mode = mode if mode in {"read", "write"} else "read"
         return render_template(
             "work_import.html",
             _template_context(
                 request,
                 user=user,
-                initial_mode=initial_mode,
                 error=error,
                 max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
                 max_archive_mb=(
@@ -2182,7 +2184,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         work_file: UploadFile = File(...),
         title: str = Form(""),
-        initial_mode: str = Form("read"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -2190,9 +2191,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
-        selected_mode = (
-            initial_mode if initial_mode in {"read", "write"} else "read"
-        )
         filename = Path(work_file.filename or "untitled.txt").name
         lower_filename = filename.lower()
 
@@ -2202,7 +2200,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 _template_context(
                     request,
                     user=user,
-                    initial_mode=selected_mode,
                     error=message,
                     title=title.strip()[:120],
                     max_upload_mb=(
@@ -2302,18 +2299,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if not chunks:
                 raise ValueError("没有识别到可导入内容")
             clean_title = (title.strip() or Path(filename).stem)[:120]
-            if selected_mode == "write":
-                project_id = create_writing_project_from_chunks(
-                    database=database,
-                    novels_dir=app_settings.novels_dir,
-                    user_id=user_id,
-                    title=clean_title,
-                    chunks=chunks,
-                )
-                return RedirectResponse(
-                    f"/novels/{project_id}/workbench",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
             document_id = create_reading_document_from_chunks(
                 database=database,
                 documents_dir=app_settings.documents_dir,
@@ -2335,6 +2320,54 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except Exception:
             logger.exception("failed to import work")
             return render_import_error("导入失败，请稍后重试", 500)
+
+    @application.get("/works/{work_id}")
+    async def open_work(request: Request, work_id: str):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        work = database.get_work(int(user["id"]), work_id)
+        if not work:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            str(work["resume_url"]),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.get("/works/{work_id}/versions/{version_id}")
+    async def open_work_version(
+        request: Request, work_id: str, version_id: str
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        version = database.get_work_version(user_id, version_id)
+        if (
+            not work
+            or not version
+            or str(version["work_id"]) != work_id
+        ):
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        database.set_work_version(
+            user_id=user_id,
+            work_id=work_id,
+            version_id=version_id,
+        )
+        if version.get("project_id"):
+            destination = (
+                f"/novels/{quote(str(version['project_id']), safe='')}"
+                "/workbench"
+            )
+        else:
+            destination = (
+                f"/documents/{quote(str(version['document_id']), safe='')}"
+            )
+        return RedirectResponse(
+            destination,
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
     @application.get(
         "/works/{work_id}/archive", response_class=HTMLResponse
@@ -2371,7 +2404,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         work_id: str,
         entry_type: str = Form("analysis_note"),
         category: str = Form("general"),
-        edition_id: str = Form(""),
+        content_version_id: str = Form(""),
         title: str = Form(""),
         content: str = Form(...),
         evidence: str = Form(""),
@@ -2406,7 +2439,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 title=clean_title,
                 content=clean_content,
                 evidence=clean_evidence,
-                edition_id=edition_id.strip() or None,
+                content_version_id=content_version_id.strip() or None,
                 category=category,
             )
         except ValueError as exc:
@@ -2593,10 +2626,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "/dashboard?deleted=true", status_code=status.HTTP_303_SEE_OTHER
         )
 
-    @application.post("/documents/{document_id}/writing-branches")
-    async def create_document_writing_branch(
+    @application.post("/works/{work_id}/main")
+    async def create_work_main(
         request: Request,
-        document_id: str,
+        work_id: str,
+        base_version_id: str = Form(...),
         intent: str = Form(...),
         csrf: str = Form(...),
     ):
@@ -2604,23 +2638,35 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        version = database.get_work_version(user_id, base_version_id)
+        if (
+            not work
+            or not version
+            or str(version["work_id"]) != work_id
+            or not version.get("document_id")
+        ):
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
         try:
-            project_id = create_writing_branch_from_document(
+            project_id = create_main_from_version(
                 database=database,
                 novels_dir=app_settings.novels_dir,
-                user_id=int(user["id"]),
-                document_id=document_id,
+                user_id=user_id,
+                document_id=str(version["document_id"]),
                 intent=intent,
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/documents/{document_id}?error={quote(str(exc))}",
+                f"/documents/{version['document_id']}"
+                f"?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception:
-            logger.exception("failed to create writing branch")
+            logger.exception("failed to create main branch")
             return RedirectResponse(
-                f"/documents/{document_id}?error={quote('创建创作分支失败')}",
+                f"/documents/{version['document_id']}"
+                f"?error={quote('创建 main 分支失败')}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -2628,38 +2674,53 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post("/novels/{project_id}/reading-snapshots")
-    async def create_project_reading_snapshot(
+    @application.post("/works/{work_id}/tags")
+    async def create_work_tag(
         request: Request,
-        project_id: str,
+        work_id: str,
+        label: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work or not work.get("main_version"):
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        project_id = str(work["main_version"]["project_id"])
         try:
-            document_id = create_reading_snapshot(
+            document_id = create_version_tag(
                 database=database,
                 documents_dir=app_settings.documents_dir,
-                user_id=int(user["id"]),
+                user_id=user_id,
                 project_id=project_id,
+                label=label,
                 max_documents=app_settings.max_documents_per_user,
                 max_stored_chars=app_settings.max_stored_chars_per_user,
             )
         except ValueError as exc:
             return RedirectResponse(
-                _workbench_path(project_id, error=str(exc)),
+                _workbench_path(
+                    project_id,
+                    archive_tab="versions",
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception:
-            logger.exception("failed to create reading snapshot")
+            logger.exception("failed to create version tag")
             return RedirectResponse(
-                _workbench_path(project_id, error="生成阅读版失败"),
+                _workbench_path(
+                    project_id,
+                    archive_tab="versions",
+                    error="创建固定版本失败",
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/documents/{document_id}",
+            f"/documents/{document_id}?view=archive&archive_tab=versions",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -2699,43 +2760,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=user_id, project_id=project_id
             )
             work = database.get_work_for_project(user_id, project_id)
-        if work:
-            database.set_work_mode(
-                user_id=user_id, work_id=str(work["id"]), mode="write"
-            )
-        project_edition = (
-            next(
-                (
-                    edition
-                    for edition in work["editions"]
-                    if str(edition.get("project_id") or "") == project_id
-                ),
-                None,
-            )
-            if work
-            else None
+        current_version = database.get_work_version_for_project(
+            user_id, project_id
         )
-        related_reading_editions = (
-            [
-                edition
-                for edition in work["reading_editions"]
-                if project_edition
-                and str(edition.get("source_edition_id") or "")
-                == str(project_edition["id"])
-            ]
-            if work
-            else []
-        )
-        reading_mode_document = (
-            max(
-                related_reading_editions,
-                key=lambda edition: (
-                    str(edition.get("created_at") or ""),
-                    int(edition.get("edition_rowid") or 0),
-                ),
+        if (
+            not work
+            or not current_version
+            or str(current_version.get("ref_name") or "") != "main"
+            or not bool(current_version.get("is_editable"))
+        ):
+            return Response(
+                "只有 main 分支可以进入创作工作台",
+                status_code=status.HTTP_409_CONFLICT,
             )
-            if related_reading_editions
-            else (work.get("active_document") if work else None)
+        database.set_work_version(
+            user_id=user_id,
+            work_id=str(work["id"]),
+            version_id=str(current_version["id"]),
         )
         chapters = database.list_novel_chapters(user_id, project_id)
         effective_view = view if view in {"body", "archive"} else "body"
@@ -2920,10 +2961,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         if effective_view == "archive" and work:
             archive_entries = database.list_work_archive_entries(
-                user_id, str(work["id"])
+                user_id,
+                str(work["id"]),
+                str(current_version["id"]),
             )
             archive_analyses = database.list_work_analyses(
-                user_id, str(work["id"])
+                user_id,
+                str(work["id"]),
+                str(current_version["id"]),
             )
         available_chat_models = chat_model_groups(user_id)
 
@@ -2933,7 +2978,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 work=work,
-                reading_mode_document=reading_mode_document,
+                current_version=current_version,
                 project=project,
                 display_title=display_title,
                 chapters=chapters,
@@ -2971,6 +3016,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 archive_adopted=adopted,
                 archive_removed=removed,
                 archive_error=error,
+                archive_readonly=False,
+                creative_snapshot={},
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
                     available_chat_models, active_conversation
@@ -10003,170 +10050,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
         )
 
-    @application.get("/upload", response_class=HTMLResponse)
-    async def upload_page(request: Request):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        return RedirectResponse(
-            "/import?mode=read", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post("/upload", response_class=HTMLResponse)
-    async def upload(
-        request: Request,
-        source_file: UploadFile = File(...),
-        title: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        filename = Path(source_file.filename or "untitled.txt").name
-        extension = Path(filename).suffix.lower()
-        error: Optional[str] = None
-        if extension not in ALLOWED_EXTENSIONS:
-            error = "目前仅支持 .txt、.text 和 .md 文本文件"
-
-        raw = b""
-        if not error:
-            raw = await source_file.read(app_settings.max_upload_bytes + 1)
-            if len(raw) > app_settings.max_upload_bytes:
-                error = (
-                    f"文件超过 {app_settings.max_upload_bytes // 1024 // 1024} MB 限制"
-                )
-            elif not raw:
-                error = "文件为空"
-
-        text = ""
-        encoding = ""
-        chunks = []
-        if not error:
-            try:
-                text, encoding = decode_upload(raw)
-                if not text.strip():
-                    raise ValueError("文件中没有可分析的正文")
-                if len(text) > app_settings.max_text_chars:
-                    raise ValueError(
-                        f"正文超过 {app_settings.max_text_chars:,} 字限制"
-                    )
-                chunks = split_chapters(
-                    text,
-                    target_chars=app_settings.target_chapter_chars,
-                    max_chars=app_settings.max_chapter_chars,
-                )
-                if not chunks:
-                    raise ValueError("没有识别到可分析内容")
-                usage = database.get_user_usage(int(user["id"]))
-                if (
-                    usage["document_count"]
-                    >= app_settings.max_documents_per_user
-                ):
-                    raise ValueError(
-                        f"每个账号最多保存 "
-                        f"{app_settings.max_documents_per_user} 本文档"
-                    )
-                if (
-                    usage["stored_chars"] + len(text)
-                    > app_settings.max_stored_chars_per_user
-                ):
-                    raise ValueError(
-                        f"账号累计正文不能超过 "
-                        f"{app_settings.max_stored_chars_per_user:,} 字"
-                    )
-            except ValueError as exc:
-                error = str(exc)
-
-        clean_title = title.strip() or Path(filename).stem
-        clean_title = clean_title[:120]
-        if error:
-            return render_template(
-                "work_import.html",
-                _template_context(
-                    request,
-                    user=user,
-                    error=error,
-                    title=clean_title,
-                    initial_mode="read",
-                    max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
-                    max_archive_mb=(
-                        app_settings.max_work_archive_bytes // 1024 // 1024
-                    ),
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-
-        document_id = secrets.token_hex(16)
-        document_dir = (
-            app_settings.documents_dir / str(user["id"]) / document_id
-        )
-        chapters_dir = document_dir / "chapters"
-        source_path = document_dir / "source.txt"
-        try:
-            chapters_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
-            os.chmod(app_settings.documents_dir / str(user["id"]), 0o700)
-            os.chmod(document_dir, 0o700)
-            os.chmod(chapters_dir, 0o700)
-            source_path.write_text(text, encoding="utf-8")
-            source_path.chmod(0o600)
-            chapter_paths = []
-            for position, chunk in enumerate(chunks, start=1):
-                chapter_path = chapters_dir / f"{position:05d}.txt"
-                chapter_path.write_text(chunk.text, encoding="utf-8")
-                chapter_path.chmod(0o600)
-                chapter_paths.append(chapter_path)
-            database.create_document(
-                user_id=int(user["id"]),
-                title=clean_title,
-                original_filename=filename,
-                source_path=source_path,
-                source_encoding=encoding,
-                text_length=len(text),
-                chunks=chunks,
-                chapter_paths=chapter_paths,
-                max_documents=app_settings.max_documents_per_user,
-                max_stored_chars=app_settings.max_stored_chars_per_user,
-            )
-        except ValueError as exc:
-            shutil.rmtree(document_dir, ignore_errors=True)
-            return render_template(
-                "work_import.html",
-                _template_context(
-                    request,
-                    user=user,
-                    error=str(exc),
-                    title=clean_title,
-                    initial_mode="read",
-                    max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
-                    max_archive_mb=(
-                        app_settings.max_work_archive_bytes // 1024 // 1024
-                    ),
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-        except Exception:
-            shutil.rmtree(document_dir, ignore_errors=True)
-            logger.exception("failed to persist uploaded document")
-            return render_template(
-                "work_import.html",
-                _template_context(
-                    request,
-                    user=user,
-                    error="保存文件失败，请稍后重试",
-                    title=clean_title,
-                    initial_mode="read",
-                    max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
-                    max_archive_mb=(
-                        app_settings.max_work_archive_bytes // 1024 // 1024
-                    ),
-                ),
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        return RedirectResponse(
-            f"/documents/{document_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
     @application.get("/documents/{document_id}", response_class=HTMLResponse)
     async def document_page(
         request: Request,
@@ -10196,54 +10079,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         work = database.get_work_for_document(
             user_id, document_id
         )
-        document_edition = (
-            next(
-                (
-                    edition
-                    for edition in work["editions"]
-                    if str(edition.get("document_id") or "")
-                    == document_id
-                ),
-                None,
-            )
-            if work
-            else None
+        current_version = database.get_work_version_for_document(
+            user_id, document_id
         )
-        writing_mode_project = None
-        if work and document_edition:
-            if document_edition.get("source_edition_id"):
-                writing_mode_project = next(
-                    (
-                        edition
-                        for edition in work["writing_editions"]
-                        if str(edition.get("id") or "")
-                        == str(document_edition["source_edition_id"])
-                    ),
-                    None,
-                )
-            else:
-                related_writing = [
-                    edition
-                    for edition in work["writing_editions"]
-                    if str(edition.get("source_edition_id") or "")
-                    == str(document_edition["id"])
-                ]
-                if related_writing:
-                    writing_mode_project = max(
-                        related_writing,
-                        key=lambda edition: (
-                            str(edition.get("created_at") or ""),
-                            int(edition.get("edition_rowid") or 0),
-                        ),
-                    )
-        if not writing_mode_project and work:
-            writing_mode_project = work.get("active_project")
-        if work:
-            database.set_work_mode(
-                user_id=user_id,
-                work_id=str(work["id"]),
-                mode="read",
+        if not work or not current_version:
+            return Response(
+                "固定版本不属于作品版本库",
+                status_code=status.HTTP_409_CONFLICT,
             )
+        database.set_work_version(
+            user_id=user_id,
+            work_id=str(work["id"]),
+            version_id=str(current_version["id"]),
+        )
         chapters = database.list_chapters(
             user_id, document_id, document.get("latest_job_id")
         )
@@ -10363,41 +10211,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         archive_entries: list[dict[str, Any]] = []
         archive_analyses: list[dict[str, Any]] = []
         if effective_view == "archive" and work:
-            if writing_mode_project:
-                archive_project = database.get_novel_project(
-                    user_id,
-                    str(writing_mode_project["project_id"]),
-                )
-                if archive_project:
-                    archive_characters = (
-                        database.list_novel_characters(
-                            user_id, str(archive_project["id"])
-                        )
-                    )
-                    if active_archive_tab == "creative":
-                        setting_story_blueprint = (
-                            story_planning_service.get_blueprint(
-                                user_id=user_id,
-                                project_id=str(archive_project["id"]),
-                            )
-                        )
-                        setting_story_arcs = (
-                            story_planning_service.list_arcs(
-                                user_id=user_id,
-                                project_id=str(archive_project["id"]),
-                            )
-                        )
-                        setting_voice_profile = (
-                            style_service.get_voice_profile(
-                                user_id=user_id,
-                                project_id=str(archive_project["id"]),
-                            )
-                        )
             archive_entries = database.list_work_archive_entries(
-                user_id, str(work["id"])
+                user_id,
+                str(work["id"]),
+                str(current_version["id"]),
             )
             archive_analyses = database.list_work_analyses(
-                user_id, str(work["id"])
+                user_id,
+                str(work["id"]),
+                str(current_version["id"]),
             )
         available_chat_models = chat_model_groups(user_id)
         return render_template(
@@ -10406,8 +10228,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 work=work,
-                document_edition=document_edition,
-                writing_mode_project=writing_mode_project,
+                current_version=current_version,
                 document=document,
                 chapters=chapters,
                 chapter=selected_chapter,
@@ -10442,6 +10263,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 archive_adopted=adopted,
                 archive_removed=removed,
                 archive_error=error,
+                archive_readonly=True,
+                creative_snapshot=current_version.get(
+                    "creative_snapshot", {}
+                ),
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
                     available_chat_models, active_conversation

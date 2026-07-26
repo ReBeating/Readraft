@@ -119,7 +119,7 @@
     {
     title: "删除这部作品？",
     message:
-      "阅读原文、分析、创作分支、章节正文和对应对话都会被永久删除，且无法恢复。",
+      "main、所有 Tag、作品资料、分析与对话都会被永久删除，且无法恢复。",
     confirmLabel: "删除作品",
     },
   );
@@ -147,19 +147,12 @@
   const unifiedImport = document.querySelector("[data-unified-import]");
   if (unifiedImport) {
     const fileInput = unifiedImport.querySelector("[data-import-file]");
-    const modeField = unifiedImport.querySelector("[data-import-mode]");
     const archiveNote = unifiedImport.querySelector(
       "[data-import-archive-note]",
     );
     const updateImportKind = () => {
       const filename = fileInput?.files?.[0]?.name?.toLowerCase() || "";
       const isArchive = filename.endsWith(".zip");
-      if (modeField) {
-        modeField.hidden = isArchive;
-        modeField.querySelectorAll("input").forEach((input) => {
-          input.disabled = isArchive;
-        });
-      }
       if (archiveNote) {
         archiveNote.hidden = !isArchive;
       }

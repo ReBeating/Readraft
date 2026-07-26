@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-16">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-18">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -33,7 +33,10 @@
         </button>
       </div>
 
-      <strong class="studio-toolbar-title">{{ display_title }}</strong>
+      <div class="studio-toolbar-title-group">
+        <strong class="studio-toolbar-title">{{ display_title }}</strong>
+        {% include "_version_switcher.html" %}
+      </div>
 
       <div class="studio-toolbar-side studio-toolbar-trailing">
         <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
@@ -45,35 +48,6 @@
             <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
           </svg>
         </button>
-        {% if work and reading_mode_document %}
-          <a class="studio-icon-button" href="/documents/{{ reading_mode_document.document_id }}" aria-label="切换到阅读模式" data-save-before-navigation>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v17H7.5A3.5 3.5 0 0 0 4 22V5.5ZM20 5.5A3.5 3.5 0 0 0 16.5 2H12v17h4.5A3.5 3.5 0 0 1 20 22V5.5Z"></path>
-            </svg>
-          </a>
-        {% elif work %}
-          <form class="studio-toolbar-form" method="post" action="/novels/{{ project.id }}/reading-snapshots" data-save-before-submit>
-            <input type="hidden" name="csrf" value="{{ csrf_token }}">
-            <button class="studio-icon-button" type="submit" aria-label="生成阅读版" title="生成阅读版">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v17H7.5A3.5 3.5 0 0 0 4 22V5.5ZM20 5.5A3.5 3.5 0 0 0 16.5 2H12v17h4.5A3.5 3.5 0 0 1 20 22V5.5Z"></path>
-              </svg>
-            </button>
-          </form>
-        {% endif %}
-        {% if work %}
-          <a
-            class="studio-icon-button {% if view == 'archive' %}active{% endif %}"
-            href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=creative"
-            aria-label="作品档案"
-            title="作品档案"
-            data-save-before-navigation
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 7.5h16V20H4V7.5ZM6 4h12l2 3.5H4L6 4ZM9 11h6"></path>
-            </svg>
-          </a>
-        {% endif %}
         <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
@@ -94,13 +68,23 @@
           <strong>{{ display_title }}</strong>
         </div>
 
-        <p class="studio-section-label">作品</p>
-        {% if work %}
-          <a class="studio-directory-link {% if view == 'archive' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=creative" data-save-before-navigation>
-            <span>作品档案</span>
-            <small>›</small>
-          </a>
-        {% endif %}
+        <p class="studio-section-label">工作区</p>
+        <a class="studio-directory-link {% if view == 'body' %}active{% endif %}" href="/novels/{{ project.id }}/workbench" data-save-before-navigation>
+          <span>正文</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link {% if view == 'archive' and active_archive_tab == 'creative' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=creative" data-save-before-navigation>
+          <span>作品资料</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link {% if view == 'archive' and active_archive_tab == 'analysis' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=analysis" data-save-before-navigation>
+          <span>分析与笔记</span>
+          <small>›</small>
+        </a>
+        <a class="studio-directory-link {% if view == 'archive' and active_archive_tab == 'versions' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=versions" data-save-before-navigation>
+          <span>版本</span>
+          <small>›</small>
+        </a>
 
         <p class="studio-section-label">章节</p>
         <nav class="studio-chapter-list" aria-label="章节目录">
@@ -621,5 +605,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-5" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-7" defer></script>
 {% endblock %}

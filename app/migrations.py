@@ -3148,6 +3148,288 @@ def _work_archive_semantics_v32(
     )
 
 
+def _repository_versions_v33(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE work_versions (
+                id TEXT PRIMARY KEY,
+                work_id TEXT NOT NULL
+                    REFERENCES works(id) ON DELETE CASCADE,
+                ref_type TEXT NOT NULL
+                    CHECK (ref_type IN ('branch', 'tag', 'legacy')),
+                ref_name TEXT NOT NULL,
+                label TEXT NOT NULL,
+                project_id TEXT
+                    REFERENCES novel_projects(id) ON DELETE CASCADE,
+                document_id TEXT
+                    REFERENCES documents(id) ON DELETE CASCADE,
+                base_version_id TEXT
+                    REFERENCES work_versions(id) ON DELETE SET NULL,
+                intent TEXT NOT NULL DEFAULT 'original',
+                is_editable INTEGER NOT NULL DEFAULT 0
+                    CHECK (is_editable IN (0, 1)),
+                content_hash TEXT NOT NULL DEFAULT '',
+                creative_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK (
+                    (project_id IS NOT NULL AND document_id IS NULL)
+                    OR
+                    (project_id IS NULL AND document_id IS NOT NULL)
+                ),
+                CHECK (
+                    is_editable=0
+                    OR (
+                        ref_type='branch'
+                        AND ref_name='main'
+                        AND project_id IS NOT NULL
+                    )
+                ),
+                UNIQUE(work_id, ref_name)
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX idx_work_versions_project
+            ON work_versions(project_id)
+            WHERE project_id IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX idx_work_versions_document
+            ON work_versions(document_id)
+            WHERE document_id IS NOT NULL
+            """,
+            """
+            CREATE INDEX idx_work_versions_work
+            ON work_versions(work_id, ref_type, created_at DESC)
+            """,
+        ),
+    )
+
+    editions = connection.execute(
+        """
+        SELECT e.*, e.rowid AS edition_rowid
+        FROM work_editions e
+        ORDER BY e.work_id, e.created_at, e.rowid
+        """
+    ).fetchall()
+    editions_by_work: dict[str, list[sqlite3.Row]] = {}
+    for edition in editions:
+        editions_by_work.setdefault(str(edition["work_id"]), []).append(
+            edition
+        )
+
+    for work_id, work_editions in editions_by_work.items():
+        writing = [row for row in work_editions if row["project_id"]]
+        main_id = (
+            str(
+                max(
+                    writing,
+                    key=lambda row: (
+                        str(row["created_at"] or ""),
+                        int(row["edition_rowid"] or 0),
+                    ),
+                )["id"]
+            )
+            if writing
+            else ""
+        )
+        source_count = 0
+        tag_count = 0
+        legacy_count = 0
+        for edition in work_editions:
+            edition_id = str(edition["id"])
+            if edition["project_id"] and edition_id == main_id:
+                ref_type = "branch"
+                ref_name = "main"
+                label = "main"
+                is_editable = 1
+            elif edition["project_id"]:
+                legacy_count += 1
+                ref_type = "legacy"
+                ref_name = f"legacy-{legacy_count}"
+                label = str(edition["label"] or f"旧分支 {legacy_count}")
+                is_editable = 0
+            elif str(edition["kind"] or "") == "source":
+                source_count += 1
+                ref_type = "tag"
+                ref_name = (
+                    "source" if source_count == 1 else f"source-{source_count}"
+                )
+                label = (
+                    "原始版本"
+                    if source_count == 1
+                    else f"原始版本 {source_count}"
+                )
+                is_editable = 0
+            else:
+                tag_count += 1
+                ref_type = "tag"
+                ref_name = f"version-{tag_count}"
+                label = str(edition["label"] or f"版本 {tag_count}")
+                is_editable = 0
+            connection.execute(
+                """
+                INSERT INTO work_versions(
+                    id, work_id, ref_type, ref_name, label,
+                    project_id, document_id, intent, is_editable,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    edition_id,
+                    work_id,
+                    ref_type,
+                    ref_name,
+                    label,
+                    edition["project_id"],
+                    edition["document_id"],
+                    str(edition["branch_intent"] or "original"),
+                    is_editable,
+                    str(edition["created_at"] or applied_at),
+                    str(edition["updated_at"] or applied_at),
+                ),
+            )
+        for edition in work_editions:
+            source_id = str(edition["source_edition_id"] or "")
+            if source_id:
+                connection.execute(
+                    """
+                    UPDATE work_versions SET base_version_id=?
+                    WHERE id=? AND work_id=?
+                    """,
+                    (source_id, str(edition["id"]), work_id),
+                )
+
+    _add_column(
+        connection,
+        "works",
+        "last_ref_name",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    works = connection.execute(
+        "SELECT id, last_mode FROM works ORDER BY created_at, id"
+    ).fetchall()
+    for work in works:
+        work_id = str(work["id"])
+        preferred_type = (
+            "tag" if str(work["last_mode"] or "") == "read" else "branch"
+        )
+        selected = connection.execute(
+            """
+            SELECT ref_name
+            FROM work_versions
+            WHERE work_id=? AND ref_type=?
+            ORDER BY
+                CASE WHEN ref_name='main' THEN 0 ELSE 1 END,
+                created_at DESC,
+                rowid DESC
+            LIMIT 1
+            """,
+            (work_id, preferred_type),
+        ).fetchone()
+        if not selected:
+            selected = connection.execute(
+                """
+                SELECT ref_name
+                FROM work_versions
+                WHERE work_id=?
+                ORDER BY
+                    CASE WHEN ref_name='main' THEN 0 ELSE 1 END,
+                    created_at DESC,
+                    rowid DESC
+                LIMIT 1
+                """,
+                (work_id,),
+            ).fetchone()
+        connection.execute(
+            "UPDATE works SET last_ref_name=? WHERE id=?",
+            (str(selected["ref_name"]) if selected else "", work_id),
+        )
+
+    connection.execute(
+        """
+        CREATE TABLE work_archive_entries_v33 (
+            id TEXT PRIMARY KEY,
+            work_id TEXT NOT NULL
+                REFERENCES works(id) ON DELETE CASCADE,
+            content_version_id TEXT
+                REFERENCES work_versions(id) ON DELETE SET NULL,
+            entry_type TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            provenance TEXT NOT NULL DEFAULT 'author',
+            status TEXT NOT NULL DEFAULT 'draft',
+            evidence TEXT NOT NULL DEFAULT '',
+            source_ref TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT 'general',
+            source_analysis_id TEXT
+                REFERENCES chapter_analyses(id) ON DELETE SET NULL,
+            adopted_from_entry_id TEXT
+                REFERENCES work_archive_entries_v33(id)
+                ON DELETE SET NULL,
+            adopted_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO work_archive_entries_v33(
+            id, work_id, content_version_id, entry_type, title, content,
+            provenance, status, evidence, source_ref, category,
+            source_analysis_id, adopted_from_entry_id, adopted_at,
+            created_at, updated_at
+        )
+        SELECT
+            id, work_id, edition_id, entry_type, title, content,
+            provenance, status, evidence, source_ref, category,
+            source_analysis_id, adopted_from_entry_id, adopted_at,
+            created_at, updated_at
+        FROM work_archive_entries
+        """
+    )
+    connection.execute("DROP TABLE work_archive_entries")
+    connection.execute(
+        "ALTER TABLE work_archive_entries_v33 RENAME TO work_archive_entries"
+    )
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE UNIQUE INDEX idx_work_archive_adopted_entry
+            ON work_archive_entries(adopted_from_entry_id)
+            WHERE entry_type='creative_rule'
+              AND adopted_from_entry_id IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX idx_work_archive_adopted_analysis
+            ON work_archive_entries(source_analysis_id)
+            WHERE entry_type='creative_rule'
+              AND source_analysis_id IS NOT NULL
+            """,
+            """
+            CREATE INDEX idx_work_archive_confirmed_rules
+            ON work_archive_entries(
+                work_id, entry_type, status, category, updated_at DESC
+            )
+            """,
+            """
+            CREATE INDEX idx_work_archive_version
+            ON work_archive_entries(
+                work_id, content_version_id, entry_type, updated_at DESC
+            )
+            """,
+        ),
+    )
+    connection.execute("DROP TABLE work_editions")
+    connection.execute("ALTER TABLE works DROP COLUMN last_mode")
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3268,6 +3550,11 @@ MIGRATIONS = (
         32,
         "work_archive_semantics_v32",
         _work_archive_semantics_v32,
+    ),
+    Migration(
+        33,
+        "repository_versions_v33",
+        _repository_versions_v33,
     ),
 )
 

@@ -776,11 +776,15 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                     "version": 31,
                                     "name": "unified_work_library_v31",
                                 },
-                                {
-                                    "version": 32,
-                                    "name": "work_archive_semantics_v32",
-                                },
-                            ]
+                                    {
+                                        "version": 32,
+                                        "name": "work_archive_semantics_v32",
+                                    },
+                                    {
+                                        "version": 33,
+                                        "name": "repository_versions_v33",
+                                    },
+                                ]
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1
         assert connection.execute(

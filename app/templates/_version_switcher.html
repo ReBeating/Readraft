@@ -1,0 +1,45 @@
+{% if work and current_version %}
+  <details class="studio-version-switcher">
+    <summary aria-label="切换作品版本">
+      <span>{{ current_version.label }}</span>
+      <small>{% if current_version.is_editable %}可编辑{% else %}只读{% endif %}</small>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m8 10 4 4 4-4"></path>
+      </svg>
+    </summary>
+    <div class="studio-version-menu">
+      <header>
+        <strong>作品版本</strong>
+        <a
+          href="{% if work.main_version %}/novels/{{ work.main_version.project_id }}/workbench?view=archive&archive_tab=versions{% else %}/documents/{{ current_version.document_id }}?view=archive&archive_tab=versions{% endif %}"
+          data-save-before-navigation
+        >管理</a>
+      </header>
+      <nav aria-label="作品版本">
+        {% for version in work.versions %}
+          {% if version.ref_type != 'legacy' %}
+            <a
+              class="{% if version.id == current_version.id %}active{% endif %}"
+              href="/works/{{ work.id }}/versions/{{ version.id }}"
+              data-save-before-navigation
+            >
+              <span>
+                <strong>{{ version.label }}</strong>
+                <small>
+                  {% if version.ref_name == 'main' %}分支 · 可编辑
+                  {% elif version.ref_name == 'source' %}原始版本 · 只读
+                  {% else %}Tag · 只读{% endif %}
+                </small>
+              </span>
+              {% if version.id == current_version.id %}
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m5 12 4 4L19 6"></path>
+                </svg>
+              {% endif %}
+            </a>
+          {% endif %}
+        {% endfor %}
+      </nav>
+    </div>
+  </details>
+{% endif %}

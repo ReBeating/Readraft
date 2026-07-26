@@ -472,7 +472,7 @@ def test_empty_project_opens_unified_settings_workbench(tmp_path: Path):
         assert 'class="studio-archive-view"' in workspace.text
         assert "创作设定" in workspace.text
         assert "分析与笔记" in workspace.text
-        assert "版本与来源" in workspace.text
+        assert "版本" in workspace.text
 
 
 def test_workflow_ui_and_memory_retry_route(tmp_path: Path):

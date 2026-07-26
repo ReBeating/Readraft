@@ -2894,13 +2894,13 @@ class AssistantChatService:
         with self.database.connection() as connection:
             linked_rows = connection.execute(
                 """
-                SELECT target.branch_intent, d.id AS document_id,
+                SELECT target.intent, d.id AS document_id,
                        d.title AS document_title,
                        c.id AS chapter_id, c.position, c.title,
                        c.content_path, a.result_json
-                FROM work_editions target
-                JOIN work_editions source
-                  ON source.id=target.source_edition_id
+                FROM work_versions target
+                JOIN work_versions source
+                  ON source.id=target.base_version_id
                 JOIN documents d ON d.id=source.document_id
                 JOIN chapters c ON c.document_id=d.id
                 LEFT JOIN chapter_analyses a ON a.id=(
@@ -2924,10 +2924,10 @@ class AssistantChatService:
                 SELECT entry.entry_type, entry.title, entry.content,
                        entry.evidence, entry.status, entry.category,
                        entry.provenance
-                FROM work_editions edition
+                FROM work_versions version
                 JOIN work_archive_entries entry
-                  ON entry.work_id=edition.work_id
-                WHERE edition.project_id=?
+                  ON entry.work_id=version.work_id
+                WHERE version.project_id=?
                 ORDER BY entry.updated_at DESC
                 LIMIT 80
                 """,
@@ -2941,7 +2941,7 @@ class AssistantChatService:
             linked_source = {
                 "document_id": str(linked_rows[0]["document_id"]),
                 "title": str(linked_rows[0]["document_title"]),
-                "relationship": str(linked_rows[0]["branch_intent"]),
+                "relationship": str(linked_rows[0]["intent"]),
                 "semantics": (
                     "这是不可变的来源文本及其描述性分析。改写或续写时可"
                     "参考事实与结构，但不得把分析观察自动当成作者确认的"
@@ -3255,11 +3255,11 @@ class AssistantChatService:
                 SELECT entry.entry_type, entry.title, entry.content,
                        entry.evidence, entry.status, entry.category,
                        entry.provenance
-                FROM work_editions edition
+                FROM work_versions version
                 JOIN work_archive_entries entry
-                  ON entry.work_id=edition.work_id
-                JOIN works work ON work.id=edition.work_id
-                WHERE edition.document_id=? AND work.user_id=?
+                  ON entry.work_id=version.work_id
+                JOIN works work ON work.id=version.work_id
+                WHERE version.document_id=? AND work.user_id=?
                 ORDER BY entry.updated_at DESC
                 LIMIT 120
                 """,

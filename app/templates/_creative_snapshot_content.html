@@ -1,0 +1,73 @@
+<section class="studio-archive-section studio-version-snapshot">
+  <div class="studio-archive-section-heading">
+    <div>
+      <h2>{{ current_version.label }}的作品资料</h2>
+      <p>这些资料与正文一起固定在当前 Tag 中，不能修改。</p>
+    </div>
+    <span>只读</span>
+  </div>
+
+  {% if creative_snapshot and creative_snapshot.project %}
+    <div class="studio-snapshot-grid">
+      <article>
+        <small>作品核心</small>
+        <h3>{{ creative_snapshot.project.title or work.title }}</h3>
+        <p>{{ creative_snapshot.project.premise or '未记录故事前提。' }}</p>
+        <dl>
+          <div><dt>类型</dt><dd>{{ creative_snapshot.project.genre or '未设置' }}</dd></div>
+          <div><dt>视角</dt><dd>{{ creative_snapshot.project.point_of_view or '未设置' }}</dd></div>
+          <div><dt>故事承诺</dt><dd>{{ creative_snapshot.project.story_promise or '未设置' }}</dd></div>
+          <div><dt>目标读者</dt><dd>{{ creative_snapshot.project.target_audience or '未设置' }}</dd></div>
+        </dl>
+      </article>
+      <article>
+        <small>世界与文风</small>
+        <h3>约束快照</h3>
+        <p>{{ creative_snapshot.project.world_setting or '未记录世界规则。' }}</p>
+        <p>{{ creative_snapshot.project.style_guide or '未记录文风规则。' }}</p>
+      </article>
+    </div>
+
+    {% if creative_snapshot.characters %}
+      <section class="studio-snapshot-block">
+        <h3>人物</h3>
+        <div class="studio-snapshot-list">
+          {% for character in creative_snapshot.characters %}
+            <article>
+              <strong>{{ character.name }}</strong>
+              <small>{{ character.role or '未设置角色定位' }}</small>
+              <p>{{ character.traits or character.background or '未记录人物资料。' }}</p>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    {% if creative_snapshot.story_blueprint %}
+      <section class="studio-snapshot-block">
+        <h3>故事结构</h3>
+        <p>{{ creative_snapshot.story_blueprint.core_question or creative_snapshot.story_blueprint.protagonist_goal or '已保存结构快照。' }}</p>
+      </section>
+    {% endif %}
+
+    {% if creative_snapshot.confirmed_rules %}
+      <section class="studio-snapshot-block">
+        <h3>已确认规则</h3>
+        <div class="studio-snapshot-list">
+          {% for rule in creative_snapshot.confirmed_rules %}
+            <article>
+              <small>{{ rule.category }}</small>
+              {% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}
+              <p>{{ rule.content }}</p>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+  {% else %}
+    <div class="studio-settings-empty">
+      <strong>这个版本没有作品资料快照</strong>
+      <p>原始导入只固定正文；从 main 创建的 Tag 会同时保存当时的作品资料。</p>
+    </div>
+  {% endif %}
+</section>

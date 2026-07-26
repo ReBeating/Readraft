@@ -18,8 +18,7 @@ from app.work_archive import (
     verify_work_archive,
 )
 from app.work_library import (
-    create_reading_snapshot,
-    create_writing_branch_from_document,
+    create_version_tag,
 )
 
 
@@ -164,12 +163,12 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
     return database, user_id, project_id, chapter_id
 
 
-def test_complete_work_archive_round_trip_preserves_editions_and_archive(
+def test_complete_work_archive_round_trip_preserves_versions_and_archive(
     tmp_path: Path,
 ):
     settings = make_settings(tmp_path)
     database, user_id, project_id, _chapter_id = create_project(settings)
-    work_id, _edition_id = database.ensure_project_work(
+    work_id, main_version_id = database.ensure_project_work(
         user_id=user_id,
         project_id=project_id,
     )
@@ -181,6 +180,7 @@ def test_complete_work_archive_round_trip_preserves_editions_and_archive(
         content="停走的秒针总在人物回避旧约时出现。",
         evidence="第一章",
         category="structure",
+        content_version_id=main_version_id,
     )
     setting_id = database.adopt_work_archive_entry(
         user_id=user_id,
@@ -190,18 +190,12 @@ def test_complete_work_archive_round_trip_preserves_editions_and_archive(
         title="钟表意象规则",
         content="人物回避旧约时，让停走的秒针推动下一步行动。",
     )
-    document_id = create_reading_snapshot(
+    document_id = create_version_tag(
         database=database,
         documents_dir=settings.documents_dir,
         user_id=user_id,
         project_id=project_id,
-    )
-    rewrite_project_id = create_writing_branch_from_document(
-        database=database,
-        novels_dir=settings.novels_dir,
-        user_id=user_id,
-        document_id=document_id,
-        intent="rewrite",
+        label="一稿",
     )
     archive = tmp_path / "complete-work.novelai.zip"
 
@@ -220,12 +214,12 @@ def test_complete_work_archive_round_trip_preserves_editions_and_archive(
     )
 
     assert detect_archive_format(archive) == WORK_ARCHIVE_FORMAT
-    assert summary.edition_count == 3
-    assert manifest["counts"]["editions"] == 3
-    assert len(manifest["roots"]["projects"]) == 2
+    assert summary.version_count == 2
+    assert manifest["counts"]["versions"] == 2
+    assert len(manifest["roots"]["projects"]) == 1
     assert len(manifest["roots"]["documents"]) == 1
     assert "works" in manifest["tables"]
-    assert "work_editions" in manifest["tables"]
+    assert "work_versions" in manifest["tables"]
     assert "work_archive_entries" in manifest["tables"]
     assert "documents" in manifest["tables"]
     assert "api_credentials" not in manifest["tables"]
@@ -243,20 +237,16 @@ def test_complete_work_archive_round_trip_preserves_editions_and_archive(
     )
 
     assert imported.work_id != work_id
-    assert imported.edition_count == 3
+    assert imported.version_count == 2
     imported_work = database.get_work(user_id, imported.work_id)
     assert imported_work and imported_work["title"] == "纸灯塔"
-    assert len(imported_work["writing_editions"]) == 2
-    assert len(imported_work["reading_editions"]) == 1
-    imported_rewrite = next(
-        edition
-        for edition in imported_work["writing_editions"]
-        if edition["branch_intent"] == "rewrite"
-    )
-    assert imported_rewrite["project_id"] != rewrite_project_id
-    assert imported_rewrite["source_edition"]["kind"] == "snapshot"
-    imported_snapshot = imported_work["reading_editions"][0]
-    assert imported_snapshot["source_edition"]["project_id"] != project_id
+    assert imported_work["main_version"]
+    assert imported_work["main_version"]["project_id"] != project_id
+    assert len(imported_work["tag_versions"]) == 1
+    imported_tag = imported_work["tag_versions"][0]
+    assert imported_tag["label"] == "一稿"
+    assert imported_tag["base_version"]["ref_name"] == "main"
+    assert imported_tag["creative_snapshot"]["project"]["title"] == "纸灯塔"
 
     entries = database.list_work_archive_entries(
         user_id,
@@ -277,7 +267,7 @@ def test_complete_work_archive_round_trip_preserves_editions_and_archive(
 
     imported_chapters = database.list_novel_chapters(
         user_id,
-        str(imported_rewrite["project_id"]),
+        str(imported_work["main_version"]["project_id"]),
     )
     assert len(imported_chapters) == 1
     imported_content_path = Path(
@@ -286,20 +276,20 @@ def test_complete_work_archive_round_trip_preserves_editions_and_archive(
     assert imported_content_path.is_relative_to(
         settings.novels_dir
         / str(user_id)
-        / str(imported_rewrite["project_id"])
+        / str(imported_work["main_version"]["project_id"])
     )
     assert "林岚把船票" in imported_content_path.read_text(
         encoding="utf-8"
     )
     imported_document = database.get_document(
         user_id,
-        str(imported_snapshot["document_id"]),
+        str(imported_tag["document_id"]),
     )
     assert imported_document
     assert Path(str(imported_document["source_path"])).is_relative_to(
         settings.documents_dir
         / str(user_id)
-        / str(imported_snapshot["document_id"])
+        / str(imported_tag["document_id"])
     )
     with database.connection() as connection:
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -321,15 +311,17 @@ def test_work_archive_rejects_path_traversal(tmp_path: Path):
             json.dumps(
                 {
                     "format": WORK_ARCHIVE_FORMAT,
-                    "version": 1,
+                    "version": 2,
                     "work": {"id": "w", "title": "unsafe"},
                     "roots": {"projects": [], "documents": []},
                     "tables": {
                         "works": [{"id": "w", "user_id": 1}],
-                        "work_editions": [
+                        "work_versions": [
                             {
                                 "id": "e",
                                 "work_id": "w",
+                                "ref_type": "branch",
+                                "ref_name": "main",
                                 "project_id": "p",
                                 "document_id": None,
                             }
@@ -350,7 +342,7 @@ def test_work_archive_rejects_path_traversal(tmp_path: Path):
 def test_work_archive_detects_file_tampering(tmp_path: Path):
     settings = make_settings(tmp_path / "source")
     database, user_id, project_id, _chapter_id = create_project(settings)
-    work_id, _edition_id = database.ensure_project_work(
+    work_id, _version_id = database.ensure_project_work(
         user_id=user_id,
         project_id=project_id,
     )
@@ -389,7 +381,7 @@ def test_work_archive_detects_file_tampering(tmp_path: Path):
 def test_work_archive_rejects_unowned_work(tmp_path: Path):
     settings = make_settings(tmp_path)
     database, user_id, project_id, _chapter_id = create_project(settings)
-    work_id, _edition_id = database.ensure_project_work(
+    work_id, _version_id = database.ensure_project_work(
         user_id=user_id,
         project_id=project_id,
     )
@@ -413,7 +405,7 @@ def test_work_archive_rejects_unowned_work(tmp_path: Path):
 def test_work_archive_waits_for_active_ai_task(tmp_path: Path):
     settings = make_settings(tmp_path)
     database, user_id, project_id, chapter_id = create_project(settings)
-    work_id, _edition_id = database.ensure_project_work(
+    work_id, _version_id = database.ensure_project_work(
         user_id=user_id,
         project_id=project_id,
     )
