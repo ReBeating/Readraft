@@ -3874,7 +3874,6 @@ class Database:
         model: str,
         credential_source: str,
         subject_id: Optional[str] = None,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if operation not in {
             "draft",
@@ -3997,33 +3996,6 @@ class Database:
                 ):
                     return str(active["id"])
                 raise ValueError("你已有一个写作任务正在排队或运行，请等待其完成")
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                analysis_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(generation_count["count"] or 0)
-                    + int(analysis_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             connection.execute(
                 """
                 INSERT INTO generation_jobs(
@@ -4059,7 +4031,6 @@ class Database:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
@@ -4127,33 +4098,6 @@ class Database:
             if existing_delta:
                 connection.rollback()
                 raise ValueError("这个正史版本已经有故事记忆提案")
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                analysis_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(generation_count["count"] or 0)
-                    + int(analysis_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
@@ -4196,7 +4140,6 @@ class Database:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
         operation: str = "plan_chapter",
     ) -> str:
         if operation not in {"plan_chapter", "plan_scene_beats"}:
@@ -4251,33 +4194,6 @@ class Database:
                 raise ValueError(
                     "你已有一个写作任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                analysis_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(generation_count["count"] or 0)
-                    + int(analysis_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
@@ -4321,7 +4237,6 @@ class Database:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
@@ -4392,33 +4307,6 @@ class Database:
                 raise ValueError(
                     "你已有一个写作任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                analysis_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(generation_count["count"] or 0)
-                    + int(analysis_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             snapshot = {
                 "project_id": project_id,
                 "request_id": request_id,
@@ -4469,7 +4357,6 @@ class Database:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
@@ -4523,33 +4410,6 @@ class Database:
                 raise ValueError(
                     "你已有一个写作任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                analysis_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(generation_count["count"] or 0)
-                    + int(analysis_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
@@ -4595,7 +4455,6 @@ class Database:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if operation not in {"audit_ai_style", "rewrite_style_issue"}:
             raise ValueError("不支持的文风编辑操作")
@@ -4677,33 +4536,6 @@ class Database:
                 raise ValueError(
                     "你已有一个写作任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                analysis_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(generation_count["count"] or 0)
-                    + int(analysis_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
@@ -5467,7 +5299,6 @@ class Database:
         provider: str,
         model: str,
         credential_source: str = "default",
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
@@ -5514,33 +5345,6 @@ class Database:
             if other_active:
                 connection.rollback()
                 raise ValueError("你已有一个 AI 任务正在排队或运行，请等待其完成")
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                job_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM analysis_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                generation_count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM generation_jobs
-                    WHERE user_id=? AND created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if (
-                    int(job_count["count"] or 0)
-                    + int(generation_count["count"] or 0)
-                    >= max_jobs_per_day
-                ):
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个分析任务的上限"
-                    )
             chapters = connection.execute(
                 """
                 SELECT c.id FROM chapters c

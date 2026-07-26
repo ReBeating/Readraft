@@ -18,6 +18,15 @@ AuditCategory = Literal[
 ]
 AuditSeverity = Literal["hard", "warning"]
 CoverageStatus = Literal["met", "unclear", "missing"]
+SceneAspect = Literal[
+    "goal",
+    "obstacle",
+    "action",
+    "reveal",
+    "conceal",
+    "end_state",
+    "transition",
+]
 
 
 class AuditFinding(BaseModel):
@@ -32,6 +41,12 @@ class AuditFinding(BaseModel):
     violated_constraint: str = Field(default="", max_length=500)
     repair_instruction: str = Field(default="", max_length=500)
 
+    @model_validator(mode="after")
+    def keep_scene_beats_advisory(self) -> "AuditFinding":
+        if self.category == "scene_beat":
+            self.severity = "warning"
+        return self
+
 
 class CoverageItem(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -39,6 +54,31 @@ class CoverageItem(BaseModel):
     requirement: str = Field(min_length=1, max_length=500)
     status: CoverageStatus
     evidence: str = Field(default="", max_length=500)
+
+
+class SceneAspectCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    aspect: SceneAspect
+    requirement: str = Field(min_length=1, max_length=500)
+    status: CoverageStatus
+    evidence: str = Field(default="", max_length=500)
+
+
+class SceneCoverageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    scene_id: str = Field(min_length=1, max_length=100)
+    position: int = Field(ge=1)
+    goal: str = Field(min_length=1, max_length=500)
+    checks: list[SceneAspectCoverage] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def keep_aspects_unique(self) -> "SceneCoverageItem":
+        aspects = [item.aspect for item in self.checks]
+        if len(aspects) != len(set(aspects)):
+            raise ValueError("同一场景的检查项不能重复")
+        return self
 
 
 class HardAuditAnalysis(BaseModel):
@@ -51,9 +91,7 @@ class HardAuditAnalysis(BaseModel):
     must_happen_coverage: list[CoverageItem] = Field(
         default_factory=list, max_length=40
     )
-    scene_coverage: list[CoverageItem] = Field(
-        default_factory=list, max_length=10
-    )
+    scene_coverage: list[SceneCoverageItem] = Field(default_factory=list)
 
 
 class QualityAuditReport(BaseModel):
@@ -61,7 +99,7 @@ class QualityAuditReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     verdict: Literal["pass", "block", "pending"]
     summary: str = Field(min_length=2, max_length=1000)
     effective_char_count: int = Field(ge=0)
@@ -73,9 +111,7 @@ class QualityAuditReport(BaseModel):
     must_happen_coverage: list[CoverageItem] = Field(
         default_factory=list, max_length=40
     )
-    scene_coverage: list[CoverageItem] = Field(
-        default_factory=list, max_length=10
-    )
+    scene_coverage: list[SceneCoverageItem] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_verdict(self) -> "QualityAuditReport":

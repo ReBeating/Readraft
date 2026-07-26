@@ -7,7 +7,6 @@ import re
 import secrets
 import shutil
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -891,7 +890,6 @@ class AssistantChatService:
         agent_role: str = "auto",
         ui_surface: str = "",
         auto_commit: bool = False,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         clean_question = question.strip()
         if not clean_question:
@@ -1036,26 +1034,6 @@ class AssistantChatService:
                     connection.rollback()
                     raise ValueError(
                         "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                count = connection.execute(
-                    """
-                    SELECT COUNT(*) AS count
-                    FROM assistant_messages m
-                    JOIN assistant_conversations c
-                      ON c.id=m.conversation_id
-                    WHERE c.user_id=? AND m.role='assistant'
-                      AND m.created_at>=?
-                    """,
-                    (user_id, day_start),
-                ).fetchone()
-                if int(count["count"] or 0) >= max_jobs_per_day:
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
                     )
             connection.execute(
                 """

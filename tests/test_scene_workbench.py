@@ -45,7 +45,6 @@ def make_settings(tmp_path: Path) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -237,7 +236,6 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
             model="mock-novel-writer",
             credential_source="default",
             subject_id=str(scene["id"]),
-            max_jobs_per_day=50,
         )
         claimed = database.claim_next_generation()
         assert claimed and claimed["id"] == job_id
@@ -370,7 +368,6 @@ def test_manual_scene_requires_audit_and_author_can_record_override(
         model="mock-hard-auditor",
         credential_source="default",
         subject_id=version_id,
-        max_jobs_per_day=50,
     )
     claimed = database.claim_next_generation()
 

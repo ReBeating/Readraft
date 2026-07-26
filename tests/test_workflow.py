@@ -42,7 +42,6 @@ def make_settings(tmp_path: Path) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -297,7 +296,6 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
         model="mock-scene-writer",
         credential_source="default",
         subject_id=str(first_scene["id"]),
-        max_jobs_per_day=50,
     )
     state = workflow.get_state(
         user_id=user_id,

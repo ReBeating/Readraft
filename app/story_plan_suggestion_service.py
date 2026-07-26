@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 from .context_compiler import compile_active_techniques
@@ -319,7 +318,6 @@ class StoryPlanSuggestionService:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if planning_mode not in ALLOWED_PLANNING_MODES:
             raise ValueError("不支持的全书规划模式")
@@ -416,56 +414,6 @@ class StoryPlanSuggestionService:
                 raise ValueError(
                     "你已有一个 AI 任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                counts = connection.execute(
-                    """
-                    SELECT
-                      (SELECT COUNT(*) FROM generation_jobs
-                       WHERE user_id=? AND created_at>=?) AS generations,
-                      (SELECT COUNT(*) FROM analysis_jobs
-                       WHERE user_id=? AND created_at>=?) AS analyses,
-                      (SELECT COUNT(*) FROM voice_profile_suggestions
-                       WHERE user_id=? AND created_at>=?) AS voice_jobs,
-                      (SELECT COUNT(*) FROM editing_preference_suggestions
-                       WHERE user_id=? AND created_at>=?) AS preference_jobs,
-                      (SELECT COUNT(*) FROM story_plan_suggestions
-                       WHERE user_id=? AND created_at>=?) AS story_plan_jobs,
-                      (SELECT COUNT(*) FROM story_structure_suggestions
-                       WHERE user_id=? AND created_at>=?) AS structure_jobs,
-                      (SELECT COUNT(*) FROM novel_causal_link_suggestions
-                       WHERE user_id=? AND created_at>=?) AS causal_jobs,
-                      (SELECT COUNT(*) FROM
-                           novel_causal_branch_simulations
-                       WHERE user_id=? AND created_at>=?) AS branch_jobs
-                    """,
-                    (
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                    ),
-                ).fetchone()
-                total = sum(int(counts[key] or 0) for key in counts.keys())
-                if total >= max_jobs_per_day:
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             baseline_fingerprint = _fingerprint(context)
             connection.execute(
                 """

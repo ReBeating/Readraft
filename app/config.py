@@ -62,7 +62,6 @@ class Settings:
     worker_poll_seconds: float = 1.0
     max_documents_per_user: int = 50
     max_stored_chars_per_user: int = 20_000_000
-    max_jobs_per_day: int = 10
     credential_encryption_key: str | None = None
     model_adapter_prompt: str = ""
     model_provider: str = "deepseek"
@@ -143,7 +142,6 @@ class Settings:
             max_stored_chars_per_user=_as_int(
                 "APP_MAX_STORED_CHARS_PER_USER", 20_000_000
             ),
-            max_jobs_per_day=_as_int("APP_MAX_JOBS_PER_DAY", 10),
             credential_encryption_key=(
                 os.getenv("APP_CREDENTIAL_ENCRYPTION_KEY") or None
             ),
@@ -170,7 +168,6 @@ class Settings:
             "APP_MAX_CHAPTER_CHARS": self.max_chapter_chars,
             "APP_MAX_DOCUMENTS_PER_USER": self.max_documents_per_user,
             "APP_MAX_STORED_CHARS_PER_USER": self.max_stored_chars_per_user,
-            "APP_MAX_JOBS_PER_DAY": self.max_jobs_per_day,
             "APP_MAX_WORK_ARCHIVE_BYTES": self.max_work_archive_bytes,
             "DEEPSEEK_MAX_TOKENS": self.deepseek_max_tokens,
             "DEEPSEEK_CONNECT_TIMEOUT_SECONDS": self.deepseek_connect_timeout_seconds,

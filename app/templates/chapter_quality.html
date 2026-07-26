@@ -107,11 +107,26 @@
         {% if report.scene_coverage %}
           <ul>
             {% for item in report.scene_coverage %}
+              {% if item.checks %}
+              <li>
+                <strong>场景 {{ item.position }}：{{ item.goal }}</strong>
+                <ul>
+                  {% for check in item.checks %}
+                    <li class="coverage-{{ check.status }}">
+                      <strong>{{ check.requirement }}</strong>
+                      <span>{% if check.status == 'met' %}已落实{% elif check.status == 'missing' %}缺失{% else %}无法确认{% endif %}</span>
+                      {% if check.evidence %}<small>{{ check.evidence }}</small>{% endif %}
+                    </li>
+                  {% endfor %}
+                </ul>
+              </li>
+              {% else %}
               <li class="coverage-{{ item.status }}">
                 <strong>{{ item.requirement }}</strong>
                 <span>{% if item.status == 'met' %}已落实{% elif item.status == 'missing' %}缺失{% else %}无法确认{% endif %}</span>
                 {% if item.evidence %}<small>{{ item.evidence }}</small>{% endif %}
               </li>
+              {% endif %}
             {% endfor %}
           </ul>
         {% else %}

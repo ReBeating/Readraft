@@ -47,7 +47,6 @@ def _settings(tmp_path: Path) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -344,7 +343,6 @@ def test_causal_link_direction_duplicate_archive_and_owner_boundaries(
         provider="mock",
         model="mock-novel-writer",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     with pytest.raises(ValueError, match="AI 正在处理相关章节"):
         service.create_link(

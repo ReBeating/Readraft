@@ -4,7 +4,6 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -136,7 +135,6 @@ class StyleService:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
@@ -203,35 +201,6 @@ class StyleService:
                 raise ValueError(
                     "你已有一个 AI 任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                day_start = datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).isoformat(timespec="seconds")
-                counts = connection.execute(
-                    """
-                    SELECT
-                      (SELECT COUNT(*) FROM generation_jobs
-                       WHERE user_id=? AND created_at>=?) AS generations,
-                      (SELECT COUNT(*) FROM analysis_jobs
-                       WHERE user_id=? AND created_at>=?) AS analyses,
-                      (SELECT COUNT(*) FROM voice_profile_suggestions
-                       WHERE user_id=? AND created_at>=?) AS voice_jobs
-                    """,
-                    (
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                        user_id,
-                        day_start,
-                    ),
-                ).fetchone()
-                total = sum(int(counts[key] or 0) for key in counts.keys())
-                if total >= max_jobs_per_day:
-                    connection.rollback()
-                    raise ValueError(
-                        f"今天已达到 {max_jobs_per_day} 个 AI 任务的上限"
-                    )
             connection.execute(
                 """
                 INSERT INTO voice_profile_suggestions(

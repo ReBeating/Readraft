@@ -49,7 +49,6 @@ def _settings(tmp_path: Path) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -197,7 +196,6 @@ def test_voice_suggestion_is_evidence_gated_and_author_applied(
         provider="mock",
         model="mock-voice-profiler",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     before = service.get_voice_profile(
         user_id=user_id, project_id=project_id
@@ -326,7 +324,6 @@ def test_voice_suggestion_with_hallucinated_quotes_fails_without_mutation(
         provider="mock",
         model="bad-evidence",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     claimed = service.claim_next_voice_suggestion()
 
@@ -408,7 +405,6 @@ def test_expired_voice_suggestion_lease_is_requeued(tmp_path):
         provider="mock",
         model="mock-voice-profiler",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     first = service.claim_next_voice_suggestion()
     with database.connection() as connection:

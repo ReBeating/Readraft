@@ -63,7 +63,6 @@ def _settings(
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -816,7 +815,6 @@ def test_author_can_accept_and_dismiss_frozen_causal_candidates(
         provider="mock",
         model="mock-causality-reviewer",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     result = _complete(service, suggestion_id)
     assert len(result.proposals) >= 2

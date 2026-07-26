@@ -59,7 +59,6 @@ def _settings(tmp_path: Path, *, api_key: str | None = None) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -443,7 +442,6 @@ def test_structure_apply_preserves_canon_resets_task_card_and_reverts(
         provider="mock",
         model="mock-story-structure-planner",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     result = _complete(service, suggestion_id)
     assert result.target_chapter_count == 10

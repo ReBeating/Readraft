@@ -88,9 +88,17 @@ def test_deepseek_hard_auditor_uses_strict_json_output(tmp_path: Path):
         ],
         "scene_coverage": [
             {
-                "requirement": "场景 1：核对来信",
-                "status": "met",
-                "evidence": "她逐项核对信封与旧信。",
+                "scene_id": "scene-1",
+                "position": 1,
+                "goal": "核对来信",
+                "checks": [
+                    {
+                        "aspect": "goal",
+                        "requirement": "核对来信",
+                        "status": "met",
+                        "evidence": "她逐项核对信封与旧信。",
+                    }
+                ],
             }
         ],
     }
@@ -138,7 +146,13 @@ def test_deepseek_hard_auditor_uses_strict_json_output(tmp_path: Path):
                     "canonical_memory": {},
                     "task_card": {
                         "must_happen": ["林岚核对邮戳"],
-                        "scenes": [{"goal": "核对来信"}],
+                        "scenes": [
+                            {
+                                "id": "scene-1",
+                                "position": 1,
+                                "goal": "核对来信",
+                            }
+                        ],
                     },
                 },
                 chapter_text="她把邮戳日期抄进笔记。",
@@ -149,6 +163,7 @@ def test_deepseek_hard_auditor_uses_strict_json_output(tmp_path: Path):
 
     response = asyncio.run(scenario())
     assert response.result.must_happen_coverage[0].status == "met"
+    assert response.result.scene_coverage[0].scene_id == "scene-1"
     assert response.input_tokens == 320
     assert seen["payload"]["response_format"] == {"type": "json_object"}
     assert seen["payload"]["temperature"] == 0.2
@@ -162,9 +177,35 @@ def test_deepseek_scene_auditor_checks_only_focused_scene(tmp_path: Path):
         "must_happen_coverage": [],
         "scene_coverage": [
             {
-                "requirement": "场景 1：确认来信",
-                "status": "met",
-                "evidence": "她致电邮局核对投递记录。",
+                "scene_id": "focused-scene",
+                "position": 1,
+                "goal": "确认来信",
+                "checks": [
+                    {
+                        "aspect": "goal",
+                        "requirement": "确认来信",
+                        "status": "met",
+                        "evidence": "她开始核对来信。",
+                    },
+                    {
+                        "aspect": "obstacle",
+                        "requirement": "邮戳日期异常",
+                        "status": "met",
+                        "evidence": "她发现邮戳日期异常。",
+                    },
+                    {
+                        "aspect": "action",
+                        "requirement": "致电邮局",
+                        "status": "met",
+                        "evidence": "她致电邮局。",
+                    },
+                    {
+                        "aspect": "end_state",
+                        "requirement": "确认投递记录存在",
+                        "status": "met",
+                        "evidence": "邮局确认了投递记录。",
+                    },
+                ],
             }
         ],
     }
@@ -209,6 +250,7 @@ def test_deepseek_scene_auditor_checks_only_focused_scene(tmp_path: Path):
                     "characters": [{"name": "林岚"}],
                     "canonical_memory": {},
                     "focused_scene": {
+                        "id": "focused-scene",
                         "position": 1,
                         "goal": "确认来信",
                         "obstacle": "邮戳日期异常",
@@ -222,7 +264,16 @@ def test_deepseek_scene_auditor_checks_only_focused_scene(tmp_path: Path):
                     "task_card": {
                         "must_happen": [],
                         "forbidden": ["揭晓寄信人"],
-                        "scenes": [{"goal": "确认来信"}],
+                        "scenes": [
+                            {
+                                "id": "focused-scene",
+                                "position": 1,
+                                "goal": "确认来信",
+                                "obstacle": "邮戳日期异常",
+                                "action": "致电邮局",
+                                "end_state": "确认投递记录存在",
+                            }
+                        ],
                     },
                 },
                 chapter_text="她致电邮局核对投递记录。",
@@ -238,7 +289,190 @@ def test_deepseek_scene_auditor_checks_only_focused_scene(tmp_path: Path):
     assert "Scene Auditor" in system_prompt
     assert "must_happen_coverage 必须为空" in system_prompt
     assert "candidate_scene_text" in user_prompt
+    assert "scene_coverage_contract" in user_prompt
     assert "购买车票" in user_prompt
+
+
+def test_scene_beat_gap_is_advisory_in_chapter_gate():
+    analysis = HardAuditAnalysis.model_validate(
+        {
+            "summary": "场景动作与任务卡存在偏差。",
+            "findings": [
+                {
+                    "code": "scene_action_changed",
+                    "category": "scene_beat",
+                    "severity": "hard",
+                    "location": "场景 1",
+                    "evidence": "主角改为发短信。",
+                    "description": "没有执行原计划的电话动作。",
+                    "violated_constraint": "致电邮局",
+                    "repair_instruction": "按需改回电话动作。",
+                }
+            ],
+            "must_happen_coverage": [],
+            "scene_coverage": [
+                {
+                    "scene_id": "scene-1",
+                    "position": 1,
+                    "goal": "核对来信",
+                    "checks": [
+                        {
+                            "aspect": "action",
+                            "requirement": "致电邮局",
+                            "status": "missing",
+                            "evidence": "正文改为发送短信。",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    report = finalize_hard_audit(
+        analysis=analysis,
+        chapter_text="正文" * 1000,
+        expansion_attempted=False,
+    )
+    assert report.verdict == "pass"
+    assert report.hard_issue_count == 0
+    assert report.warning_count == 2
+    assert all(
+        finding.severity == "warning" for finding in report.findings
+    )
+
+
+def test_scene_coverage_has_no_fixed_ten_scene_limit():
+    scenes = [
+        {
+            "scene_id": f"scene-{position}",
+            "position": position,
+            "goal": f"完成场景 {position}",
+            "checks": [
+                {
+                    "aspect": "goal",
+                    "requirement": f"完成场景 {position}",
+                    "status": "met",
+                    "evidence": "正文已经落实。",
+                }
+            ],
+        }
+        for position in range(1, 13)
+    ]
+    analysis = HardAuditAnalysis.model_validate(
+        {
+            "summary": "十二个场景均已检查。",
+            "findings": [],
+            "must_happen_coverage": [],
+            "scene_coverage": scenes,
+        }
+    )
+    assert len(analysis.scene_coverage) == 12
+
+
+def test_scene_coverage_is_normalized_to_task_card_order(tmp_path: Path):
+    raw_result = {
+        "summary": "两个场景均已检查。",
+        "findings": [],
+        "must_happen_coverage": [],
+        "scene_coverage": [
+            {
+                "scene_id": "scene-2",
+                "position": 99,
+                "goal": "模型改写的标题",
+                "checks": [
+                    {
+                        "aspect": "action",
+                        "requirement": "推门",
+                        "status": "met",
+                        "evidence": "她推开门。",
+                    },
+                    {
+                        "aspect": "goal",
+                        "requirement": "进入房间",
+                        "status": "met",
+                        "evidence": "她进入房间。",
+                    },
+                ],
+            },
+            {
+                "scene_id": "scene-1",
+                "position": 88,
+                "goal": "模型改写的标题",
+                "checks": [
+                    {
+                        "aspect": "goal",
+                        "requirement": "找到钥匙",
+                        "status": "met",
+                        "evidence": "她找到了钥匙。",
+                    }
+                ],
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                raw_result, ensure_ascii=False
+                            )
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+            },
+        )
+
+    async def scenario():
+        auditor = DeepSeekQualityAuditor(
+            _settings(tmp_path),
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            return await auditor.audit(
+                context={
+                    "chapter": {
+                        "project_title": "测试",
+                        "position": 1,
+                        "title": "第一章",
+                    },
+                    "task_card": {
+                        "must_happen": [],
+                        "scenes": [
+                            {
+                                "id": "scene-1",
+                                "position": 1,
+                                "goal": "找到钥匙",
+                            },
+                            {
+                                "id": "scene-2",
+                                "position": 2,
+                                "goal": "进入房间",
+                                "action": "推门",
+                            },
+                        ],
+                    },
+                },
+                chapter_text="她找到钥匙并推门进入房间。",
+                provider_user_id="u_scene_order",
+            )
+        finally:
+            await auditor.close()
+
+    response = asyncio.run(scenario())
+    assert [
+        item.scene_id for item in response.result.scene_coverage
+    ] == ["scene-1", "scene-2"]
+    assert response.result.scene_coverage[1].position == 2
+    assert response.result.scene_coverage[1].goal == "进入房间"
+    assert [
+        check.aspect
+        for check in response.result.scene_coverage[1].checks
+    ] == ["goal", "action"]
 
 
 def test_manual_candidate_requires_audit_or_explicit_author_override(

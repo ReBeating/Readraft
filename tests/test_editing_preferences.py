@@ -57,7 +57,6 @@ def _settings(tmp_path: Path) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -355,7 +354,6 @@ def test_manual_edit_preference_is_evidence_gated_and_author_confirmed(
         provider="mock",
         model="mock-edit-preference-learner",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     claimed = service.claim_next_suggestion()
     assert claimed["id"] == suggestion_id

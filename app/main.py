@@ -1308,7 +1308,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -3535,7 +3534,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     provider=profile["provider"],
                     model=profile["model"],
                     credential_source=profile["credential_source"],
-                    max_jobs_per_day=app_settings.max_jobs_per_day,
                 )
             )
         except ValueError as exc:
@@ -3699,7 +3697,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     provider=profile["provider"],
                     model=profile["model"],
                     credential_source=profile["credential_source"],
-                    max_jobs_per_day=app_settings.max_jobs_per_day,
                 )
             )
         except ValueError as exc:
@@ -3907,7 +3904,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -4070,7 +4066,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -5254,7 +5249,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -5391,7 +5385,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -5656,7 +5649,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             separator = "&" if "?" in error_path else "?"
@@ -7177,7 +7169,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model=profile["model"],
                 credential_source=profile["credential_source"],
                 subject_id=scene_beat_id,
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -7225,7 +7216,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model=profile["model"],
                 credential_source=profile["credential_source"],
                 subject_id=scene_version_id,
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -7720,7 +7710,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -7788,7 +7777,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
                 operation="plan_scene_beats",
             )
         except ValueError as exc:
@@ -8034,7 +8022,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -8153,7 +8140,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=api["provider"],
                 model=api["model"],
                 credential_source=api["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -8210,7 +8196,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=api["provider"],
                 model=api["model"],
                 credential_source=api["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -8777,7 +8762,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -8949,7 +8933,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -9650,7 +9633,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     )
                 ),
                 auto_commit=True,
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
             prepared_conversation = (
                 assistant_chat_service.get_conversation(
@@ -9796,7 +9778,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     else "settings"
                 ),
                 auto_commit=True,
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except Exception:
             if branch and branch.get("conversation_id"):
@@ -10080,7 +10061,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 credential_source=profile["credential_source"],
                 quote=quote_payload,
                 agent_role="researcher",
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -10790,7 +10770,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=provider,
                 model=model,
                 credential_source=credential_source,
-                max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
             return RedirectResponse(

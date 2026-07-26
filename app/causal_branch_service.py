@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
 
 from .causal_branch_schema import CausalBranchSimulationSet
@@ -279,7 +278,6 @@ class CausalBranchSimulationService:
         provider: str,
         model: str,
         credential_source: str,
-        max_jobs_per_day: Optional[int] = None,
     ) -> str:
         if not 10 <= horizon_chapter_count <= 30:
             raise ValueError("长期因果推演范围必须为未来 10–30 章")
@@ -393,12 +391,6 @@ class CausalBranchSimulationService:
                 raise ValueError(
                     "你已有一个 AI 任务正在排队或运行，请等待其完成"
                 )
-            if max_jobs_per_day is not None:
-                self._ensure_daily_limit(
-                    connection,
-                    user_id=user_id,
-                    max_jobs=max_jobs_per_day,
-                )
             connection.execute(
                 """
                 INSERT INTO novel_causal_branch_simulations(
@@ -429,48 +421,6 @@ class CausalBranchSimulationService:
             )
             connection.commit()
         return simulation_id
-
-    @staticmethod
-    def _ensure_daily_limit(
-        connection,
-        *,
-        user_id: int,
-        max_jobs: int,
-    ) -> None:
-        day_start = datetime.now(timezone.utc).replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        ).isoformat(timespec="seconds")
-        counts = connection.execute(
-            """
-            SELECT
-              (SELECT COUNT(*) FROM generation_jobs
-               WHERE user_id=? AND created_at>=?) AS generations,
-              (SELECT COUNT(*) FROM analysis_jobs
-               WHERE user_id=? AND created_at>=?) AS analyses,
-              (SELECT COUNT(*) FROM voice_profile_suggestions
-               WHERE user_id=? AND created_at>=?) AS voice_jobs,
-              (SELECT COUNT(*) FROM editing_preference_suggestions
-               WHERE user_id=? AND created_at>=?) AS preference_jobs,
-              (SELECT COUNT(*) FROM story_plan_suggestions
-               WHERE user_id=? AND created_at>=?) AS story_plan_jobs,
-              (SELECT COUNT(*) FROM story_structure_suggestions
-               WHERE user_id=? AND created_at>=?) AS structure_jobs,
-              (SELECT COUNT(*) FROM novel_causal_link_suggestions
-               WHERE user_id=? AND created_at>=?) AS causal_jobs,
-              (SELECT COUNT(*) FROM novel_causal_branch_simulations
-               WHERE user_id=? AND created_at>=?) AS branch_jobs
-            """,
-            tuple(
-                value
-                for _ in range(8)
-                for value in (user_id, day_start)
-            ),
-        ).fetchone()
-        if sum(int(counts[key] or 0) for key in counts.keys()) >= max_jobs:
-            raise ValueError(f"今天已达到 {max_jobs} 个 AI 任务的上限")
 
     def list_for_suggestion(
         self,

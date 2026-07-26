@@ -46,7 +46,6 @@ def _settings(tmp_path: Path, *, api_key: str | None = None) -> Settings:
         deepseek_read_timeout_seconds=1,
         deepseek_max_retries=0,
         worker_poll_seconds=0.01,
-        max_jobs_per_day=50,
     )
 
 
@@ -342,7 +341,6 @@ def test_suggestion_snapshot_apply_merge_and_confirmed_plan_isolation(
         provider="mock",
         model="mock-story-planner",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     claimed = service.claim_next_suggestion()
     assert claimed["context_snapshot"]["confirmed_story_blueprint"][
@@ -482,7 +480,6 @@ def test_story_plan_queue_recovers_restart_and_counts_daily_limit(
         provider="mock",
         model="mock-story-planner",
         credential_source="default",
-        max_jobs_per_day=50,
     )
     first_claim = service.claim_next_suggestion()
     assert first_claim["id"] == suggestion_id
@@ -505,17 +502,16 @@ def test_story_plan_queue_recovers_restart_and_counts_daily_limit(
     assert failed["status"] == "failed"
     assert failed["error"] == "结构校验失败"
     assert failed["input_tokens"] == 12
-    with pytest.raises(ValueError, match="上限"):
-        service.create_suggestion(
-            user_id=user_id,
-            project_id="story-plan-project",
-            planning_mode="rethink",
-            instruction="",
-            provider="mock",
-            model="mock-story-planner",
-            credential_source="default",
-            max_jobs_per_day=1,
-        )
+    next_suggestion_id = service.create_suggestion(
+        user_id=user_id,
+        project_id="story-plan-project",
+        planning_mode="rethink",
+        instruction="",
+        provider="mock",
+        model="mock-story-planner",
+        credential_source="default",
+    )
+    assert next_suggestion_id != suggestion_id
 
 
 def test_v15_migrates_v14_database_and_preserves_existing_data(

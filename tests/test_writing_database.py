@@ -56,7 +56,6 @@ def test_novel_project_and_generation_lifecycle(tmp_path: Path):
         provider="mock",
         model="mock-novel-writer",
         credential_source="default",
-        max_jobs_per_day=10,
     )
     claimed = database.claim_next_generation()
     assert claimed is not None
@@ -83,6 +82,30 @@ def test_novel_project_and_generation_lifecycle(tmp_path: Path):
     assert chapter["status"] == "draft"
     assert chapter["char_count"] == 16
     assert len(database.list_chapter_versions(user_id, project_id, chapter_id)) == 1
+
+    for index in range(12):
+        extra_job_id = database.create_generation_job(
+            user_id=user_id,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            operation="rewrite",
+            instruction=f"第 {index + 1} 次测试",
+            provider="mock",
+            model="mock-novel-writer",
+            credential_source="default",
+        )
+        extra_claim = database.claim_next_generation()
+        assert extra_claim["id"] == extra_job_id
+        assert database.fail_generation(
+            extra_job_id,
+            extra_claim["claim_token"],
+            "测试任务主动结束",
+        )
+    with database.connection() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM generation_jobs WHERE user_id=?",
+            (user_id,),
+        ).fetchone()[0] == 13
 
     assert database.delete_novel_project(user_id, project_id) is True
     assert database.get_novel_project(user_id, project_id) is None
@@ -137,7 +160,6 @@ def test_novel_project_delete_waits_for_active_generation(tmp_path: Path):
         provider="mock",
         model="mock-novel-writer",
         credential_source="default",
-        max_jobs_per_day=10,
     )
 
     with pytest.raises(ValueError, match="正在排队或运行"):
