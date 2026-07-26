@@ -2167,13 +2167,6 @@ body.studio-surface .studio-api-form textarea {
   font-size: 16px;
 }
 
-.studio-adapter-heading p {
-  margin: 5px 0 0;
-  color: var(--studio-muted);
-  font-size: 11px;
-  line-height: 1.65;
-}
-
 body.studio-surface .studio-api-form [data-base-url-field][hidden] {
   display: none;
 }

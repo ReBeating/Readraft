@@ -251,18 +251,14 @@
           {% if adapter_saved %}<div class="studio-alert success">提示词已保存。</div>{% endif %}
 
           <header class="studio-adapter-heading">
-            <h2>通用提示词</h2>
-            <p>账号下所有服务商和模型共用；切换模型时不会改变。</p>
+            <h2>系统提示词</h2>
           </header>
-          <label>
-            <span>模型受限时如何继续（可选）</span>
+          <label aria-label="系统提示词">
             <textarea
               name="model_adapter_prompt"
               maxlength="20000"
               data-model-adapter-prompt
-              placeholder="例如：如果无法直接描写虚构暴力的具体过程，保留事件、因果和人物后果，改用非露骨叙述或镜头转移，不要只返回拒绝。"
             >{{ model_adapter_prompt }}</textarea>
-            <small>留空时不注入额外策略。它不能覆盖工具权限、正史边界、任务输出格式或模型服务自身的限制。</small>
           </label>
           <div class="studio-api-actions">
             <button class="studio-button primary" type="submit">保存提示词</button>

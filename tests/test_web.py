@@ -611,7 +611,9 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert "全局系统提示词" not in page.text
         prompt_page = client.get("/settings/api?tab=prompts")
         assert prompt_page.status_code == 200
-        assert "通用提示词" in prompt_page.text
+        assert "系统提示词" in prompt_page.text
+        assert "模型受限时如何继续" not in prompt_page.text
+        assert "留空时不注入额外策略" not in prompt_page.text
         assert "模型服务商" not in prompt_page.text
         adapter_prompt = "受限时保留事件因果，改用非露骨叙述。"
         response = client.post(
@@ -1263,7 +1265,9 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
             + '"'
         ) in settings_page.text
         embedded_prompt_page = client.get(embedded_prompt_url)
-        assert "通用提示词" in embedded_prompt_page.text
+        assert "系统提示词" in embedded_prompt_page.text
+        assert "模型受限时如何继续" not in embedded_prompt_page.text
+        assert "留空时不注入额外策略" not in embedded_prompt_page.text
         assert "模型服务商" not in embedded_prompt_page.text
         assert "提示词层级" not in settings_page.text
         assert "运行策略" not in settings_page.text
