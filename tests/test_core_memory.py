@@ -760,8 +760,13 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                 "version": 27,
                                 "name": "model_base_url_v27",
                             },
+                            {
+                                "version": 28,
+                                "name": "multi_provider_credentials_v28",
+                            },
                         ]
         assert database.get_api_credential(7)["base_url"] == ""
+        assert database.get_api_credential(7)["is_default"] == 1
         assert connection.execute(
             """
             SELECT COUNT(*) FROM novel_chapter_plans

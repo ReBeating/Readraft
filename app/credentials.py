@@ -7,7 +7,7 @@ import re
 from cryptography.fernet import Fernet, InvalidToken
 
 
-MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
 # This protocol namespace predates the display-name change. It is intentionally
 # stable: changing it would make every stored encrypted API key unreadable.
 CREDENTIAL_KDF_NAMESPACE = b"xushu:credential:v1\0"
@@ -61,9 +61,9 @@ def validate_api_key(value: str) -> str:
 
 def validate_model(value: str) -> str:
     value = value.strip()
-    if not MODEL_RE.fullmatch(value):
+    if "://" in value or not MODEL_RE.fullmatch(value):
         raise CredentialError(
-            "模型名需为 1–100 位字母、数字、点、下划线、冒号或短横线"
+            "模型名需为 1–200 位字母、数字或常用模型 ID 符号"
         )
     return value
 

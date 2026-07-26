@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-2">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-4">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -522,6 +522,9 @@
                     AI
                   {% endif %}
                 </small>
+                {% if message.role == 'assistant' and message.model %}
+                  <span class="studio-message-model">{{ message.model }}</span>
+                {% endif %}
                 {% if message.quote %}
                   <blockquote>{{ message.quote.quote_text }}</blockquote>
                 {% endif %}
@@ -777,6 +780,25 @@
           <input type="hidden" name="quote_start" data-quote-start value="">
           <input type="hidden" name="quote_end" data-quote-end value="">
           <input type="hidden" name="quote_text" data-quote-text value="">
+          <div class="studio-chat-model-bar">
+            <label>
+              <span>本轮模型</span>
+              <select name="model_choice" {% if not model_groups %}disabled{% endif %}>
+                {% if model_groups %}
+                  {% for group in model_groups %}
+                    <optgroup label="{{ group.label }}">
+                      {% for model in group.models %}
+                        <option value="{{ model.value }}" {% if model.value == selected_model_choice %}selected{% endif %}>{{ model.id }}</option>
+                      {% endfor %}
+                    </optgroup>
+                  {% endfor %}
+                {% else %}
+                  <option value="">尚未配置模型</option>
+                {% endif %}
+              </select>
+            </label>
+            <a href="/settings/api">管理模型</a>
+          </div>
           <div class="studio-chat-quote" data-quote-preview hidden>
             <span>已引用正文</span>
             <q></q>

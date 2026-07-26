@@ -323,13 +323,16 @@ class CausalBranchSimulationService:
             self._ensure_simulation_ready(context)
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             active_self = connection.execute(
                 """

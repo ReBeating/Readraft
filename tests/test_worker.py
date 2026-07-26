@@ -56,6 +56,16 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         thinking=True,
         reasoning_effort="max",
     )
+    database.upsert_api_credential(
+        user_id=user_id,
+        provider="openai_compatible",
+        base_url="https://gateway.example.com/v1",
+        encrypted_key=cipher.encrypt("compatible-worker-key"),
+        key_hint="••••-key",
+        model="other-default-model",
+        thinking=False,
+        reasoning_effort="high",
+    )
     seen = {}
 
     class FakePersonalAnalyzer(MockAnalyzer):

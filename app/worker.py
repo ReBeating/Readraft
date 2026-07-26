@@ -185,17 +185,13 @@ class AnalysisWorker:
 
     async def _personal_model_settings(self, item: dict) -> Settings:
         user_id = int(item["user_id"])
+        provider = str(item["provider"])
         credential = await asyncio.to_thread(
-            self.database.get_api_credential, user_id
+            self.database.get_api_credential, user_id, provider
         )
         if not credential:
             raise AnalyzerError(
                 "个人模型凭据已被删除，请重新配置后重试"
-            )
-        provider = str(credential.get("provider") or "deepseek")
-        if provider != str(item["provider"]):
-            raise AnalyzerError(
-                "任务创建后模型服务商配置已变化，请重新创建任务"
             )
         try:
             api_key = self.credential_cipher.decrypt(

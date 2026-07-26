@@ -181,6 +181,7 @@ def test_project_archive_round_trip_preserves_project_state(tmp_path: Path):
     assert summary.row_count >= 5
     assert "users" not in manifest["tables"]
     assert "api_credentials" not in manifest["tables"]
+    assert "api_models" not in manifest["tables"]
     assert b"CREDENTIAL-MUST-NOT-BE-EXPORTED" not in archive.read_bytes()
     assert (
         manifest["tables"]["novel_chapters"][0]["content_path"]

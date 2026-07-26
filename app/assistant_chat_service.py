@@ -1028,13 +1028,16 @@ class AssistantChatService:
                 raise ValueError("上一条对话回复仍在生成，请稍候")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             if max_jobs_per_day is not None:
                 day_start = datetime.now(timezone.utc).replace(

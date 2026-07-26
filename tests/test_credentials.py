@@ -9,7 +9,7 @@ from app.credentials import (
     validate_api_key,
     validate_model,
 )
-from app.db import Database
+from app.db import SCHEMA, Database
 from app.security import hash_password
 from app.style_service import StyleService
 
@@ -59,10 +59,129 @@ def test_api_credential_database_never_stores_plaintext(tmp_path: Path):
 def test_credential_input_validation():
     assert validate_api_key("sk-valid-key") == "sk-valid-key"
     assert validate_model("deepseek-v4-flash") == "deepseek-v4-flash"
+    assert validate_model("meta-llama/Llama-3.3@latest") == (
+        "meta-llama/Llama-3.3@latest"
+    )
     with pytest.raises(CredentialError):
         validate_api_key("sk-bad key")
     with pytest.raises(CredentialError):
         validate_model("http://internal/model")
+
+
+def test_credentials_and_models_are_kept_per_provider(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id = database.create_user(
+        "multi-provider-owner", hash_password("password-123")
+    )
+
+    database.upsert_api_credential(
+        user_id=user_id,
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        encrypted_key="encrypted-deepseek",
+        key_hint="sk-••••deep",
+        model="deepseek-chat",
+        models=["deepseek-chat", "deepseek-reasoner"],
+        thinking=False,
+        reasoning_effort="high",
+    )
+    database.upsert_api_credential(
+        user_id=user_id,
+        provider="openai_compatible",
+        base_url="https://models.example.com/v1",
+        encrypted_key="encrypted-compatible",
+        key_hint="••••comp",
+        model="writer-pro",
+        models=["writer-pro", "writer-fast"],
+        thinking=False,
+        reasoning_effort="high",
+    )
+
+    default = database.get_api_credential(user_id)
+    deepseek = database.get_api_credential(user_id, "deepseek")
+    compatible = database.get_api_credential(
+        user_id, "openai_compatible"
+    )
+    assert default["provider"] == "openai_compatible"
+    assert deepseek["key_hint"] == "sk-••••deep"
+    assert compatible["base_url"] == "https://models.example.com/v1"
+    assert database.list_api_models(user_id, "deepseek") == [
+        "deepseek-chat",
+        "deepseek-reasoner",
+    ]
+    assert database.list_api_models(user_id, "openai_compatible") == [
+        "writer-pro",
+        "writer-fast",
+    ]
+    assert [item["provider"] for item in database.list_api_credentials(user_id)] == [
+        "openai_compatible",
+        "deepseek",
+    ]
+
+    assert database.delete_api_credential(user_id, "openai_compatible")
+    assert database.get_api_credential(user_id)["provider"] == "deepseek"
+    assert database.list_api_models(user_id, "openai_compatible") == []
+
+
+def test_v27_credential_is_migrated_to_provider_collection(tmp_path: Path):
+    database = Database(tmp_path / "legacy.db")
+    with database.connection() as connection:
+        connection.executescript(SCHEMA)
+        connection.executescript(
+            """
+            DROP TABLE api_credentials;
+            CREATE TABLE api_credentials (
+                user_id INTEGER PRIMARY KEY
+                    REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL DEFAULT '',
+                encrypted_key TEXT NOT NULL,
+                key_hint TEXT NOT NULL,
+                model TEXT NOT NULL,
+                thinking INTEGER NOT NULL DEFAULT 0,
+                reasoning_effort TEXT NOT NULL DEFAULT 'high',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO users(
+                id, username, password_hash, created_at
+            ) VALUES (
+                7, 'legacy-model-owner', 'password-hash',
+                '2026-01-01T00:00:00+00:00'
+            );
+            INSERT INTO api_credentials(
+                user_id, provider, base_url, encrypted_key, key_hint,
+                model, thinking, reasoning_effort, system_prompt,
+                created_at, updated_at
+            ) VALUES (
+                7, 'deepseek', 'https://api.deepseek.com',
+                'encrypted-secret', 'sk-••••1234', 'deepseek-chat',
+                0, 'high', '保持克制',
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00'
+            );
+            """
+        )
+        connection.commit()
+
+    database.initialize()
+
+    credential = database.get_api_credential(7, "deepseek")
+    assert credential["encrypted_key"] == "encrypted-secret"
+    assert credential["is_default"] == 1
+    assert database.list_api_models(7, "deepseek") == ["deepseek-chat"]
+    with database.connection() as connection:
+        primary_key = [
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(api_credentials)"
+            ).fetchall()
+            if row["pk"]
+        ]
+        assert primary_key == ["user_id", "provider"]
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_active_voice_task_protects_credentials_and_project(tmp_path: Path):

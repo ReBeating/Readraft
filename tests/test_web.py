@@ -786,6 +786,157 @@ def test_model_catalog_uses_submitted_openai_compatible_base_url(
         assert seen["api_key"] is None
 
 
+def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "多服务商用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        page = client.get("/settings/api")
+        deepseek_key = "sk-deepseek-provider-5678"
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "deepseek",
+                "api_key": deepseek_key,
+                "model": "deepseek-reasoner",
+                "models": ["deepseek-chat", "deepseek-reasoner"],
+                "reasoning_effort": "high",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        compatible_page = client.get(
+            "/settings/api?provider=openai_compatible"
+        )
+        assert "还没有模型" in compatible_page.text
+        compatible_key = "compatible-provider-key-9012"
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "openai_compatible",
+                "base_url": "https://gateway.example.com/v1",
+                "api_key": compatible_key,
+                "model": "writer-fast",
+                "models": ["writer-fast", "writer-pro"],
+                "reasoning_effort": "high",
+                "csrf": csrf_from(compatible_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        deepseek_page = client.get("/settings/api?provider=deepseek")
+        assert "已保存：sk-••••5678（留空保留）" in deepseek_page.text
+        assert 'name="models" value="deepseek-chat"' in deepseek_page.text
+        assert 'name="models" value="deepseek-reasoner"' in deepseek_page.text
+        assert deepseek_key not in deepseek_page.text
+
+        compatible_page = client.get(
+            "/settings/api?provider=openai_compatible"
+        )
+        assert "已保存：••••9012（留空保留）" in compatible_page.text
+        assert "https://gateway.example.com/v1" in compatible_page.text
+        assert 'name="models" value="writer-fast"' in compatible_page.text
+        assert 'name="models" value="writer-pro"' in compatible_page.text
+        assert compatible_key not in compatible_page.text
+        assert "接口返回的模型" in compatible_page.text
+        assert "加入我的模型" in compatible_page.text
+
+        user = application.state.database.get_user_by_username(
+            "多服务商用户"
+        )
+        assert application.state.database.has_api_credential(
+            user["id"], "deepseek"
+        )
+        assert application.state.database.has_api_credential(
+            user["id"], "openai_compatible"
+        )
+
+
+def test_workbench_model_picker_controls_queued_chat_model(
+    tmp_path, monkeypatch
+):
+    queued = {}
+
+    def fake_queue_message(_service, **kwargs):
+        queued.update(kwargs)
+        return "queued-message"
+
+    monkeypatch.setattr(
+        "app.assistant_chat_service.AssistantChatService.queue_message",
+        fake_queue_message,
+    )
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "聊天选模型用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        settings_page = client.get("/settings/api")
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "deepseek",
+                "api_key": "sk-chat-model-picker-1234",
+                "model": "deepseek-chat",
+                "models": ["deepseek-chat", "deepseek-reasoner"],
+                "reasoning_effort": "high",
+                "csrf": csrf_from(settings_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        dashboard = client.get("/dashboard")
+        created = client.post(
+            "/novels/new/blank",
+            data={"csrf": csrf_from(dashboard.text)},
+            follow_redirects=False,
+        )
+        workbench = client.get(created.headers["location"])
+        project_id = project_id_from_workbench(created.headers["location"])
+        assert 'name="model_choice"' in workbench.text
+        assert 'value="deepseek|deepseek-chat"' in workbench.text
+        assert 'value="deepseek|deepseek-reasoner"' in workbench.text
+
+        response = client.post(
+            f"/novels/{project_id}/assistant/messages",
+            data={
+                "csrf": csrf_from(workbench.text),
+                "question": "先讨论这一章的悬念推进。",
+                "model_choice": "deepseek|deepseek-reasoner",
+                "return_view": "settings",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert queued["provider"] == "deepseek"
+        assert queued["model"] == "deepseek-reasoner"
+        assert queued["credential_source"] == "personal"
+
+
 def test_remote_provider_rejects_missing_key_and_thinking(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:

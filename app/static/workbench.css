@@ -1546,6 +1546,20 @@ body.studio-surface .studio-settings-form textarea:focus {
   font-weight: 700;
 }
 
+.studio-message-model {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  margin: -2px 0 7px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--studio-muted);
+  background: var(--studio-input);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .studio-chat-message p {
   margin: 0;
   color: var(--studio-ink);
@@ -1843,6 +1857,43 @@ body.studio-surface .studio-settings-form textarea:focus {
   background: var(--studio-panel);
 }
 
+.studio-chat-model-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.studio-chat-model-bar label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.studio-chat-model-bar span,
+.studio-chat-model-bar a {
+  flex: 0 0 auto;
+  color: var(--studio-muted);
+  font-size: 10px;
+}
+
+body.studio-surface .studio-chat-model-bar select {
+  width: min(190px, 50vw);
+  min-height: 30px;
+  padding: 4px 26px 4px 8px;
+  border: 1px solid var(--studio-line);
+  border-radius: 8px;
+  color: var(--studio-ink);
+  background: var(--studio-input);
+  font-size: 10px;
+}
+
+.studio-chat-model-bar a:hover {
+  color: var(--studio-accent);
+}
+
 .studio-chat-quote {
   position: relative;
   margin-bottom: 8px;
@@ -2013,10 +2064,132 @@ body.studio-surface .studio-api-form [data-base-url-field][hidden] {
   display: none;
 }
 
-.studio-model-field {
+.studio-model-field,
+.studio-model-manual {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.studio-model-manager {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--studio-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--studio-input) 55%, transparent);
+}
+
+.studio-model-manager-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.studio-model-manager h2,
+.studio-model-manager h3 {
+  margin: 0;
+  font-family: inherit !important;
+  color: var(--studio-ink);
+}
+
+.studio-model-manager h2 {
+  font-size: 16px;
+}
+
+.studio-model-manager h3 {
+  font-size: 13px;
+}
+
+.studio-model-manager-heading p,
+.studio-model-catalog small {
+  margin: 4px 0 0;
+  color: var(--studio-muted);
+  font-size: 11px;
+}
+
+.studio-personal-models,
+.studio-model-catalog-list {
+  display: grid;
+  gap: 8px;
+}
+
+.studio-personal-model,
+.studio-catalog-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 7px 10px;
+  border: 1px solid var(--studio-line);
+  border-radius: 10px;
+  background: var(--studio-page);
+}
+
+.studio-personal-model label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+body.studio-surface .studio-personal-model input[type="radio"] {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+  accent-color: var(--studio-accent);
+}
+
+.studio-personal-model span,
+.studio-catalog-model code {
+  overflow: hidden;
+  color: var(--studio-ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-personal-model > button {
+  padding: 4px 2px;
+  border: 0;
+  color: var(--studio-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.studio-personal-model > button:hover {
+  color: var(--studio-danger);
+}
+
+.studio-model-catalog {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--studio-line);
+}
+
+.studio-model-catalog-list {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.studio-catalog-model .studio-button {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.studio-model-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--studio-line);
+  border-radius: 10px;
+  color: var(--studio-muted);
+  font-size: 11px;
+  text-align: center;
 }
 
 .studio-model-feedback {
@@ -2072,6 +2245,50 @@ body.studio-surface .studio-api-form [data-base-url-field][hidden] {
 
 .studio-api-aside li {
   margin-bottom: 9px;
+}
+
+.studio-provider-summaries {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.studio-provider-summary {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--studio-line);
+  border-radius: 10px;
+  color: var(--studio-muted);
+  text-decoration: none;
+}
+
+.studio-provider-summary:hover,
+.studio-provider-summary.active {
+  border-color: var(--studio-accent);
+  background: color-mix(in srgb, var(--studio-accent) 7%, transparent);
+}
+
+.studio-provider-summary strong {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--studio-ink);
+  font-size: 12px;
+}
+
+.studio-provider-summary strong span {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--studio-accent);
+  background: color-mix(in srgb, var(--studio-accent) 12%, transparent);
+  font-size: 9px;
+}
+
+.studio-provider-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .studio-danger-zone {
@@ -2367,8 +2584,14 @@ body.studio-surface .studio-api-form [data-base-url-field][hidden] {
   }
 
   .studio-model-field,
+  .studio-model-manual,
   .studio-api-options {
     grid-template-columns: 1fr;
+  }
+
+  .studio-model-manager-heading {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

@@ -75,6 +75,9 @@
                         AI
                       {% endif %}
                     </strong>
+                    {% if message.role == 'assistant' and message.model %}
+                      <span class="assistant-message-model">{{ message.model }}</span>
+                    {% endif %}
                     <small>{{ message.created_at }}</small>
                   </header>
                   {% if message.quote %}
@@ -223,6 +226,25 @@
           <input type="hidden" name="quote_start" id="assistant-quote-start" value="">
           <input type="hidden" name="quote_end" id="assistant-quote-end" value="">
           <input type="hidden" name="quote_text" id="assistant-quote-text" value="">
+          <div class="assistant-model-picker">
+            <label>
+              <span>本轮模型</span>
+              <select name="model_choice" {% if not model_groups %}disabled{% endif %}>
+                {% if model_groups %}
+                  {% for group in model_groups %}
+                    <optgroup label="{{ group.label }}">
+                      {% for model in group.models %}
+                        <option value="{{ model.value }}" {% if model.value == selected_model_choice %}selected{% endif %}>{{ model.id }}</option>
+                      {% endfor %}
+                    </optgroup>
+                  {% endfor %}
+                {% else %}
+                  <option value="">尚未配置模型</option>
+                {% endif %}
+              </select>
+            </label>
+            <a href="/settings/api">管理模型</a>
+          </div>
           <div class="assistant-selected-quote" id="assistant-selected-quote" hidden>
             <span>已引用</span>
             <q></q>

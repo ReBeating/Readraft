@@ -947,7 +947,50 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             context["request"], name, context, status_code=status_code
         )
 
-    def api_profile(user_id: int) -> Optional[Dict[str, str]]:
+    def api_profile(
+        user_id: int, model_choice: str = ""
+    ) -> Optional[Dict[str, str]]:
+        clean_choice = str(model_choice or "").strip()
+        if clean_choice:
+            try:
+                provider, model = clean_choice.split("|", 1)
+            except ValueError as exc:
+                raise ValueError("所选模型无效，请刷新页面后重试") from exc
+            credential = database.get_api_credential_summary(
+                user_id, provider
+            )
+            if credential:
+                allowed_models = set(
+                    database.list_api_models(user_id, provider)
+                )
+                allowed_models.add(str(credential["model"]))
+                if model not in allowed_models:
+                    raise ValueError(
+                        "所选模型不在“我的模型”中，请先到模型设置添加"
+                    )
+                return {
+                    "provider": provider,
+                    "model": model,
+                    "credential_source": "personal",
+                }
+            default_profile = {
+                "provider": app_settings.model_provider,
+                "model": app_settings.deepseek_model,
+                "credential_source": "default",
+            }
+            if app_settings.uses_test_models:
+                default_profile = {
+                    "provider": "mock",
+                    "model": "mock-novel-writer",
+                    "credential_source": "default",
+                }
+            if (
+                app_settings.deepseek_api_key or app_settings.uses_test_models
+            ) and clean_choice == (
+                f"{default_profile['provider']}|{default_profile['model']}"
+            ):
+                return default_profile
+            raise ValueError("所选模型配置不存在，请重新选择")
         credential = database.get_api_credential_summary(user_id)
         if credential:
             return {
@@ -968,6 +1011,89 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "credential_source": "default",
             }
         return None
+
+    def chat_model_groups(user_id: int) -> list[Dict[str, Any]]:
+        groups: list[Dict[str, Any]] = []
+        for credential in database.list_api_credentials(user_id):
+            provider_id = str(credential["provider"])
+            try:
+                provider_label = get_provider(provider_id).label
+            except ProviderConfigError:
+                provider_label = provider_id
+            models = database.list_api_models(user_id, provider_id)
+            default_model = str(credential["model"])
+            if default_model not in models:
+                models.insert(0, default_model)
+            groups.append(
+                {
+                    "provider": provider_id,
+                    "label": provider_label,
+                    "models": [
+                        {
+                            "id": model,
+                            "value": f"{provider_id}|{model}",
+                            "is_default": (
+                                bool(credential["is_default"])
+                                and model == default_model
+                            ),
+                        }
+                        for model in models
+                    ],
+                }
+            )
+        if groups:
+            return groups
+        profile = api_profile(user_id)
+        if not profile:
+            return []
+        provider_id = profile["provider"]
+        try:
+            provider_label = get_provider(provider_id).label
+        except ProviderConfigError:
+            provider_label = "测试模型" if provider_id == "mock" else provider_id
+        return [
+            {
+                "provider": provider_id,
+                "label": provider_label,
+                "models": [
+                    {
+                        "id": profile["model"],
+                        "value": f"{provider_id}|{profile['model']}",
+                        "is_default": True,
+                    }
+                ],
+            }
+        ]
+
+    def selected_chat_model(
+        groups: list[Dict[str, Any]],
+        conversation: Optional[Mapping[str, Any]] = None,
+    ) -> str:
+        available = {
+            str(model["value"])
+            for group in groups
+            for model in group["models"]
+        }
+        if conversation:
+            for message in reversed(conversation.get("messages") or []):
+                if (
+                    str(message.get("role") or "") == "assistant"
+                    and message.get("provider")
+                    and message.get("model")
+                ):
+                    previous = (
+                        f"{message['provider']}|{message['model']}"
+                    )
+                    if previous in available:
+                        return previous
+        for group in groups:
+            for model in group["models"]:
+                if model["is_default"]:
+                    return str(model["value"])
+        for group in groups:
+            if group["models"]:
+                return str(group["models"][0]["value"])
+        return ""
 
     async def after_canon_acceptance(
         request: Request,
@@ -1377,44 +1503,71 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        models: Optional[list[str]] = None,
         status_code: int = status.HTTP_200_OK,
     ):
-        credential = database.get_api_credential_summary(int(user["id"]))
-        credential_provider_spec = None
-        if credential:
-            try:
-                credential_provider_spec = get_provider(
-                    str(credential["provider"])
-                ).public_payload()
-            except ProviderConfigError:
-                credential_provider_spec = None
+        user_id = int(user["id"])
+        default_credential = database.get_api_credential_summary(user_id)
         current_provider = provider or (
-            str(credential["provider"]) if credential else "deepseek"
+            str(default_credential["provider"])
+            if default_credential
+            else "deepseek"
         )
         try:
             current_provider_spec = get_provider(current_provider)
         except ProviderConfigError:
             current_provider_spec = get_provider("deepseek")
             current_provider = current_provider_spec.id
+        credential = database.get_api_credential_summary(
+            user_id, current_provider
+        )
+        credential_summaries = []
+        for item in database.list_api_credentials(user_id):
+            try:
+                item_provider = get_provider(
+                    str(item["provider"])
+                ).public_payload()
+            except ProviderConfigError:
+                item_provider = {
+                    "id": str(item["provider"]),
+                    "label": str(item["provider"]),
+                    "capabilities": {
+                        "configurable_base_url": False,
+                    },
+                }
+            summary = dict(item)
+            summary["provider_spec"] = item_provider
+            summary["models"] = database.list_api_models(
+                user_id, str(item["provider"])
+            )
+            credential_summaries.append(summary)
         current_base_url = (
             str(base_url).strip()
             if base_url is not None
             else (
                 str(credential.get("base_url") or "").strip()
-                if (
-                    credential
-                    and str(credential["provider"]) == current_provider
-                )
+                if credential
                 else current_provider_spec.base_url
             )
         )
         if not current_base_url:
             current_base_url = current_provider_spec.base_url
-        current_model = model or (
-            str(credential["model"])
-            if credential and str(credential["provider"]) == current_provider
-            else app_settings.deepseek_model
+        current_model = (
+            str(model).strip()
+            if model is not None
+            else (str(credential["model"]) if credential else "")
         )
+        current_models = (
+            list(dict.fromkeys(str(item) for item in models))
+            if models is not None
+            else (
+                database.list_api_models(user_id, current_provider)
+                if credential
+                else []
+            )
+        )
+        if current_model and current_model not in current_models:
+            current_models.insert(0, current_model)
         current_thinking = (
             thinking
             if thinking is not None
@@ -1447,7 +1600,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 credential=credential,
-                credential_provider_spec=credential_provider_spec,
+                credentials=credential_summaries,
                 providers=[
                     item.public_payload() for item in list_providers()
                 ],
@@ -1458,6 +1611,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 saved=saved,
                 removed=removed,
                 selected_model=current_model,
+                selected_models=current_models,
                 selected_thinking=current_thinking,
                 selected_effort=current_effort,
                 selected_system_prompt=current_system_prompt,
@@ -1473,12 +1627,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         saved: bool = False,
         removed: bool = False,
         error: Optional[str] = None,
+        provider: Optional[str] = None,
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
         return render_api_settings(
-            request, user, error=error, saved=saved, removed=removed
+            request,
+            user,
+            error=error,
+            saved=saved,
+            removed=removed,
+            provider=provider,
         )
 
     @application.post("/settings/api", response_class=HTMLResponse)
@@ -1487,7 +1647,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         api_key: str = Form(""),
         provider: str = Form("deepseek"),
         base_url: str = Form(""),
-        model: str = Form(...),
+        model: str = Form(""),
+        models: list[str] = Form([]),
         thinking: Optional[str] = Form(None),
         reasoning_effort: str = Form("high"),
         system_prompt: str = Form(""),
@@ -1508,7 +1669,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 ),
                 production=app_settings.app_env.lower() == "production",
             )
+            clean_models = list(
+                dict.fromkeys(validate_model(item) for item in models)
+            )
             clean_model = validate_model(model)
+            if clean_model not in clean_models:
+                clean_models.insert(0, clean_model)
+            if len(clean_models) > 100:
+                raise CredentialError("每个服务商最多保存 100 个模型")
             clean_system_prompt = _clean_field(
                 system_prompt,
                 "全局系统提示词",
@@ -1523,15 +1691,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 raise CredentialError(
                     f"{provider_spec.label} 暂不支持 novelAI 的思考模式"
                 )
-            existing = database.get_api_credential(int(user["id"]))
+            existing = database.get_api_credential(
+                int(user["id"]), provider_spec.id
+            )
             if api_key:
                 clean_key = validate_api_key(api_key)
                 encrypted_key = credential_cipher.encrypt(clean_key)
                 masked_key = key_hint(clean_key)
-            elif (
-                existing
-                and str(existing["provider"]) == provider_spec.id
-            ):
+            elif existing:
                 encrypted_key = str(existing["encrypted_key"])
                 masked_key = str(existing["key_hint"])
             elif not provider_spec.capabilities.api_key_required:
@@ -1555,6 +1722,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 thinking=thinking_enabled,
                 reasoning_effort=reasoning_effort,
                 system_prompt=clean_system_prompt,
+                models=clean_models,
             )
         except ValueError as exc:
             return render_api_settings(
@@ -1567,6 +1735,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 thinking=thinking_enabled,
                 reasoning_effort=reasoning_effort,
                 system_prompt=system_prompt,
+                models=models,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         return RedirectResponse(
@@ -1590,12 +1759,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         try:
             provider_spec = get_provider(provider)
-            existing = database.get_api_credential(int(user["id"]))
+            existing = database.get_api_credential(
+                int(user["id"]), provider_spec.id
+            )
             submitted_base_url = base_url
             if (
                 not submitted_base_url.strip()
                 and existing
-                and str(existing["provider"]) == provider_spec.id
             ):
                 submitted_base_url = str(
                     existing.get("base_url") or ""
@@ -1611,10 +1781,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if api_key:
                 clean_key = validate_api_key(api_key)
             else:
-                if (
-                    existing
-                    and str(existing["provider"]) == provider_spec.id
-                ):
+                if existing:
                     clean_key = credential_cipher.decrypt(
                         str(existing["encrypted_key"])
                     )
@@ -1650,13 +1817,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post("/settings/api/delete")
-    async def delete_api_settings(request: Request, csrf: str = Form(...)):
+    async def delete_api_settings(
+        request: Request,
+        provider: str = Form(""),
+        csrf: str = Form(...),
+    ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         try:
-            database.delete_api_credential(int(user["id"]))
+            provider_id = get_provider(provider).id if provider else None
+            database.delete_api_credential(int(user["id"]), provider_id)
         except ValueError as exc:
             return RedirectResponse(
                 "/settings/api?error=" + quote(str(exc)),
@@ -1895,6 +2067,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             setting_voice_profile = style_service.get_voice_profile(
                 user_id=user_id, project_id=project_id
             )
+        available_chat_models = chat_model_groups(user_id)
 
         return render_template(
             "novel_workbench.html",
@@ -1923,6 +2096,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 setting_story_blueprint=setting_story_blueprint,
                 setting_story_arcs=setting_story_arcs,
                 setting_voice_profile=setting_voice_profile,
+                model_groups=available_chat_models,
+                selected_model_choice=selected_chat_model(
+                    available_chat_models, active_conversation
+                ),
                 pov_options=POV_OPTIONS,
                 setting_field_labels=SETTING_FIELD_LABELS,
                 onboarding=onboarding,
@@ -8050,6 +8227,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         quote_end: str = Form(""),
         quote_text: str = Form(""),
         source_hash: str = Form(""),
+        model_choice: str = Form(""),
         return_view: str = Form(""),
         return_settings_tab: str = Form(""),
         csrf: str = Form(...),
@@ -8095,7 +8273,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         ),
                     )
                 )
-            profile = api_profile(user_id)
+            profile = api_profile(user_id, model_choice)
             if not profile:
                 return RedirectResponse(
                     "/settings/api?error="
@@ -8500,6 +8678,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     f"参考书第 {source['position']} 章"
                     f"《{source['title']}》"
                 )
+        available_chat_models = chat_model_groups(user_id)
         return render_template(
             "assistant_chat.html",
             _template_context(
@@ -8511,6 +8690,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 scope_chapters=chapters,
                 selected_scope_chapter_id=source_chapter_id,
                 source=source,
+                model_groups=available_chat_models,
+                selected_model_choice=selected_chat_model(
+                    available_chat_models, active
+                ),
                 assistant_base_url=(
                     f"/documents/{document_id}/assistant"
                 ),
@@ -8577,6 +8760,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         quote_end: str = Form(""),
         quote_text: str = Form(""),
         source_hash: str = Form(""),
+        model_choice: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -8617,7 +8801,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         ),
                     )
                 )
-            profile = api_profile(user_id)
+            profile = api_profile(user_id, model_choice)
             if not profile:
                 return RedirectResponse(
                     "/settings/api?error="

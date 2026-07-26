@@ -2,7 +2,7 @@
 {% block title %}模型与提示词 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-3">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-4">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -52,7 +52,7 @@
               >{{ provider.label }}</option>
             {% endfor %}
           </select>
-          <small data-provider-notes>{{ selected_provider_spec.notes }}</small>
+          <small data-provider-notes>{{ selected_provider_spec.notes }} 切换服务商会载入该服务商已保存的配置。</small>
         </label>
 
         <label
@@ -82,10 +82,12 @@
             maxlength="512"
             autocomplete="off"
             spellcheck="false"
-            placeholder="{{ '留空则保留当前 Key（' ~ credential.key_hint ~ '）' if credential and credential.provider == selected_provider else ('可选（Bearer API Key）' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
+            placeholder="{{ '已保存：' ~ credential.key_hint ~ '（留空保留）' if credential else ('可选（Bearer API Key）' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
           >
           <small data-api-key-help>
-            {% if selected_provider_spec.capabilities.api_key_required %}
+            {% if credential %}
+              已保存凭据 {{ credential.key_hint }}；出于安全考虑不会回显完整内容，留空即可继续使用。
+            {% elif selected_provider_spec.capabilities.api_key_required %}
               只在保存时加密写入本机数据库，不会再次完整显示。
             {% else %}
               可选；直连通常无需 Key，经过鉴权网关时可填写 Bearer API Key。
@@ -93,27 +95,61 @@
           </small>
         </label>
 
-        <label>
-          <span>模型</span>
-          <div class="studio-model-field">
+        <section class="studio-model-manager" aria-labelledby="personal-models-title">
+          <div class="studio-model-manager-heading">
+            <div>
+              <h2 id="personal-models-title">我的模型</h2>
+              <p>聊天和创作任务只会显示这里保存的模型。</p>
+            </div>
+            <button class="studio-button" type="button" data-load-models>拉取模型列表</button>
+          </div>
+
+          <div class="studio-personal-models" data-personal-models>
+            {% for model in selected_models %}
+              <div class="studio-personal-model" data-personal-model data-model-id="{{ model }}">
+                <label>
+                  <input type="radio" name="model" value="{{ model }}" {% if model == selected_model %}checked{% endif %}>
+                  <span>{{ model }}</span>
+                </label>
+                <input type="hidden" name="models" value="{{ model }}">
+                <button type="button" data-remove-model aria-label="移除 {{ model }}">移除</button>
+              </div>
+            {% else %}
+              <p class="studio-model-empty" data-personal-models-empty>还没有模型。可以从接口列表加入，或手动填写模型 ID。</p>
+            {% endfor %}
+          </div>
+
+          <div class="studio-model-manual">
             <input
               type="text"
-              name="model"
-              value="{{ selected_model }}"
-              list="available-models"
-              maxlength="100"
+              aria-label="手动输入模型 ID"
+              placeholder="手动输入模型 ID"
+              maxlength="200"
               autocomplete="off"
               spellcheck="false"
-              required
-              data-model-input
+              data-manual-model
             >
-            <datalist id="available-models" data-model-options></datalist>
-            <button class="studio-button" type="button" data-load-models>读取可用模型</button>
+            <button class="studio-button" type="button" data-add-manual-model>加入我的模型</button>
           </div>
+
           <p class="studio-model-feedback" data-model-feedback aria-live="polite">
-            可直接输入模型 ID，也可从当前接口读取模型目录。
+            {% if selected_models %}
+              已保存 {{ selected_models|length }} 个模型；选中的模型会成为默认模型。
+            {% else %}
+              先拉取接口目录，再选择需要的模型加入。
+            {% endif %}
           </p>
-        </label>
+
+          <div class="studio-model-catalog">
+            <div>
+              <h3>接口返回的模型</h3>
+              <small>列表只用于选择；点击“加入”后还需保存设置。</small>
+            </div>
+            <div class="studio-model-catalog-list" data-model-catalog>
+              <p class="studio-model-empty">尚未拉取模型列表。</p>
+            </div>
+          </div>
+        </section>
 
         <div class="studio-api-options" data-thinking-options>
           <label class="studio-check">
@@ -148,15 +184,24 @@
       </form>
 
       <aside class="studio-api-aside">
-        {% if credential %}
+        {% if credentials %}
           <h2>个人模型已配置</h2>
-          <p>
-            {{ credential_provider_spec.label if credential_provider_spec else credential.provider }} · {{ credential.model }}<br>
-            {% if credential_provider_spec and credential_provider_spec.capabilities.configurable_base_url %}
-              {{ credential.base_url or credential_provider_spec.base_url }}<br>
-            {% endif %}
-            {{ credential.key_hint }} · 更新于 {{ credential.updated_at }}
-          </p>
+          <p>已保存的服务商会分别保留凭据、接口地址和模型列表。</p>
+          <div class="studio-provider-summaries">
+            {% for item in credentials %}
+              <a
+                class="studio-provider-summary {% if item.provider == selected_provider %}active{% endif %}"
+                href="/settings/api?provider={{ item.provider }}"
+              >
+                <strong>
+                  {{ item.provider_spec.label }}
+                  {% if item.is_default %}<span>默认</span>{% endif %}
+                </strong>
+                <small>{{ item.key_hint }} · {{ item.models|length }} 个模型</small>
+                <small>{{ item.model }}</small>
+              </a>
+            {% endfor %}
+          </div>
         {% elif server_api_available %}
           <h2>服务器凭据</h2>
           <p>当前使用服务器共享 Key。保存个人 Key 后会优先使用个人配置。</p>
@@ -180,7 +225,8 @@
           <div class="studio-danger-zone">
             <form method="post" action="/settings/api/delete">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <button class="studio-button" type="submit">删除个人模型配置</button>
+              <input type="hidden" name="provider" value="{{ selected_provider }}">
+              <button class="studio-button" type="submit">删除 {{ selected_provider_spec.label }} 配置</button>
             </form>
           </div>
         {% endif %}
@@ -202,34 +248,24 @@
       const form = document.querySelector("[data-api-settings-form]");
       if (!form) return;
       const loadButton = form.querySelector("[data-load-models]");
-      const modelInput = form.querySelector("[data-model-input]");
-      const modelOptions = form.querySelector("[data-model-options]");
       const providerSelect = form.querySelector("[data-provider-select]");
       const baseUrlField = form.querySelector("[data-base-url-field]");
       const baseUrlInput = form.querySelector("[data-base-url-input]");
       const feedback = form.querySelector("[data-model-feedback]");
+      const personalModels = form.querySelector("[data-personal-models]");
+      const modelCatalog = form.querySelector("[data-model-catalog]");
+      const manualModel = form.querySelector("[data-manual-model]");
+      const addManualModel = form.querySelector("[data-add-manual-model]");
       const prompt = form.querySelector("[data-system-prompt]");
       const promptTemplate = form.querySelector("[data-default-system-prompt]");
-      const keyInput = form.elements.api_key;
-      const keyLabel = form.querySelector("[data-api-key-label]");
-      const keyHelp = form.querySelector("[data-api-key-help]");
-      const providerNotes = form.querySelector("[data-provider-notes]");
       const thinkingOptions = form.querySelector("[data-thinking-options]");
       const thinkingInput = form.elements.thinking;
       const reasoningEffort = form.elements.reasoning_effort;
 
-      const syncProvider = ({resetModel = false} = {}) => {
+      const syncProviderCapabilities = () => {
         const option = providerSelect.selectedOptions[0];
-        const label = option.dataset.label;
-        const keyRequired = option.dataset.apiKeyRequired === "true";
         const supportsThinking = option.dataset.thinking === "true";
         const configurableBaseUrl = option.dataset.baseUrlConfigurable === "true";
-        keyLabel.textContent = `${label} API Key`;
-        keyInput.placeholder = keyRequired ? "输入或保留 API Key" : "可选（Bearer API Key）";
-        keyHelp.textContent = keyRequired
-          ? "只在保存时加密写入本机数据库，不会再次完整显示。"
-          : "可选；直连通常无需 Key，经过鉴权网关时可填写 Bearer API Key。";
-        providerNotes.textContent = option.dataset.notes || "";
         baseUrlField.hidden = !configurableBaseUrl;
         baseUrlInput.disabled = !configurableBaseUrl;
         baseUrlInput.required = configurableBaseUrl;
@@ -237,21 +273,105 @@
         thinkingInput.disabled = !supportsThinking;
         reasoningEffort.disabled = !supportsThinking;
         if (!supportsThinking) thinkingInput.checked = false;
-        if (resetModel) {
-          keyInput.value = "";
-          baseUrlInput.value = option.dataset.defaultBaseUrl || "";
-          modelInput.value = "";
-          modelOptions.replaceChildren();
-          feedback.textContent = `请输入模型 ID，或读取 ${label} 的模型目录。`;
-        }
       };
+
+      const personalModelIds = () => new Set(
+        [...personalModels.querySelectorAll("[data-personal-model]")]
+          .map((item) => item.dataset.modelId)
+      );
+
+      const updatePersonalModelState = () => {
+        const rows = [...personalModels.querySelectorAll("[data-personal-model]")];
+        personalModels.querySelector("[data-personal-models-empty]")?.remove();
+        if (!rows.length) {
+          const empty = document.createElement("p");
+          empty.className = "studio-model-empty";
+          empty.dataset.personalModelsEmpty = "";
+          empty.textContent = "还没有模型。可以从接口列表加入，或手动填写模型 ID。";
+          personalModels.append(empty);
+        } else if (!rows.some((row) => row.querySelector("input[type=radio]").checked)) {
+          rows[0].querySelector("input[type=radio]").checked = true;
+        }
+        const selected = personalModelIds();
+        modelCatalog.querySelectorAll("[data-catalog-model]").forEach((row) => {
+          const button = row.querySelector("button");
+          const added = selected.has(row.dataset.modelId);
+          button.disabled = added;
+          button.textContent = added ? "已加入" : "加入";
+        });
+      };
+
+      const addPersonalModel = (rawModel) => {
+        const model = String(rawModel || "").trim();
+        if (model.includes("://") || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/.test(model)) {
+          feedback.textContent = "模型名需为 1–200 位字母、数字或常用模型 ID 符号。";
+          return false;
+        }
+        const existing = [...personalModels.querySelectorAll("[data-personal-model]")]
+          .find((item) => item.dataset.modelId === model);
+        if (existing) {
+          existing.querySelector("input[type=radio]").checked = true;
+          feedback.textContent = `${model} 已在我的模型中，并已设为默认。`;
+          updatePersonalModelState();
+          return true;
+        }
+        const row = document.createElement("div");
+        row.className = "studio-personal-model";
+        row.dataset.personalModel = "";
+        row.dataset.modelId = model;
+        const label = document.createElement("label");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "model";
+        radio.value = model;
+        radio.checked = personalModelIds().size === 0;
+        const name = document.createElement("span");
+        name.textContent = model;
+        label.append(radio, name);
+        const hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "models";
+        hidden.value = model;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.dataset.removeModel = "";
+        remove.setAttribute("aria-label", `移除 ${model}`);
+        remove.textContent = "移除";
+        row.append(label, hidden, remove);
+        personalModels.append(row);
+        feedback.textContent = `已将 ${model} 加入我的模型；保存设置后生效。`;
+        updatePersonalModelState();
+        return true;
+      };
+
+      personalModels.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-remove-model]");
+        if (!button) return;
+        const row = button.closest("[data-personal-model]");
+        const model = row.dataset.modelId;
+        row.remove();
+        feedback.textContent = `已从列表移除 ${model}；保存设置后生效。`;
+        updatePersonalModelState();
+      });
+
+      addManualModel.addEventListener("click", () => {
+        if (addPersonalModel(manualModel.value)) manualModel.value = "";
+      });
+      manualModel.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        addManualModel.click();
+      });
 
       form.querySelector("[data-restore-system-prompt]")?.addEventListener("click", () => {
         prompt.value = promptTemplate.content.textContent.trim();
         prompt.focus();
       });
-      providerSelect.addEventListener("change", () => syncProvider({resetModel: true}));
-      syncProvider();
+      providerSelect.addEventListener("change", () => {
+        window.location.assign(`/settings/api?provider=${encodeURIComponent(providerSelect.value)}`);
+      });
+      syncProviderCapabilities();
+      updatePersonalModelState();
 
       loadButton.addEventListener("click", async () => {
         loadButton.disabled = true;
@@ -270,20 +390,38 @@
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || "读取模型失败");
-          const current = modelInput.value;
-          modelOptions.replaceChildren();
+          modelCatalog.replaceChildren();
           result.models.forEach((model) => {
-            const option = document.createElement("option");
-            option.value = model;
-            modelOptions.append(option);
+            const row = document.createElement("div");
+            row.className = "studio-catalog-model";
+            row.dataset.catalogModel = "";
+            row.dataset.modelId = model;
+            const name = document.createElement("code");
+            name.textContent = model;
+            const add = document.createElement("button");
+            add.className = "studio-button";
+            add.type = "button";
+            add.textContent = "加入";
+            add.addEventListener("click", () => addPersonalModel(model));
+            row.append(name, add);
+            modelCatalog.append(row);
           });
-          if (!current && result.models.length) modelInput.value = result.models[0];
-          feedback.textContent = `已读取 ${result.models.length} 个可用模型。`;
+          updatePersonalModelState();
+          feedback.textContent = `已读取 ${result.models.length} 个可用模型，请把需要的加入“我的模型”。`;
         } catch (error) {
           feedback.textContent = error.message || "读取模型失败，请检查 API Key。";
         } finally {
           loadButton.disabled = false;
         }
+      });
+
+      form.addEventListener("submit", (event) => {
+        const rows = personalModels.querySelectorAll("[data-personal-model]");
+        const selected = personalModels.querySelector("input[name=model]:checked");
+        if (rows.length && selected) return;
+        event.preventDefault();
+        feedback.textContent = "请至少加入并选择一个模型后再保存。";
+        feedback.scrollIntoView({block: "center", behavior: "smooth"});
       });
     });
   </script>

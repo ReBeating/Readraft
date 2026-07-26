@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS api_credentials (
-    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     base_url TEXT NOT NULL DEFAULT '',
     encrypted_key TEXT NOT NULL,
@@ -65,8 +65,10 @@ CREATE TABLE IF NOT EXISTS api_credentials (
     thinking INTEGER NOT NULL DEFAULT 0,
     reasoning_effort TEXT NOT NULL DEFAULT 'high',
     system_prompt TEXT NOT NULL DEFAULT '',
+    is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, provider)
 );
 
 CREATE TABLE IF NOT EXISTS novel_projects (
@@ -481,40 +483,124 @@ class Database:
             "stored_chars": int(row["stored_chars"] or 0),
         }
 
-    def get_api_credential(self, user_id: int) -> Optional[Dict[str, Any]]:
+    def get_api_credential(
+        self, user_id: int, provider: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT user_id, provider, base_url, encrypted_key, key_hint,
-                       model, thinking, reasoning_effort, system_prompt,
-                       created_at, updated_at
-                FROM api_credentials WHERE user_id=?
-                """,
-                (user_id,),
-            ).fetchone()
+            if provider:
+                row = connection.execute(
+                    """
+                    SELECT user_id, provider, base_url, encrypted_key, key_hint,
+                           model, thinking, reasoning_effort, system_prompt,
+                           is_default, created_at, updated_at
+                    FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT user_id, provider, base_url, encrypted_key, key_hint,
+                           model, thinking, reasoning_effort, system_prompt,
+                           is_default, created_at, updated_at
+                    FROM api_credentials
+                    WHERE user_id=?
+                    ORDER BY is_default DESC, updated_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
         return dict(row) if row else None
 
     def get_api_credential_summary(
-        self, user_id: int
+        self, user_id: int, provider: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         with self.connection() as connection:
-            row = connection.execute(
+            if provider:
+                row = connection.execute(
+                    """
+                    SELECT user_id, provider, base_url, key_hint, model,
+                           thinking, reasoning_effort, system_prompt,
+                           is_default, created_at, updated_at
+                    FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT user_id, provider, base_url, key_hint, model,
+                           thinking, reasoning_effort, system_prompt,
+                           is_default, created_at, updated_at
+                    FROM api_credentials
+                    WHERE user_id=?
+                    ORDER BY is_default DESC, updated_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+        return dict(row) if row else None
+
+    def list_api_credentials(self, user_id: int) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
                 """
                 SELECT user_id, provider, base_url, key_hint, model,
                        thinking, reasoning_effort, system_prompt,
-                       created_at, updated_at
-                FROM api_credentials WHERE user_id=?
+                       is_default, created_at, updated_at
+                FROM api_credentials
+                WHERE user_id=?
+                ORDER BY is_default DESC, updated_at DESC
                 """,
                 (user_id,),
-            ).fetchone()
-        return dict(row) if row else None
+            ).fetchall()
+        return [dict(row) for row in rows]
 
-    def has_api_credential(self, user_id: int) -> bool:
+    def list_api_models(
+        self, user_id: int, provider: Optional[str] = None
+    ) -> List[str]:
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM api_credentials WHERE user_id=? LIMIT 1",
-                (user_id,),
-            ).fetchone()
+            if provider:
+                rows = connection.execute(
+                    """
+                    SELECT model
+                    FROM api_models
+                    WHERE user_id=? AND provider=?
+                    ORDER BY position, created_at, model
+                    """,
+                    (user_id, provider),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT model
+                    FROM api_models
+                    WHERE user_id=?
+                    ORDER BY provider, position, created_at, model
+                    """,
+                    (user_id,),
+                ).fetchall()
+        return [str(row["model"]) for row in rows]
+
+    def has_api_credential(
+        self, user_id: int, provider: Optional[str] = None
+    ) -> bool:
+        with self.connection() as connection:
+            if provider:
+                row = connection.execute(
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=? LIMIT 1
+                    """,
+                    (user_id, provider),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT 1 FROM api_credentials WHERE user_id=? LIMIT 1",
+                    (user_id,),
+                ).fetchone()
         return row is not None
 
     def upsert_api_credential(
@@ -529,8 +615,13 @@ class Database:
         system_prompt: str = "",
         provider: str = "deepseek",
         base_url: str = "",
+        models: Optional[Iterable[str]] = None,
+        make_default: bool = True,
     ) -> None:
         now = utc_now()
+        selected_models = list(dict.fromkeys(str(item) for item in (models or [])))
+        if model not in selected_models:
+            selected_models.insert(0, model)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
@@ -538,15 +629,19 @@ class Database:
                 raise ValueError(
                     "有 AI 任务正在运行，请在任务结束后再修改 API 设置"
                 )
+            if make_default:
+                connection.execute(
+                    "UPDATE api_credentials SET is_default=0 WHERE user_id=?",
+                    (user_id,),
+                )
             connection.execute(
                 """
                 INSERT INTO api_credentials(
                     user_id, provider, base_url, encrypted_key, key_hint, model,
                     thinking, reasoning_effort, system_prompt,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    provider=excluded.provider,
+                    is_default, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, provider) DO UPDATE SET
                     base_url=excluded.base_url,
                     encrypted_key=excluded.encrypted_key,
                     key_hint=excluded.key_hint,
@@ -554,6 +649,7 @@ class Database:
                     thinking=excluded.thinking,
                     reasoning_effort=excluded.reasoning_effort,
                     system_prompt=excluded.system_prompt,
+                    is_default=excluded.is_default,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -566,13 +662,32 @@ class Database:
                     int(thinking),
                     reasoning_effort,
                     system_prompt,
+                    int(make_default),
                     now,
                     now,
                 ),
             )
+            if models is not None:
+                connection.execute(
+                    "DELETE FROM api_models WHERE user_id=? AND provider=?",
+                    (user_id, provider),
+                )
+            for position, selected_model in enumerate(selected_models):
+                connection.execute(
+                    """
+                    INSERT INTO api_models(
+                        user_id, provider, model, position, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, provider, model) DO UPDATE SET
+                        position=excluded.position
+                    """,
+                    (user_id, provider, selected_model, position, now),
+                )
             connection.commit()
 
-    def delete_api_credential(self, user_id: int) -> bool:
+    def delete_api_credential(
+        self, user_id: int, provider: Optional[str] = None
+    ) -> bool:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
@@ -580,9 +695,53 @@ class Database:
                 raise ValueError(
                     "有 AI 任务正在运行，请在任务结束后再删除 API Key"
                 )
-            cursor = connection.execute(
-                "DELETE FROM api_credentials WHERE user_id=?", (user_id,)
+            target = (
+                connection.execute(
+                    """
+                    SELECT provider, is_default FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
+                ).fetchone()
+                if provider
+                else connection.execute(
+                    """
+                    SELECT provider, is_default FROM api_credentials
+                    WHERE user_id=?
+                    ORDER BY is_default DESC, updated_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
             )
+            if not target:
+                connection.rollback()
+                return False
+            cursor = connection.execute(
+                """
+                DELETE FROM api_credentials
+                WHERE user_id=? AND provider=?
+                """,
+                (user_id, str(target["provider"])),
+            )
+            if bool(target["is_default"]):
+                replacement = connection.execute(
+                    """
+                    SELECT provider FROM api_credentials
+                    WHERE user_id=?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+                if replacement:
+                    connection.execute(
+                        """
+                        UPDATE api_credentials SET is_default=1
+                        WHERE user_id=? AND provider=?
+                        """,
+                        (user_id, str(replacement["provider"])),
+                    )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -2119,12 +2278,17 @@ class Database:
                 raise ValueError("整章写作任务不能指定场景")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError("个人 DeepSeek API Key 不存在，请重新配置")
+                    raise ValueError(
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
+                    )
             active = connection.execute(
                 """
                 SELECT id, chapter_id, operation, subject_id
@@ -2230,13 +2394,16 @@ class Database:
                 raise ValueError("只能从当前正史版本提取故事记忆")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             active = connection.execute(
                 """
@@ -2365,13 +2532,16 @@ class Database:
                 raise ValueError("章节不存在")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             active = connection.execute(
                 """
@@ -2502,13 +2672,16 @@ class Database:
                 raise ValueError("请先规划至少一章，再评估读者意见")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             active = connection.execute(
                 """
@@ -2630,13 +2803,16 @@ class Database:
                 raise ValueError("正文版本不存在")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             active = connection.execute(
                 """
@@ -2781,13 +2957,16 @@ class Database:
                 raise ValueError("请先确认作品声纹，再执行 AI 味编辑")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
                     raise ValueError(
-                        "个人 DeepSeek API Key 不存在，请重新配置"
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
             active = connection.execute(
                 """
@@ -3586,12 +3765,17 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             if credential_source == "personal":
                 credential = connection.execute(
-                    "SELECT 1 FROM api_credentials WHERE user_id=?",
-                    (user_id,),
+                    """
+                    SELECT 1 FROM api_credentials
+                    WHERE user_id=? AND provider=?
+                    """,
+                    (user_id, provider),
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError("个人 DeepSeek API Key 不存在，请重新配置")
+                    raise ValueError(
+                        "所选模型服务 API Key 或凭据不存在，请重新配置"
+                    )
             active = connection.execute(
                 """
                 SELECT id FROM analysis_jobs

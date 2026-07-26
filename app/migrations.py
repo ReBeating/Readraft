@@ -2723,6 +2723,124 @@ def _model_base_url_v27(
     )
 
 
+def _multi_provider_credentials_v28(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    credential_columns = _columns(connection, "api_credentials")
+    primary_key = [
+        str(row["name"])
+        for row in sorted(
+            connection.execute(
+                "PRAGMA table_info(api_credentials)"
+            ).fetchall(),
+            key=lambda row: int(row["pk"]),
+        )
+        if int(row["pk"]) > 0
+    ]
+    modern_schema = (
+        "is_default" in credential_columns
+        and primary_key == ["user_id", "provider"]
+    )
+    if not modern_schema:
+        connection.execute(
+            "ALTER TABLE api_credentials RENAME TO api_credentials_v27"
+        )
+        connection.execute(
+            """
+            CREATE TABLE api_credentials (
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL DEFAULT '',
+                encrypted_key TEXT NOT NULL,
+                key_hint TEXT NOT NULL,
+                model TEXT NOT NULL,
+                thinking INTEGER NOT NULL DEFAULT 0,
+                reasoning_effort TEXT NOT NULL DEFAULT 'high',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(user_id, provider)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO api_credentials(
+                user_id, provider, base_url, encrypted_key, key_hint, model,
+                thinking, reasoning_effort, system_prompt, is_default,
+                created_at, updated_at
+            )
+            SELECT user_id, provider, base_url, encrypted_key, key_hint, model,
+                   thinking, reasoning_effort, system_prompt, 1,
+                   created_at, updated_at
+            FROM api_credentials_v27
+            """
+        )
+        connection.execute("DROP TABLE api_credentials_v27")
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_models (
+            user_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, provider, model),
+            FOREIGN KEY(user_id, provider)
+                REFERENCES api_credentials(user_id, provider)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO api_models(
+            user_id, provider, model, position, created_at
+        )
+        SELECT user_id, provider, model, 0, ?
+        FROM api_credentials
+        """,
+        (applied_at,),
+    )
+    connection.execute(
+        "DROP INDEX IF EXISTS idx_api_credentials_one_default"
+    )
+    connection.execute(
+        """
+        UPDATE api_credentials AS credential
+        SET is_default = CASE
+            WHEN credential.provider = (
+                SELECT candidate.provider
+                FROM api_credentials AS candidate
+                WHERE candidate.user_id=credential.user_id
+                ORDER BY candidate.is_default DESC,
+                         candidate.updated_at DESC,
+                         candidate.provider
+                LIMIT 1
+            ) THEN 1
+            ELSE 0
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_api_credentials_one_default
+        ON api_credentials(user_id)
+        WHERE is_default=1
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_api_models_provider_position
+        ON api_models(user_id, provider, position)
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -2818,6 +2936,11 @@ MIGRATIONS = (
         27,
         "model_base_url_v27",
         _model_base_url_v27,
+    ),
+    Migration(
+        28,
+        "multi_provider_credentials_v28",
+        _multi_provider_credentials_v28,
     ),
 )
 
