@@ -4,6 +4,7 @@ import re
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -600,7 +601,10 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert page.status_code == 200
         assert "开启思考模式" not in page.text
         assert "思考强度" not in page.text
-        assert "系统会按任务自动选择快速、推理或深度推理策略" in page.text
+        assert "系统会按任务自动选择快速、推理或深度推理策略" not in page.text
+        assert "提示词层级" not in page.text
+        assert "隐私" not in page.text
+        assert "退出登录" not in page.text
         assert "通用模型适配策略" in page.text
         assert "全局系统提示词" not in page.text
         adapter_prompt = "受限时保留事件因果，改用非露骨叙述。"
@@ -638,6 +642,7 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert "sk-••••5678" in saved_page.text
         assert raw_key not in saved_page.text
         assert "data-api-key-toggle" in saved_page.text
+        assert 'aria-label="删除 DeepSeek 配置"' in saved_page.text
 
         revealed = client.post(
             "/api/settings/api-key",
@@ -670,7 +675,10 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
 
         response = client.post(
             "/settings/api/delete",
-            data={"csrf": csrf_from(saved_page.text)},
+            data={
+                "provider": "deepseek",
+                "csrf": csrf_from(saved_page.text),
+            },
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -987,6 +995,11 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
         assert compatible_key not in compatible_page.text
         assert "接口返回的模型" in compatible_page.text
         assert "加入我的模型" in compatible_page.text
+        assert 'aria-label="删除 DeepSeek 配置"' in compatible_page.text
+        assert (
+            'aria-label="删除 OpenAI 兼容接口 配置"'
+            in compatible_page.text
+        )
 
         user = application.state.database.get_user_by_username(
             "多服务商用户"
@@ -1181,11 +1194,31 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         assert 'class="studio-chat-input"' in workbench.text
         assert "studio-agent-switcher" not in workbench.text
         assert 'name="agent_role"' not in workbench.text
-        for export_path in (
-            f"/novels/{project_id}/export.txt",
-            f"/novels/{project_id}/export.novelai.zip",
-        ):
-            assert f'href="{export_path}"' in workbench.text
+        assert '<p class="studio-section-label">文件</p>' not in workbench.text
+        assert "导出正文" not in workbench.text
+        assert "导出作品归档" not in workbench.text
+        model_settings_url = (
+            "/settings/api?return_to="
+            + quote(workbench_url, safe="")
+        )
+        assert f'href="{model_settings_url}"' in workbench.text
+        settings_page = client.get(model_settings_url)
+        assert settings_page.status_code == 200
+        assert (
+            f'href="{workbench_url}" aria-label="返回上一页"'
+            in settings_page.text
+        )
+        assert "提示词层级" not in settings_page.text
+        assert "运行策略" not in settings_page.text
+        assert "隐私" not in settings_page.text
+        assert "退出登录" not in settings_page.text
+        unsafe_settings = client.get(
+            "/settings/api?return_to=https://example.com"
+        )
+        assert 'href="/dashboard" aria-label="返回上一页"' in (
+            unsafe_settings.text
+        )
+        assert "https://example.com" not in unsafe_settings.text
         for legacy_path in (
             f"/novels/{project_id}#story-planner",
             f"/novels/{project_id}/structure-health",
@@ -1460,6 +1493,12 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         dashboard = client.get("/dashboard")
         assert 'data-delete-project-form' in dashboard.text
         assert f'action="/novels/{project_id}/delete"' in dashboard.text
+        assert "退出登录" in dashboard.text
+        for export_path in (
+            f"/novels/{project_id}/export.txt",
+            f"/novels/{project_id}/export.novelai.zip",
+        ):
+            assert f'href="{export_path}"' in dashboard.text
         response = client.post(
             f"/novels/{project_id}/delete",
             data={"csrf": csrf_from(dashboard.text)},
@@ -1507,7 +1546,14 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
         )
         project_id = created.headers["location"].split("/")[2]
         workbench = client.get(created.headers["location"])
-        assert "导出作品归档" in workbench.text
+        assert "导出作品归档" not in workbench.text
+        dashboard = client.get("/dashboard")
+        assert "导出正文" in dashboard.text
+        assert "导出归档" in dashboard.text
+        assert (
+            f'href="/novels/{project_id}/export.novelai.zip"'
+            in dashboard.text
+        )
 
         exported = client.get(
             f"/novels/{project_id}/export.novelai.zip"

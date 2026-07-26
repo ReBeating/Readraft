@@ -293,6 +293,32 @@ body.studio-surface textarea {
   gap: 9px;
 }
 
+.studio-account,
+.studio-account form {
+  display: inline-flex;
+  align-items: center;
+}
+
+.studio-account {
+  gap: 9px;
+  margin-left: 4px;
+  padding-left: 13px;
+  border-left: 1px solid var(--studio-line);
+}
+
+.studio-account form {
+  margin: 0;
+}
+
+.studio-account-name {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--studio-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .studio-library {
   width: min(920px, calc(100% - 40px));
   margin-inline: auto;
@@ -397,6 +423,34 @@ body.studio-surface textarea {
   flex: 0 0 auto;
   margin: 0;
   padding-right: 3px;
+}
+
+.studio-book-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.studio-book-actions a {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--studio-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.studio-book-actions a:hover,
+.studio-book-actions a:focus-visible {
+  border-color: var(--studio-line);
+  color: var(--studio-accent-strong);
+  background: var(--studio-page);
 }
 
 .studio-delete-book {
@@ -2267,12 +2321,13 @@ body.studio-surface .studio-personal-model input[type="radio"] {
 
 .studio-provider-summary {
   display: grid;
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
   padding: 10px;
   border: 1px solid var(--studio-line);
   border-radius: 10px;
   color: var(--studio-muted);
-  text-decoration: none;
 }
 
 .studio-provider-summary:hover,
@@ -2281,7 +2336,15 @@ body.studio-surface .studio-personal-model input[type="radio"] {
   background: color-mix(in srgb, var(--studio-accent) 7%, transparent);
 }
 
-.studio-provider-summary strong {
+.studio-provider-summary-link {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.studio-provider-summary-link strong {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2289,7 +2352,7 @@ body.studio-surface .studio-personal-model input[type="radio"] {
   font-size: 12px;
 }
 
-.studio-provider-summary strong span {
+.studio-provider-summary-link strong span {
   padding: 2px 6px;
   border-radius: 999px;
   color: var(--studio-accent);
@@ -2297,20 +2360,28 @@ body.studio-surface .studio-personal-model input[type="radio"] {
   font-size: 9px;
 }
 
-.studio-provider-summary small {
+.studio-provider-summary-link small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.studio-danger-zone {
-  margin-top: 26px;
-  padding-top: 20px;
-  border-top: 1px solid var(--studio-line);
+.studio-provider-summary form {
+  margin: 0;
 }
 
-.studio-danger-zone button {
+.studio-provider-delete {
+  padding: 3px 1px;
+  border: 0;
   color: var(--studio-danger);
+  background: transparent;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.studio-provider-delete:hover,
+.studio-provider-delete:focus-visible {
+  text-decoration: underline;
 }
 
 @media (max-width: 1040px) {
@@ -2525,6 +2596,16 @@ body.studio-surface .studio-personal-model input[type="radio"] {
     flex-basis: 39px;
   }
 
+  .studio-account {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .studio-account-name {
+    display: none;
+  }
+
   .studio-library {
     width: min(100% - 28px, 920px);
     padding-top: 40px;
@@ -2555,6 +2636,22 @@ body.studio-surface .studio-personal-model input[type="radio"] {
 
   .studio-book-link strong {
     font-size: 19px;
+  }
+
+  .studio-project-row {
+    flex-wrap: wrap;
+    gap: 0;
+    padding-bottom: 11px;
+  }
+
+  .studio-project-row .studio-book-link {
+    flex-basis: 100%;
+    min-height: 72px;
+  }
+
+  .studio-project-row .studio-book-actions {
+    flex: 1;
+    padding-left: 3px;
   }
 
   .studio-chapter-footer {

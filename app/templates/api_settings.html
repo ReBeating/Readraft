@@ -2,7 +2,7 @@
 {% block title %}模型设置 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-7">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-8">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -11,7 +11,7 @@
 {% block content %}
   <div class="studio-settings-shell" data-studio-theme>
     <header class="studio-settings-header">
-      <a class="studio-icon-button" href="/dashboard" aria-label="返回书库">
+      <a class="studio-icon-button" href="{{ settings_back_url }}" aria-label="返回上一页">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="m15 18-6-6 6-6"></path>
         </svg>
@@ -32,6 +32,7 @@
       <div class="studio-api-main">
         <form method="post" action="/settings/api" class="studio-api-form" data-api-settings-form>
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="{{ return_to }}">
 
         {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
         {% if saved %}<div class="studio-alert success">设置已保存。</div>{% endif %}
@@ -177,6 +178,7 @@
         >
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="hidden" name="provider" value="{{ selected_provider }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
 
           {% if adapter_error %}<div class="studio-alert error">{{ adapter_error }}</div>{% endif %}
           {% if adapter_saved %}<div class="studio-alert success">通用模型适配策略已保存。</div>{% endif %}
@@ -207,17 +209,33 @@
           <p>已保存的服务商会分别保留凭据、接口地址和模型列表。</p>
           <div class="studio-provider-summaries">
             {% for item in credentials %}
-              <a
+              <div
                 class="studio-provider-summary {% if item.provider == selected_provider %}active{% endif %}"
-                href="/settings/api?provider={{ item.provider }}"
               >
-                <strong>
-                  {{ item.provider_spec.label }}
-                  {% if item.is_default %}<span>默认</span>{% endif %}
-                </strong>
-                <small>{{ item.key_hint }} · {{ item.models|length }} 个模型</small>
-                <small>{{ item.model }}</small>
-              </a>
+                <a class="studio-provider-summary-link" href="{{ item.settings_url }}">
+                  <strong>
+                    {{ item.provider_spec.label }}
+                    {% if item.is_default %}<span>默认</span>{% endif %}
+                  </strong>
+                  <small>{{ item.key_hint }} · {{ item.models|length }} 个模型</small>
+                  <small>{{ item.model }}</small>
+                </a>
+                <form
+                  method="post"
+                  action="/settings/api/delete"
+                  data-delete-provider-form
+                >
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <input type="hidden" name="provider" value="{{ item.provider }}">
+                  <input type="hidden" name="return_to" value="{{ return_to }}">
+                  <button
+                    class="studio-provider-delete"
+                    type="submit"
+                    aria-label="删除 {{ item.provider_spec.label }} 配置"
+                    title="删除配置"
+                  >删除</button>
+                </form>
+              </div>
             {% endfor %}
           </div>
         {% elif server_api_available %}
@@ -228,42 +246,12 @@
           <p>选择服务商、验证模型并保存后，即可开始真实创作任务。</p>
         {% endif %}
 
-        <h2>提示词层级</h2>
-        <p>基础执行边界 → 通用模型适配策略 → 本书补充指令 → 当前章节与对话。适配策略只负责模型受限时的降级方式，不改变 Agent 权限和输出契约。</p>
-
-        <h2>运行策略</h2>
-        <p>系统会按任务自动选择快速、推理或深度推理策略；模型不支持对应能力时使用服务商默认行为。</p>
-
-        <h2>隐私</h2>
-        <ul>
-          <li>凭据不会存进浏览器 Cookie。</li>
-          <li>官方 Provider 使用固定地址；Ollama 与 OpenAI 兼容接口只请求你保存的 Base URL。</li>
-          <li>生产环境默认禁止自定义接口访问本机或内网地址。</li>
-          <li>按任务发送必要的章节与设定，不会一次上传整本书。</li>
-        </ul>
-
-        {% if credential %}
-          <div class="studio-danger-zone">
-            <form method="post" action="/settings/api/delete">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="provider" value="{{ selected_provider }}">
-              <button class="studio-button" type="submit">删除 {{ selected_provider_spec.label }} 配置</button>
-            </form>
-          </div>
-        {% endif %}
-
-        <div class="studio-danger-zone">
-          <form method="post" action="/logout">
-            <input type="hidden" name="csrf" value="{{ csrf_token }}">
-            <button class="studio-button" type="submit">退出登录</button>
-          </form>
-        </div>
       </aside>
     </div>
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-1" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-2" defer></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
       const form = document.querySelector("[data-api-settings-form]");
@@ -463,7 +451,12 @@
       });
 
       providerSelect.addEventListener("change", () => {
-        window.location.assign(`/settings/api?provider=${encodeURIComponent(providerSelect.value)}`);
+        const params = new URLSearchParams({provider: providerSelect.value});
+        const returnTo = form.elements.return_to.value;
+        if (returnTo && returnTo !== "/dashboard") {
+          params.set("return_to", returnTo);
+        }
+        window.location.assign(`/settings/api?${params.toString()}`);
       });
       syncProviderCapabilities();
       updatePersonalModelState();

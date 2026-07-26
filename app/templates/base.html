@@ -20,7 +20,7 @@
           <nav class="nav-actions" aria-label="主导航">
             <a href="/dashboard">创作</a>
             <a href="/techniques">技法库</a>
-            <a href="/settings/api">API 设置</a>
+            <a href="{{ model_settings_url }}">API 设置</a>
             <a class="button small" href="/upload">拆文工具</a>
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -35,11 +35,11 @@
     {% block status_banner %}
     {% if using_mock and user %}
       <div class="mock-banner">
-        <div class="shell">当前为测试模型模式；你可以在 <a href="/settings/api">模型设置</a> 中连接真实模型，生成正式正文。</div>
+        <div class="shell">当前为测试模型模式；你可以在 <a href="{{ model_settings_url }}">模型设置</a> 中连接真实模型，生成正式正文。</div>
       </div>
     {% elif api_missing and user %}
       <div class="mock-banner">
-        <div class="shell">尚未配置模型服务，<a href="/settings/api">现在设置</a> 后即可开始 AI 写作。</div>
+        <div class="shell">尚未配置模型服务，<a href="{{ model_settings_url }}">现在设置</a> 后即可开始 AI 写作。</div>
       </div>
     {% endif %}
     {% endblock %}

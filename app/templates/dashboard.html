@@ -2,7 +2,7 @@
 {% block title %}我的书 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-7">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-8">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -28,11 +28,22 @@
             <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
           </svg>
         </button>
-        <a class="studio-icon-button" href="/settings/api" aria-label="模型设置">
+        <a class="studio-icon-button" href="{{ model_settings_url }}" aria-label="模型设置">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
           </svg>
         </a>
+        <div class="studio-account">
+          <span class="studio-account-name">{{ user.username }}</span>
+          <form method="post" action="/logout">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="studio-icon-button" type="submit" aria-label="退出登录" title="退出登录">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"></path>
+              </svg>
+            </button>
+          </form>
+        </div>
       </div>
     </header>
 
@@ -61,7 +72,7 @@
         {% if projects %}
           <div class="studio-book-list">
             {% for project in projects %}
-              <div class="studio-book-row">
+              <div class="studio-book-row studio-project-row">
                 <a class="studio-book-link" href="/novels/{{ project.id }}/workbench">
                   <span>
                     <strong>{{ project.title or '未命名作品' }}</strong>
@@ -69,6 +80,10 @@
                   </span>
                   <span aria-hidden="true">›</span>
                 </a>
+                <nav class="studio-book-actions" aria-label="《{{ project.title or '未命名作品' }}》文件操作">
+                  <a href="/novels/{{ project.id }}/export.txt">导出正文</a>
+                  <a href="/novels/{{ project.id }}/export.novelai.zip">导出归档</a>
+                </nav>
                 <form class="studio-delete-book-form" data-delete-project-form method="post" action="/novels/{{ project.id }}/delete">
                   <input type="hidden" name="csrf" value="{{ csrf_token }}">
                   <button class="studio-delete-book" type="submit" aria-label="删除《{{ project.title or '未命名作品' }}》" title="删除作品">
@@ -127,5 +142,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-1" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-2" defer></script>
 {% endblock %}

@@ -128,6 +128,12 @@
     confirmLabel: "删除对话",
   });
 
+  bindDestructiveConfirmation("[data-delete-provider-form]", {
+    title: "删除这个模型配置？",
+    message: "保存的凭据、接口地址和模型列表都会被永久删除。",
+    confirmLabel: "删除配置",
+  });
+
   const workbench = document.querySelector("[data-workbench]");
   if (!workbench) return;
 

@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from fastapi import FastAPI, File, Form, Request, UploadFile, status
 from fastapi.responses import (
@@ -231,10 +231,42 @@ def _login_redirect(request: Request) -> RedirectResponse:
     )
 
 
-def _safe_next(value: str) -> str:
-    if value.startswith("/") and not value.startswith("//"):
-        return value
-    return "/"
+def _safe_next(value: str, fallback: str = "/") -> str:
+    clean_value = str(value or "").strip()
+    if (
+        not clean_value.startswith("/")
+        or clean_value.startswith("//")
+        or "\\" in clean_value
+        or any(ord(character) < 32 for character in clean_value)
+    ):
+        return fallback
+    parsed = urlsplit(clean_value)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+        return fallback
+    return clean_value
+
+
+def _request_relative_url(request: Request) -> str:
+    path = request.url.path
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+    return _safe_next(path, "/dashboard")
+
+
+def _api_settings_path(
+    *,
+    return_to: str = "/dashboard",
+    **params: Any,
+) -> str:
+    query = [
+        (key, str(value))
+        for key, value in params.items()
+        if value is not None
+    ]
+    safe_return_to = _safe_next(return_to, "/dashboard")
+    if safe_return_to != "/dashboard":
+        query.append(("return_to", safe_return_to))
+    return "/settings/api" + (f"?{urlencode(query)}" if query else "")
 
 
 def _workbench_path(
@@ -291,6 +323,9 @@ def _template_context(
             and not using_mock
         ),
         "personal_api_configured": personal_api_configured,
+        "model_settings_url": _api_settings_path(
+            return_to=_request_relative_url(request)
+        ),
         **extra,
     }
 
@@ -1513,9 +1548,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         models: Optional[list[str]] = None,
+        return_to: str = "/dashboard",
         status_code: int = status.HTTP_200_OK,
     ):
         user_id = int(user["id"])
+        safe_return_to = _safe_next(return_to, "/dashboard")
         default_credential = database.get_api_credential_summary(user_id)
         current_provider = provider or (
             str(default_credential["provider"])
@@ -1548,6 +1585,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             summary["provider_spec"] = item_provider
             summary["models"] = database.list_api_models(
                 user_id, str(item["provider"])
+            )
+            summary["settings_url"] = _api_settings_path(
+                provider=str(item["provider"]),
+                return_to=safe_return_to,
             )
             credential_summaries.append(summary)
         current_base_url = (
@@ -1609,6 +1650,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 selected_models=current_models,
                 model_adapter_prompt=current_adapter_prompt,
                 server_api_available=bool(app_settings.deepseek_api_key),
+                settings_back_url=safe_return_to,
+                return_to=safe_return_to,
             ),
             status_code=status_code,
         )
@@ -1621,6 +1664,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         adapter_saved: bool = False,
         error: Optional[str] = None,
         provider: Optional[str] = None,
+        return_to: str = "/dashboard",
     ):
         user = _current_user(request)
         if not user:
@@ -1633,6 +1677,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             removed=removed,
             adapter_saved=adapter_saved,
             provider=provider,
+            return_to=return_to,
         )
 
     @application.post("/settings/api", response_class=HTMLResponse)
@@ -1643,6 +1688,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         base_url: str = Form(""),
         model: str = Form(""),
         models: list[str] = Form([]),
+        return_to: str = Form("/dashboard"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1706,10 +1752,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 base_url=base_url,
                 model=model,
                 models=models,
+                return_to=return_to,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         return RedirectResponse(
-            "/settings/api?saved=true", status_code=status.HTTP_303_SEE_OTHER
+            _api_settings_path(saved="true", return_to=return_to),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post(
@@ -1720,6 +1768,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         model_adapter_prompt: str = Form(""),
         provider: str = Form("deepseek"),
+        return_to: str = Form("/dashboard"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1743,15 +1792,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 adapter_error=str(exc),
                 model_adapter_prompt=model_adapter_prompt,
                 provider=provider,
+                return_to=return_to,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         return RedirectResponse(
-            "/settings/api?"
-            + urlencode(
-                {
-                    "provider": current_provider,
-                    "adapter_saved": "true",
-                }
+            _api_settings_path(
+                provider=current_provider,
+                adapter_saved="true",
+                return_to=return_to,
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -1885,6 +1933,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def delete_api_settings(
         request: Request,
         provider: str = Form(""),
+        return_to: str = Form("/dashboard"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1896,11 +1945,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             database.delete_api_credential(int(user["id"]), provider_id)
         except ValueError as exc:
             return RedirectResponse(
-                "/settings/api?error=" + quote(str(exc)),
+                _api_settings_path(
+                    error=str(exc),
+                    return_to=return_to,
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            "/settings/api?removed=true", status_code=status.HTTP_303_SEE_OTHER
+            _api_settings_path(removed="true", return_to=return_to),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.get("/dashboard", response_class=HTMLResponse)

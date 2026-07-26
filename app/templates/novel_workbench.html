@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-7">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-8">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -64,16 +64,6 @@
         <a class="studio-directory-link {% if view == 'settings' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=settings{% if chapter %}&chapter_id={{ chapter.id }}{% endif %}" data-save-before-navigation>
           <span>设定</span>
           <small>›</small>
-        </a>
-
-        <p class="studio-section-label">文件</p>
-        <a class="studio-directory-link" href="/novels/{{ project.id }}/export.txt" data-save-before-navigation>
-          <span>导出正文</span>
-          <small>⇩</small>
-        </a>
-        <a class="studio-directory-link" href="/novels/{{ project.id }}/export.novelai.zip" data-save-before-navigation>
-          <span>导出作品归档</span>
-          <small>⇩</small>
         </a>
 
         <p class="studio-section-label">章节</p>
@@ -797,7 +787,7 @@
                 {% endif %}
               </select>
             </label>
-            <a href="/settings/api">管理模型</a>
+            <a href="{{ model_settings_url }}" data-save-before-navigation>管理模型</a>
           </div>
           <div class="studio-chat-quote" data-quote-preview hidden>
             <span>已引用正文</span>
@@ -820,5 +810,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-1" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-2" defer></script>
 {% endblock %}
