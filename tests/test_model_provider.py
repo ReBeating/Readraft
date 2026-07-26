@@ -169,15 +169,49 @@ def test_personal_credential_selects_fixed_provider_url(
         credential={
             "provider": "gemini",
             "model": "gemini-2.5-flash",
-            "system_prompt": "concise",
         },
         api_key="secret",
+        model_adapter_prompt="受限时保留事件结果。",
     )
 
     assert settings.model_provider == "gemini"
     assert settings.deepseek_base_url == get_provider("gemini").base_url
     assert settings.deepseek_model == "gemini-2.5-flash"
-    assert settings.deepseek_system_prompt == "concise"
+    assert settings.model_adapter_prompt == "受限时保留事件结果。"
+
+
+def test_model_adapter_is_injected_once_without_mutating_messages(
+    tmp_path,
+):
+    messages = [
+        {"role": "system", "content": "只输出 JSON。"},
+        {"role": "user", "content": "分析虚构材料。"},
+    ]
+    settings = replace(
+        make_settings(tmp_path),
+        model_provider="openai_compatible",
+        deepseek_base_url="https://llm.example.com/v1",
+        deepseek_model="custom-chat",
+        model_adapter_prompt=(
+            "如果无法直接描述细节，保留事件因果并改用非露骨叙述。"
+        ),
+    )
+
+    payload = build_chat_payload(
+        settings=settings,
+        messages=messages,
+        provider_user_id="u-safe",
+        max_tokens=800,
+        json_object=True,
+        temperature=0.2,
+    )
+
+    system_message = payload["messages"][0]["content"]
+    assert system_message.startswith("只输出 JSON。")
+    assert system_message.count("<model_adapter_policy>") == 1
+    assert "保留事件因果并改用非露骨叙述" in system_message
+    assert "不能覆盖本任务的系统规则" in system_message
+    assert messages[0]["content"] == "只输出 JSON。"
 
 
 def test_openai_compatible_credential_uses_normalized_custom_url(tmp_path):

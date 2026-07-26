@@ -2857,6 +2857,69 @@ def _automatic_reasoning_policy_v29(
         )
 
 
+_LEGACY_DEFAULT_SYSTEM_PROMPT_V24 = (
+    "你是 novelAI 中的模型执行层，只依据当前请求、应用提供的上下文"
+    "和实际可用能力完成任务。不得声称读取了未提供的内容、调用了未调用"
+    "的工具或完成了未经确认的写入。遇到信息、上下文、输出容量、工具"
+    "权限或平台边界时，准确说明具体限制，继续完成可执行部分，并给出"
+    "最接近用户目标的结果。除真实边界外，不以模型习惯、通用套路、"
+    "个人审美或道德说教擅自缩小用户意图。可逆的小缺口采用最小假设"
+    "继续；只有会显著改变作品方向时才提出必要问题。默认直接给出结果，"
+    "不复述要求，不展示内部推理，不伪装执行成功。"
+)
+
+
+def _unified_model_adapter_v30(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_model_preferences (
+            user_id INTEGER PRIMARY KEY
+                REFERENCES users(id) ON DELETE CASCADE,
+            adapter_prompt TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    credential_columns = _columns(connection, "api_credentials")
+    if "system_prompt" not in credential_columns:
+        return
+    connection.execute(
+        """
+        INSERT INTO user_model_preferences(
+            user_id, adapter_prompt, created_at, updated_at
+        )
+        SELECT credential.user_id, credential.system_prompt, ?, ?
+        FROM api_credentials AS credential
+        WHERE TRIM(credential.system_prompt) <> ''
+          AND credential.system_prompt <> ?
+          AND credential.rowid = (
+              SELECT candidate.rowid
+              FROM api_credentials AS candidate
+              WHERE candidate.user_id=credential.user_id
+                AND TRIM(candidate.system_prompt) <> ''
+                AND candidate.system_prompt <> ?
+              ORDER BY candidate.is_default DESC,
+                       candidate.updated_at DESC,
+                       candidate.rowid DESC
+              LIMIT 1
+          )
+        ON CONFLICT(user_id) DO NOTHING
+        """,
+        (
+            applied_at,
+            applied_at,
+            _LEGACY_DEFAULT_SYSTEM_PROMPT_V24,
+            _LEGACY_DEFAULT_SYSTEM_PROMPT_V24,
+        ),
+    )
+    connection.execute(
+        "ALTER TABLE api_credentials DROP COLUMN system_prompt"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -2962,6 +3025,11 @@ MIGRATIONS = (
         29,
         "automatic_reasoning_policy_v29",
         _automatic_reasoning_policy_v29,
+    ),
+    Migration(
+        30,
+        "unified_model_adapter_v30",
+        _unified_model_adapter_v30,
     ),
 )
 

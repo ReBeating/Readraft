@@ -601,6 +601,25 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert "开启思考模式" not in page.text
         assert "思考强度" not in page.text
         assert "系统会按任务自动选择快速、推理或深度推理策略" in page.text
+        assert "通用模型适配策略" in page.text
+        assert "全局系统提示词" not in page.text
+        adapter_prompt = "受限时保留事件因果，改用非露骨叙述。"
+        response = client.post(
+            "/settings/model-adapter",
+            data={
+                "provider": "deepseek",
+                "model_adapter_prompt": adapter_prompt,
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == (
+            "/settings/api?provider=deepseek&adapter_saved=true"
+        )
+        page = client.get(response.headers["location"])
+        assert "通用模型适配策略已保存" in page.text
+        assert adapter_prompt in page.text
         raw_key = "sk-personal-secret-5678"
         response = client.post(
             "/settings/api",
@@ -634,12 +653,19 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
 
         user = application.state.database.get_user_by_username("个人API用户")
         credential = application.state.database.get_api_credential(user["id"])
+        assert "system_prompt" not in credential
         assert raw_key not in credential["encrypted_key"]
         assert (
             application.state.credential_cipher.decrypt(
                 credential["encrypted_key"]
             )
             == raw_key
+        )
+        assert (
+            application.state.database.get_model_adapter_prompt(
+                user["id"]
+            )
+            == adapter_prompt
         )
 
         response = client.post(
@@ -649,6 +675,12 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         )
         assert response.status_code == 303
         assert application.state.database.get_api_credential(user["id"]) is None
+        assert (
+            application.state.database.get_model_adapter_prompt(
+                user["id"]
+            )
+            == adapter_prompt
+        )
 
 
 def test_api_key_reveal_is_scoped_to_current_user_and_provider(tmp_path):
@@ -892,6 +924,18 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
         assert response.status_code == 303
 
         page = client.get("/settings/api")
+        adapter_prompt = "所有模型受限时均保留事件结果和人物后果。"
+        response = client.post(
+            "/settings/model-adapter",
+            data={
+                "provider": "deepseek",
+                "model_adapter_prompt": adapter_prompt,
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        page = client.get(response.headers["location"])
         deepseek_key = "sk-deepseek-provider-5678"
         response = client.post(
             "/settings/api",
@@ -910,6 +954,7 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
             "/settings/api?provider=openai_compatible"
         )
         assert "还没有模型" in compatible_page.text
+        assert adapter_prompt in compatible_page.text
         compatible_key = "compatible-provider-key-9012"
         response = client.post(
             "/settings/api",
@@ -926,6 +971,7 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
         assert response.status_code == 303
 
         deepseek_page = client.get("/settings/api?provider=deepseek")
+        assert adapter_prompt in deepseek_page.text
         assert "已保存：sk-••••5678（留空保留）" in deepseek_page.text
         assert 'name="models" value="deepseek-chat"' in deepseek_page.text
         assert 'name="models" value="deepseek-reasoner"' in deepseek_page.text

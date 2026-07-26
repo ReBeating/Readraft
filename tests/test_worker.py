@@ -48,6 +48,9 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
     user_id = database.create_user("worker-user", hash_password("password-123"))
     cipher = CredentialCipher(settings.credential_secret)
     raw_key = "sk-worker-personal-2468"
+    database.upsert_model_adapter_prompt(
+        user_id, "受限时保留事件因果并降低细节。"
+    )
     database.upsert_api_credential(
         user_id=user_id,
         encrypted_key=cipher.encrypt(raw_key),
@@ -73,6 +76,7 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
             seen["model"] = personal_settings.deepseek_model
             seen["thinking"] = personal_settings.deepseek_thinking
             seen["effort"] = personal_settings.deepseek_reasoning_effort
+            seen["adapter"] = personal_settings.model_adapter_prompt
 
     monkeypatch.setattr("app.worker.DeepSeekAnalyzer", FakePersonalAnalyzer)
 
@@ -104,6 +108,7 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         "model": "deepseek-v4-pro",
         "thinking": True,
         "effort": "high",
+        "adapter": "受限时保留事件因果并降低细节。",
     }
 
 

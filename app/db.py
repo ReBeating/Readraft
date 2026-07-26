@@ -62,11 +62,17 @@ CREATE TABLE IF NOT EXISTS api_credentials (
     encrypted_key TEXT NOT NULL,
     key_hint TEXT NOT NULL,
     model TEXT NOT NULL,
-    system_prompt TEXT NOT NULL DEFAULT '',
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY(user_id, provider)
+);
+
+CREATE TABLE IF NOT EXISTS user_model_preferences (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    adapter_prompt TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS novel_projects (
@@ -489,8 +495,7 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, encrypted_key, key_hint,
-                           model, system_prompt,
-                           is_default, created_at, updated_at
+                           model, is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=? AND provider=?
                     """,
@@ -500,8 +505,7 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, encrypted_key, key_hint,
-                           model, system_prompt,
-                           is_default, created_at, updated_at
+                           model, is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=?
                     ORDER BY is_default DESC, updated_at DESC
@@ -519,7 +523,6 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, key_hint, model,
-                           system_prompt,
                            is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=? AND provider=?
@@ -530,7 +533,6 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, key_hint, model,
-                           system_prompt,
                            is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=?
@@ -546,7 +548,6 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT user_id, provider, base_url, key_hint, model,
-                       system_prompt,
                        is_default, created_at, updated_at
                 FROM api_credentials
                 WHERE user_id=?
@@ -582,6 +583,42 @@ class Database:
                 ).fetchall()
         return [str(row["model"]) for row in rows]
 
+    def get_model_adapter_prompt(self, user_id: int) -> Optional[str]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT adapter_prompt
+                FROM user_model_preferences
+                WHERE user_id=?
+                """,
+                (user_id,),
+            ).fetchone()
+        return str(row["adapter_prompt"]) if row else None
+
+    def upsert_model_adapter_prompt(
+        self, user_id: int, adapter_prompt: str
+    ) -> None:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if has_active_user_ai_task(connection, user_id):
+                connection.rollback()
+                raise ValueError(
+                    "有 AI 任务正在运行，请在任务结束后再修改模型适配策略"
+                )
+            connection.execute(
+                """
+                INSERT INTO user_model_preferences(
+                    user_id, adapter_prompt, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    adapter_prompt=excluded.adapter_prompt,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, adapter_prompt, now, now),
+            )
+            connection.commit()
+
     def has_api_credential(
         self, user_id: int, provider: Optional[str] = None
     ) -> bool:
@@ -608,7 +645,6 @@ class Database:
         encrypted_key: str,
         key_hint: str,
         model: str,
-        system_prompt: str = "",
         provider: str = "deepseek",
         base_url: str = "",
         models: Optional[Iterable[str]] = None,
@@ -634,14 +670,13 @@ class Database:
                 """
                 INSERT INTO api_credentials(
                     user_id, provider, base_url, encrypted_key, key_hint, model,
-                    system_prompt, is_default, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_default, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, provider) DO UPDATE SET
                     base_url=excluded.base_url,
                     encrypted_key=excluded.encrypted_key,
                     key_hint=excluded.key_hint,
                     model=excluded.model,
-                    system_prompt=excluded.system_prompt,
                     is_default=excluded.is_default,
                     updated_at=excluded.updated_at
                 """,
@@ -652,7 +687,6 @@ class Database:
                     encrypted_key,
                     key_hint,
                     model,
-                    system_prompt,
                     int(make_default),
                     now,
                     now,

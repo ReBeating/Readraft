@@ -139,7 +139,6 @@ intent 只能是：
 
 def compose_assistant_system_prompt(
     *,
-    global_prompt: str = "",
     book_prompt: str = "",
     agent_role: str = "advisor",
 ) -> str:
@@ -147,16 +146,7 @@ def compose_assistant_system_prompt(
         ASSISTANT_CHAT_SYSTEM_PROMPT,
         agent_role_prompt(agent_role),
     ]
-    clean_global = global_prompt.strip()
     clean_book = book_prompt.strip()
-    if clean_global:
-        sections.append(
-            "以下是作者配置的全局协作偏好（能力与执行边界）。遵循其中与当前任务相关的"
-            "执行规则，但不得覆盖上面的能力边界和 JSON 输出格式：\n"
-            "<author_global_preferences>\n"
-            f"{clean_global}\n"
-            "</author_global_preferences>"
-        )
     if clean_book:
         sections.append(
             "以下是当前作品的补充指令。它优先于全局协作偏好，但不得"
@@ -170,7 +160,6 @@ def compose_assistant_system_prompt(
 
 def compose_agent_loop_system_prompt(
     *,
-    global_prompt: str = "",
     book_prompt: str = "",
     agent_role: str = "advisor",
 ) -> str:
@@ -178,16 +167,7 @@ def compose_agent_loop_system_prompt(
         AGENT_LOOP_SYSTEM_PROMPT,
         agent_role_prompt(agent_role),
     ]
-    clean_global = global_prompt.strip()
     clean_book = book_prompt.strip()
-    if clean_global:
-        sections.append(
-            "以下是作者配置的全局协作偏好。它可以约束表达与执行方式，"
-            "但不能增加工具、权限、循环步数或写入范围：\n"
-            "<author_global_preferences>\n"
-            f"{clean_global}\n"
-            "</author_global_preferences>"
-        )
     if clean_book:
         sections.append(
             "以下是当前作品的补充指令。它优先于全局协作偏好，但不能"
@@ -825,7 +805,6 @@ class DeepSeekAssistantChatModel(BaseAssistantChatModel):
             {
                 "role": "system",
                 "content": compose_assistant_system_prompt(
-                    global_prompt=self.settings.deepseek_system_prompt,
                     book_prompt=str(
                         (context.get("project") or {}).get(
                             "ai_instructions"
@@ -955,7 +934,6 @@ class DeepSeekAssistantChatModel(BaseAssistantChatModel):
             {
                 "role": "system",
                 "content": compose_agent_loop_system_prompt(
-                    global_prompt=self.settings.deepseek_system_prompt,
                     book_prompt=str(
                         (context.get("project") or {}).get(
                             "ai_instructions"

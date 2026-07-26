@@ -10,6 +10,7 @@ from app.credentials import (
     validate_model,
 )
 from app.db import SCHEMA, Database
+from app.migrations import _LEGACY_DEFAULT_SYSTEM_PROMPT_V24
 from app.security import hash_password
 from app.style_service import StyleService
 
@@ -39,18 +40,25 @@ def test_api_credential_database_never_stores_plaintext(tmp_path: Path):
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-flash",
-        system_prompt="减少解释性总结。",
         base_url="https://api.deepseek.com",
+    )
+    database.upsert_model_adapter_prompt(
+        user_id, "减少解释性总结。"
     )
 
     stored = database.get_api_credential(user_id)
     assert stored is not None
     assert raw_key not in stored["encrypted_key"]
     assert stored["key_hint"] == "sk-••••9876"
-    assert stored["system_prompt"] == "减少解释性总结。"
+    assert "system_prompt" not in stored
     assert stored["base_url"] == "https://api.deepseek.com"
     assert cipher.decrypt(stored["encrypted_key"]) == raw_key
+    assert (
+        database.get_model_adapter_prompt(user_id)
+        == "减少解释性总结。"
+    )
     assert database.get_api_credential(other_user_id) is None
+    assert database.get_model_adapter_prompt(other_user_id) is None
 
 
 def test_credential_input_validation():
@@ -165,6 +173,7 @@ def test_v27_credential_is_migrated_to_provider_collection(tmp_path: Path):
     assert credential["encrypted_key"] == "encrypted-secret"
     assert credential["is_default"] == 1
     assert database.list_api_models(7, "deepseek") == ["deepseek-chat"]
+    assert database.get_model_adapter_prompt(7) == "保持克制"
     with database.connection() as connection:
         primary_key = [
             row["name"]
@@ -182,6 +191,7 @@ def test_v27_credential_is_migrated_to_provider_collection(tmp_path: Path):
         }
         assert "thinking" not in credential_columns
         assert "reasoning_effort" not in credential_columns
+        assert "system_prompt" not in credential_columns
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -200,7 +210,11 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
             "ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'high'"
         )
         connection.execute(
-            "DELETE FROM schema_migrations WHERE version=29"
+            "ALTER TABLE api_credentials "
+            "ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''"
+        )
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version IN (29, 30)"
         )
         connection.execute(
             """
@@ -218,7 +232,7 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
                 system_prompt, is_default, created_at, updated_at,
                 thinking, reasoning_effort
             ) VALUES (
-                9, ?, ?, ?, ?, ?, '', ?,
+                9, ?, ?, ?, ?, ?, ?, ?,
                 '2026-01-01T00:00:00+00:00',
                 '2026-01-01T00:00:00+00:00', ?, ?
             )
@@ -230,6 +244,7 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
                     "encrypted-deepseek",
                     "sk-••••deep",
                     "deepseek-chat",
+                    "保留",
                     0,
                     1,
                     "max",
@@ -240,6 +255,7 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
                     "encrypted-compatible",
                     "sk-••••comp",
                     "writer-pro",
+                    _LEGACY_DEFAULT_SYSTEM_PROMPT_V24,
                     1,
                     0,
                     "high",
@@ -259,6 +275,31 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
                 ("openai_compatible", "writer-pro"),
             ],
         )
+        connection.execute(
+            """
+            INSERT INTO users(id, username, password_hash, created_at)
+            VALUES (
+                10, 'legacy-default-only', 'password-hash',
+                '2026-01-01T00:00:00+00:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO api_credentials(
+                user_id, provider, base_url, encrypted_key, key_hint, model,
+                system_prompt, is_default, created_at, updated_at,
+                thinking, reasoning_effort
+            ) VALUES (
+                10, 'openai_compatible', 'https://models.example.com/v1',
+                'encrypted-default-only', 'sk-••••only', 'writer-fast',
+                ?, 1,
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', 0, 'high'
+            )
+            """,
+            (_LEGACY_DEFAULT_SYSTEM_PROMPT_V24,),
+        )
         connection.commit()
 
     database.initialize()
@@ -277,6 +318,17 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
     assert database.list_api_models(9, "openai_compatible") == [
         "writer-pro"
     ]
+    assert (
+        database.get_model_adapter_prompt(9)
+        == "保留"
+    )
+    assert database.get_model_adapter_prompt(10) is None
+    assert (
+        database.get_api_credential(
+            10, "openai_compatible"
+        )["encrypted_key"]
+        == "encrypted-default-only"
+    )
     with database.connection() as connection:
         columns = {
             row["name"]
@@ -286,6 +338,7 @@ def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
         }
         assert "thinking" not in columns
         assert "reasoning_effort" not in columns
+        assert "system_prompt" not in columns
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -311,6 +364,7 @@ def test_active_voice_task_protects_credentials_and_project(tmp_path: Path):
         key_hint="sk-••••test",
         model="deepseek-v4-flash",
     )
+    database.upsert_model_adapter_prompt(user_id, "原适配策略")
     StyleService(database).create_voice_suggestion(
         user_id=user_id,
         project_id=project_id,
@@ -331,8 +385,11 @@ def test_active_voice_task_protects_credentials_and_project(tmp_path: Path):
         )
     with pytest.raises(ValueError, match="任务正在运行"):
         database.delete_api_credential(user_id)
+    with pytest.raises(ValueError, match="任务正在运行"):
+        database.upsert_model_adapter_prompt(user_id, "新适配策略")
     with pytest.raises(ValueError, match="正在排队或运行"):
         database.delete_novel_project(user_id, project_id)
 
     assert database.get_api_credential(user_id)["key_hint"] == "sk-••••test"
+    assert database.get_model_adapter_prompt(user_id) == "原适配策略"
     assert database.get_novel_project(user_id, project_id) is not None

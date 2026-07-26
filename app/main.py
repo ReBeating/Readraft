@@ -53,7 +53,6 @@ from .context_compiler import (
 from .credentials import (
     CredentialCipher,
     CredentialError,
-    DEFAULT_SYSTEM_PROMPT,
     key_hint,
     validate_api_key,
     validate_model,
@@ -1507,10 +1506,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         error: Optional[str] = None,
         saved: bool = False,
         removed: bool = False,
+        adapter_saved: bool = False,
+        adapter_error: Optional[str] = None,
+        model_adapter_prompt: Optional[str] = None,
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        system_prompt: Optional[str] = None,
         models: Optional[list[str]] = None,
         status_code: int = status.HTTP_200_OK,
     ):
@@ -1576,16 +1577,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         if current_model and current_model not in current_models:
             current_models.insert(0, current_model)
-        current_system_prompt = (
-            system_prompt
-            if system_prompt is not None
+        stored_adapter_prompt = database.get_model_adapter_prompt(user_id)
+        current_adapter_prompt = (
+            model_adapter_prompt
+            if model_adapter_prompt is not None
             else (
-                str(credential.get("system_prompt") or "")
-                if credential
-                else (
-                    app_settings.deepseek_system_prompt
-                    or DEFAULT_SYSTEM_PROMPT
-                )
+                stored_adapter_prompt
+                if stored_adapter_prompt is not None
+                else app_settings.model_adapter_prompt
             )
         )
         return render_template(
@@ -1604,10 +1603,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 error=error,
                 saved=saved,
                 removed=removed,
+                adapter_saved=adapter_saved,
+                adapter_error=adapter_error,
                 selected_model=current_model,
                 selected_models=current_models,
-                selected_system_prompt=current_system_prompt,
-                default_system_prompt=DEFAULT_SYSTEM_PROMPT,
+                model_adapter_prompt=current_adapter_prompt,
                 server_api_available=bool(app_settings.deepseek_api_key),
             ),
             status_code=status_code,
@@ -1618,6 +1618,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         saved: bool = False,
         removed: bool = False,
+        adapter_saved: bool = False,
         error: Optional[str] = None,
         provider: Optional[str] = None,
     ):
@@ -1630,6 +1631,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             error=error,
             saved=saved,
             removed=removed,
+            adapter_saved=adapter_saved,
             provider=provider,
         )
 
@@ -1641,7 +1643,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         base_url: str = Form(""),
         model: str = Form(""),
         models: list[str] = Form([]),
-        system_prompt: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1666,11 +1667,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 clean_models.insert(0, clean_model)
             if len(clean_models) > 100:
                 raise CredentialError("每个服务商最多保存 100 个模型")
-            clean_system_prompt = _clean_field(
-                system_prompt,
-                "全局系统提示词",
-                max_length=20_000,
-            )
             existing = database.get_api_credential(
                 int(user["id"]), provider_spec.id
             )
@@ -1699,7 +1695,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 encrypted_key=encrypted_key,
                 key_hint=masked_key,
                 model=clean_model,
-                system_prompt=clean_system_prompt,
                 models=clean_models,
             )
         except ValueError as exc:
@@ -1710,12 +1705,55 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=provider,
                 base_url=base_url,
                 model=model,
-                system_prompt=system_prompt,
                 models=models,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         return RedirectResponse(
             "/settings/api?saved=true", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @application.post(
+        "/settings/model-adapter",
+        response_class=HTMLResponse,
+    )
+    async def save_model_adapter(
+        request: Request,
+        model_adapter_prompt: str = Form(""),
+        provider: str = Form("deepseek"),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            current_provider = get_provider(provider).id
+            clean_prompt = _clean_field(
+                model_adapter_prompt,
+                "通用模型适配策略",
+                max_length=20_000,
+            )
+            database.upsert_model_adapter_prompt(
+                int(user["id"]), clean_prompt
+            )
+        except ValueError as exc:
+            return render_api_settings(
+                request,
+                user,
+                adapter_error=str(exc),
+                model_adapter_prompt=model_adapter_prompt,
+                provider=provider,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        return RedirectResponse(
+            "/settings/api?"
+            + urlencode(
+                {
+                    "provider": current_provider,
+                    "adapter_saved": "true",
+                }
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/api/settings/models")

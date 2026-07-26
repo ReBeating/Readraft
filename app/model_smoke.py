@@ -14,7 +14,7 @@ from .model_provider import settings_for_credential
 from .writing import DeepSeekWriter
 
 
-SAFE_SMOKE_SYSTEM_PROMPT = (
+SAFE_SMOKE_MODEL_ADAPTER_PROMPT = (
     "这是 novelAI 的合成连通性测试。只处理本次请求提供的虚构材料，"
     "不要引用或假定任何真实作品内容。"
 )
@@ -75,7 +75,7 @@ def load_personal_model_settings(
     )
     return replace(
         personal,
-        deepseek_system_prompt=SAFE_SMOKE_SYSTEM_PROMPT,
+        model_adapter_prompt=SAFE_SMOKE_MODEL_ADAPTER_PROMPT,
         deepseek_max_tokens=min(personal.deepseek_max_tokens, 3_000),
         deepseek_max_retries=min(personal.deepseek_max_retries, 1),
     )

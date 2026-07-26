@@ -102,26 +102,19 @@ class FixedIntentModel(MockAssistantChatModel):
         )
 
 
-def test_assistant_system_prompt_combines_global_and_book_instructions():
+def test_assistant_system_prompt_combines_agent_and_book_instructions():
     prompt = compose_assistant_system_prompt(
-        global_prompt="少用模板化转折。",
         book_prompt="本书的冲突必须通过行动显现。",
     )
     assert "只输出一个合法 JSON object" in prompt
-    assert "少用模板化转折" in prompt
     assert "本书的冲突必须通过行动显现" in prompt
-    assert prompt.index("全局协作偏好") < prompt.index(
-        "当前作品的补充指令"
-    )
     agent_prompt = compose_agent_loop_system_prompt(
-        global_prompt="不要替作者确认正史。",
         book_prompt="本书先行动后解释。",
         agent_role="writer",
     )
     assert "create_chapter_draft" in agent_prompt
-    assert "不要替作者确认正史" in agent_prompt
     assert "本书先行动后解释" in agent_prompt
-    assert "不能增加工具" in agent_prompt
+    assert "不能覆盖服务端工具权限" in agent_prompt
 
 
 def test_structured_intent_dispatch_enforces_scope_and_permissions():

@@ -193,8 +193,13 @@ class AnalysisWorker:
     ) -> Settings:
         user_id = int(item["user_id"])
         provider = str(item["provider"])
-        credential = await asyncio.to_thread(
-            self.database.get_api_credential, user_id, provider
+        credential, stored_adapter_prompt = await asyncio.gather(
+            asyncio.to_thread(
+                self.database.get_api_credential, user_id, provider
+            ),
+            asyncio.to_thread(
+                self.database.get_model_adapter_prompt, user_id
+            ),
         )
         if not credential:
             raise AnalyzerError(
@@ -210,6 +215,11 @@ class AnalysisWorker:
                     credential=credential,
                     api_key=api_key,
                     model=str(item["model"]),
+                    model_adapter_prompt=(
+                        self.settings.model_adapter_prompt
+                        if stored_adapter_prompt is None
+                        else stored_adapter_prompt
+                    ),
                 ),
                 reasoning_policy,
             )

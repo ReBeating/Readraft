@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}模型与提示词 · {{ app_name }}{% endblock %}
+{% block title %}模型设置 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-6">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-7">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -16,7 +16,7 @@
           <path d="m15 18-6-6 6-6"></path>
         </svg>
       </a>
-      <h1>模型与提示词</h1>
+      <h1>模型设置</h1>
       <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
         <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
@@ -29,7 +29,8 @@
     </header>
 
     <div class="studio-api-grid">
-      <form method="post" action="/settings/api" class="studio-api-form" data-api-settings-form>
+      <div class="studio-api-main">
+        <form method="post" action="/settings/api" class="studio-api-form" data-api-settings-form>
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
 
         {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
@@ -164,23 +165,41 @@
           </div>
         </section>
 
-        <label>
-          <span>全局系统提示词</span>
-          <textarea
-            name="system_prompt"
-            maxlength="20000"
-            data-system-prompt
-            placeholder="说明 AI 在所有作品中都应遵守的写作原则。"
-          >{{ selected_system_prompt }}</textarea>
-          <small>用于共创对话和正文生成；每本书还可以在“设定”里追加本书专属指令。</small>
-        </label>
-        <template data-default-system-prompt>{{ default_system_prompt }}</template>
-
         <div class="studio-api-actions">
-          <button class="studio-button" type="button" data-restore-system-prompt>恢复默认提示词</button>
-          <button class="studio-button primary" type="submit">保存设置</button>
+          <button class="studio-button primary" type="submit">保存模型配置</button>
         </div>
-      </form>
+        </form>
+
+        <form
+          method="post"
+          action="/settings/model-adapter"
+          class="studio-api-form studio-adapter-form"
+        >
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="provider" value="{{ selected_provider }}">
+
+          {% if adapter_error %}<div class="studio-alert error">{{ adapter_error }}</div>{% endif %}
+          {% if adapter_saved %}<div class="studio-alert success">通用模型适配策略已保存。</div>{% endif %}
+
+          <header class="studio-adapter-heading">
+            <h2>通用模型适配策略</h2>
+            <p>账号下所有服务商和模型共用；切换模型时不会改变。</p>
+          </header>
+          <label>
+            <span>模型受限时如何继续（可选）</span>
+            <textarea
+              name="model_adapter_prompt"
+              maxlength="20000"
+              data-model-adapter-prompt
+              placeholder="例如：如果无法直接描写虚构暴力的具体过程，保留事件、因果和人物后果，改用非露骨叙述或镜头转移，不要只返回拒绝。"
+            >{{ model_adapter_prompt }}</textarea>
+            <small>留空时不注入额外策略。它不能覆盖工具权限、正史边界、任务输出格式或模型服务自身的限制。</small>
+          </label>
+          <div class="studio-api-actions">
+            <button class="studio-button primary" type="submit">保存通用策略</button>
+          </div>
+        </form>
+      </div>
 
       <aside class="studio-api-aside">
         {% if credentials %}
@@ -210,7 +229,7 @@
         {% endif %}
 
         <h2>提示词层级</h2>
-        <p>基础执行边界 → 全局系统提示词 → 本书补充指令 → 当前章节与对话。越靠后的内容越具体，但不能覆盖前面的服务端权限与事实边界。</p>
+        <p>基础执行边界 → 通用模型适配策略 → 本书补充指令 → 当前章节与对话。适配策略只负责模型受限时的降级方式，不改变 Agent 权限和输出契约。</p>
 
         <h2>运行策略</h2>
         <p>系统会按任务自动选择快速、推理或深度推理策略；模型不支持对应能力时使用服务商默认行为。</p>
@@ -258,8 +277,6 @@
       const modelCatalog = form.querySelector("[data-model-catalog]");
       const manualModel = form.querySelector("[data-manual-model]");
       const addManualModel = form.querySelector("[data-add-manual-model]");
-      const prompt = form.querySelector("[data-system-prompt]");
-      const promptTemplate = form.querySelector("[data-default-system-prompt]");
       const apiKeyInput = form.querySelector("[data-api-key-input]");
       const apiKeyToggle = form.querySelector("[data-api-key-toggle]");
       const apiKeyHelp = form.querySelector("[data-api-key-help]");
@@ -445,10 +462,6 @@
         addManualModel.click();
       });
 
-      form.querySelector("[data-restore-system-prompt]")?.addEventListener("click", () => {
-        prompt.value = promptTemplate.content.textContent.trim();
-        prompt.focus();
-      });
       providerSelect.addEventListener("change", () => {
         window.location.assign(`/settings/api?provider=${encodeURIComponent(providerSelect.value)}`);
       });

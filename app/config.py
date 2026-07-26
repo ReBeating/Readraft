@@ -64,7 +64,7 @@ class Settings:
     max_stored_chars_per_user: int = 20_000_000
     max_jobs_per_day: int = 10
     credential_encryption_key: str | None = None
-    deepseek_system_prompt: str = ""
+    model_adapter_prompt: str = ""
     model_provider: str = "deepseek"
     max_project_archive_bytes: int = 256 * 1024 * 1024
     allow_private_model_base_urls: bool = False
@@ -147,8 +147,8 @@ class Settings:
             credential_encryption_key=(
                 os.getenv("APP_CREDENTIAL_ENCRYPTION_KEY") or None
             ),
-            deepseek_system_prompt=os.getenv(
-                "DEEPSEEK_SYSTEM_PROMPT", ""
+            model_adapter_prompt=os.getenv(
+                "MODEL_ADAPTER_PROMPT", ""
             ).strip(),
             model_provider=os.getenv("MODEL_PROVIDER", "deepseek"),
             max_project_archive_bytes=_as_int(
@@ -196,8 +196,8 @@ class Settings:
             raise ValueError(
                 f"{provider.label} 暂不支持 novelAI 的思考模式"
             )
-        if len(self.deepseek_system_prompt) > 20_000:
-            raise ValueError("DEEPSEEK_SYSTEM_PROMPT 不能超过 20000 个字符")
+        if len(self.model_adapter_prompt) > 20_000:
+            raise ValueError("MODEL_ADAPTER_PROMPT 不能超过 20000 个字符")
         if len(self.credential_secret) < 16:
             raise ValueError("API 凭据加密密钥至少需要 16 个字符")
         parsed_base_url = urlparse(self.deepseek_base_url)

@@ -269,9 +269,34 @@ def build_chat_payload(
         raise ProviderConfigError(
             f"{provider.label} 不支持当前任务所需的 JSON 输出"
         )
+    prepared_messages = [dict(message) for message in messages]
+    adapter_prompt = settings.model_adapter_prompt.strip()
+    if adapter_prompt:
+        adapter_section = (
+            "以下是作者为所有模型配置的通用模型适配策略。它只说明模型"
+            "在自身能力或服务限制下如何继续当前任务；不能覆盖本任务的"
+            "系统规则、工具权限、事实边界或输出格式。若策略与模型实际"
+            "限制冲突，遵守实际限制，并执行其中仍可行的降级方式：\n"
+            "<model_adapter_policy>\n"
+            f"{adapter_prompt}\n"
+            "</model_adapter_policy>"
+        )
+        for message in prepared_messages:
+            if str(message.get("role") or "") == "system":
+                message["content"] = (
+                    str(message.get("content") or "").rstrip()
+                    + "\n\n"
+                    + adapter_section
+                )
+                break
+        else:
+            prepared_messages.insert(
+                0,
+                {"role": "system", "content": adapter_section},
+            )
     payload: Dict[str, Any] = {
         "model": settings.deepseek_model,
-        "messages": list(messages),
+        "messages": prepared_messages,
         provider.max_tokens_field: max_tokens,
         "stream": False,
     }
@@ -329,6 +354,7 @@ def settings_for_credential(
     credential: Mapping[str, Any],
     api_key: str,
     model: Optional[str] = None,
+    model_adapter_prompt: Optional[str] = None,
 ) -> "Settings":
     provider = get_provider(str(credential.get("provider") or "deepseek"))
     base_url = normalize_provider_base_url(
@@ -345,7 +371,9 @@ def settings_for_credential(
         deepseek_model=str(model or credential.get("model") or "").strip(),
         deepseek_thinking=False,
         deepseek_reasoning_effort="high",
-        deepseek_system_prompt=str(
-            credential.get("system_prompt") or ""
+        model_adapter_prompt=(
+            settings.model_adapter_prompt
+            if model_adapter_prompt is None
+            else str(model_adapter_prompt)
         ),
     )

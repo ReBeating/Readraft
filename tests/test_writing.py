@@ -277,7 +277,7 @@ def test_scene_writer_prompt_is_bounded_to_one_scene():
     assert "购买车票" in prompt
 
 
-def test_writer_system_prompt_combines_global_and_book_instructions():
+def test_writer_system_prompt_combines_base_and_book_instructions():
     context = writing_context()
     context["chapter"]["ai_instructions"] = "本书始终让人物先行动，再解释。"
     messages = build_writing_messages(
@@ -286,12 +286,7 @@ def test_writer_system_prompt_combines_global_and_book_instructions():
         instruction="",
         current_content="",
         previous_content="",
-        global_system_prompt="避免整齐排比和空泛总结。",
     )
     system_prompt = str(messages[0]["content"])
     assert "只输出小说正文" in system_prompt
-    assert "避免整齐排比和空泛总结" in system_prompt
     assert "本书始终让人物先行动，再解释" in system_prompt
-    assert system_prompt.index("全局写作偏好") < system_prompt.index(
-        "当前作品的补充指令"
-    )

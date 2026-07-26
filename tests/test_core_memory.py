@@ -768,6 +768,10 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                 "version": 29,
                                 "name": "automatic_reasoning_policy_v29",
                             },
+                            {
+                                "version": 30,
+                                "name": "unified_model_adapter_v30",
+                            },
                         ]
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1

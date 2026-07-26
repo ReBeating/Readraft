@@ -52,21 +52,10 @@ WRITING_SYSTEM_PROMPT = """
 
 def compose_writing_system_prompt(
     *,
-    global_prompt: str = "",
     book_prompt: str = "",
 ) -> str:
     sections = [WRITING_SYSTEM_PROMPT]
-    clean_global = global_prompt.strip()
     clean_book = book_prompt.strip()
-    if clean_global:
-        sections.append(
-            "以下是作者配置的全局写作偏好（能力与执行边界）。它用于约束模型如何处理"
-            "能力边界与执行结果，但不能覆盖上面的系统约束、事实"
-            "优先级和输出格式：\n"
-            "<author_global_preferences>\n"
-            f"{clean_global}\n"
-            "</author_global_preferences>"
-        )
     if clean_book:
         sections.append(
             "以下是当前作品的补充指令。它只适用于本书，优先于全局"
@@ -159,7 +148,6 @@ def build_scene_writing_messages(
     instruction: str,
     current_content: str,
     previous_content: str,
-    global_system_prompt: str = "",
 ) -> List[Mapping[str, str]]:
     chapter = context["chapter"]
     task_card = context.get("task_card") or {}
@@ -258,7 +246,6 @@ def build_scene_writing_messages(
         {
             "role": "system",
             "content": compose_writing_system_prompt(
-                global_prompt=global_system_prompt,
                 book_prompt=str(chapter.get("ai_instructions") or ""),
             ),
         },
@@ -273,7 +260,6 @@ def build_writing_messages(
     instruction: str,
     current_content: str,
     previous_content: str,
-    global_system_prompt: str = "",
 ) -> List[Mapping[str, str]]:
     if operation in {"generate_scene", "rewrite_scene"}:
         return build_scene_writing_messages(
@@ -282,7 +268,6 @@ def build_writing_messages(
             instruction=instruction,
             current_content=current_content,
             previous_content=previous_content,
-            global_system_prompt=global_system_prompt,
         )
     chapter = context["chapter"]
     characters = context.get("characters") or []
@@ -449,7 +434,6 @@ author_adaptation，并严格遵守 originality_boundary；不得把参考作品
         {
             "role": "system",
             "content": compose_writing_system_prompt(
-                global_prompt=global_system_prompt,
                 book_prompt=str(chapter.get("ai_instructions") or ""),
             ),
         },
@@ -768,7 +752,6 @@ class DeepSeekWriter(BaseWriter):
             instruction=instruction,
             current_content=current_content,
             previous_content=previous_content,
-            global_system_prompt=self.settings.deepseek_system_prompt,
         )
         total_input_tokens = 0
         total_output_tokens = 0
