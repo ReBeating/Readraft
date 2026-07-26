@@ -2,7 +2,7 @@
 {% block title %}我的书 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-12">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-13">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -79,36 +79,38 @@
                     <small>{% if project.genre %}{{ project.genre }}{% else %}构思中{% endif %} · {{ project.chapter_count }} 章{% if project.total_chars %} · {{ project.total_chars|human_size }}{% endif %}</small>
                   </span>
                 </a>
-                <nav class="studio-book-actions" aria-label="《{{ project.title or '未命名作品' }}》文件操作">
-                  <a
-                    href="/novels/{{ project.id }}/export.txt"
-                    aria-label="导出正文"
-                    data-tooltip="导出正文（TXT）"
-                  >
-                    <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
-                    </svg>
-                    <span class="studio-export-format" aria-hidden="true">TXT</span>
-                  </a>
-                  <a
-                    href="/novels/{{ project.id }}/export.novelai.zip"
-                    aria-label="导出归档"
-                    data-tooltip="导出归档（ZIP）"
-                  >
-                    <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
-                    </svg>
-                    <span class="studio-export-format" aria-hidden="true">ZIP</span>
-                  </a>
-                </nav>
-                <form class="studio-delete-book-form" data-delete-project-form method="post" action="/novels/{{ project.id }}/delete">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                  <button class="studio-delete-book" type="submit" aria-label="删除《{{ project.title or '未命名作品' }}》" title="删除作品">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
-                    </svg>
-                  </button>
-                </form>
+                <div class="studio-book-controls">
+                  <nav class="studio-book-actions" aria-label="《{{ project.title or '未命名作品' }}》文件操作">
+                    <a
+                      href="/novels/{{ project.id }}/export.txt"
+                      aria-label="导出正文"
+                      data-tooltip="导出正文（TXT）"
+                    >
+                      <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
+                      </svg>
+                      <span class="studio-export-format" aria-hidden="true">TXT</span>
+                    </a>
+                    <a
+                      href="/novels/{{ project.id }}/export.novelai.zip"
+                      aria-label="导出归档"
+                      data-tooltip="导出归档（ZIP）"
+                    >
+                      <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
+                      </svg>
+                      <span class="studio-export-format" aria-hidden="true">ZIP</span>
+                    </a>
+                  </nav>
+                  <form class="studio-delete-book-form" data-delete-project-form method="post" action="/novels/{{ project.id }}/delete">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <button class="studio-delete-book" type="submit" aria-label="删除《{{ project.title or '未命名作品' }}》" title="删除作品">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
+                      </svg>
+                    </button>
+                  </form>
+                </div>
               </div>
             {% endfor %}
           </div>

@@ -1625,6 +1625,7 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
         dashboard = client.get("/dashboard")
         assert "导出正文" in dashboard.text
         assert "导出归档" in dashboard.text
+        assert 'class="studio-book-controls"' in dashboard.text
         assert dashboard.text.count('class="studio-export-icon"') == 2
         assert re.search(r">\s*导出正文\s*<", dashboard.text) is None
         assert re.search(r">\s*导出归档\s*<", dashboard.text) is None

@@ -412,6 +412,13 @@ body.studio-surface textarea {
   font-size: 12px;
 }
 
+.studio-book-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
 .studio-delete-book-form {
   display: inline-flex;
   flex: 0 0 auto;
@@ -2766,8 +2773,8 @@ body.studio-surface .studio-personal-model input[type="radio"] {
     min-height: 72px;
   }
 
-  .studio-project-row .studio-book-actions {
-    flex: 1;
+  .studio-project-row .studio-book-controls {
+    flex: 1 0 100%;
     padding-left: 3px;
   }
 
