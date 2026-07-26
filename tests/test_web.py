@@ -617,6 +617,19 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert "个人模型已配置" in saved_page.text
         assert "sk-••••5678" in saved_page.text
         assert raw_key not in saved_page.text
+        assert "data-api-key-toggle" in saved_page.text
+
+        revealed = client.post(
+            "/api/settings/api-key",
+            data={
+                "provider": "deepseek",
+                "csrf": csrf_from(saved_page.text),
+            },
+        )
+        assert revealed.status_code == 200
+        assert revealed.json() == {"api_key": raw_key}
+        assert revealed.headers["cache-control"] == "no-store, private"
+        assert revealed.headers["pragma"] == "no-cache"
 
         user = application.state.database.get_user_by_username("个人API用户")
         credential = application.state.database.get_api_credential(user["id"])
@@ -635,6 +648,84 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         )
         assert response.status_code == 303
         assert application.state.database.get_api_credential(user["id"]) is None
+
+
+def test_api_key_reveal_is_scoped_to_current_user_and_provider(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "凭据所有者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        page = client.get("/settings/api")
+        owner_key = "sk-owner-secret-1234"
+        response = client.post(
+            "/settings/api",
+            data={
+                "provider": "deepseek",
+                "api_key": owner_key,
+                "model": "deepseek-chat",
+                "models": ["deepseek-chat"],
+                "reasoning_effort": "high",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        settings_page = client.get("/settings/api")
+        missing_provider = client.post(
+            "/api/settings/api-key",
+            data={
+                "provider": "openai_compatible",
+                "csrf": csrf_from(settings_page.text),
+            },
+        )
+        assert missing_provider.status_code == 404
+        assert owner_key not in missing_provider.text
+        assert (
+            missing_provider.headers["cache-control"]
+            == "no-store, private"
+        )
+
+        logout = client.post(
+            "/logout",
+            data={"csrf": csrf_from(settings_page.text)},
+            follow_redirects=False,
+        )
+        assert logout.status_code == 303
+
+        page = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "其他凭据用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        other_settings = client.get("/settings/api")
+        other_reveal = client.post(
+            "/api/settings/api-key",
+            data={
+                "provider": "deepseek",
+                "csrf": csrf_from(other_settings.text),
+            },
+        )
+        assert other_reveal.status_code == 404
+        assert owner_key not in other_reveal.text
 
 
 def test_user_can_select_ollama_without_api_key(tmp_path):

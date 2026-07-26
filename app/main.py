@@ -1816,6 +1816,57 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @application.post("/api/settings/api-key")
+    async def reveal_api_key(
+        request: Request,
+        provider: str = Form("deepseek"),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        verify_csrf(request, csrf)
+        try:
+            provider_spec = get_provider(provider)
+            credential = database.get_api_credential(
+                int(user["id"]), provider_spec.id
+            )
+            if not credential:
+                return JSONResponse(
+                    {
+                        "error": (
+                            f"尚未保存 {provider_spec.label} API Key"
+                        )
+                    },
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    headers={
+                        "Cache-Control": "no-store, private",
+                        "Pragma": "no-cache",
+                    },
+                )
+            api_key = credential_cipher.decrypt(
+                str(credential["encrypted_key"])
+            )
+        except (CredentialError, ProviderConfigError) as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=status.HTTP_400_BAD_REQUEST,
+                headers={
+                    "Cache-Control": "no-store, private",
+                    "Pragma": "no-cache",
+                },
+            )
+        return JSONResponse(
+            {"api_key": api_key},
+            headers={
+                "Cache-Control": "no-store, private",
+                "Pragma": "no-cache",
+            },
+        )
+
     @application.post("/settings/api/delete")
     async def delete_api_settings(
         request: Request,

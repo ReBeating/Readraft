@@ -2032,12 +2032,18 @@ body.studio-surface .studio-chat-input button {
   gap: 7px;
 }
 
+.studio-api-form > .studio-api-field {
+  display: grid;
+  gap: 7px;
+}
+
 .studio-api-form label > span {
   font-size: 14px;
   font-weight: 750;
 }
 
 .studio-api-form label small,
+.studio-api-form .studio-api-field small,
 .studio-api-aside,
 .studio-model-feedback {
   color: var(--studio-muted);
@@ -2062,6 +2068,16 @@ body.studio-surface .studio-api-form textarea {
 
 body.studio-surface .studio-api-form [data-base-url-field][hidden] {
   display: none;
+}
+
+.studio-secret-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.studio-secret-field .studio-secret-toggle {
+  min-width: 72px;
 }
 
 .studio-model-field,
@@ -2585,6 +2601,7 @@ body.studio-surface .studio-personal-model input[type="radio"] {
 
   .studio-model-field,
   .studio-model-manual,
+  .studio-secret-field,
   .studio-api-options {
     grid-template-columns: 1fr;
   }

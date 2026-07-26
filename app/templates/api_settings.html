@@ -2,7 +2,7 @@
 {% block title %}模型与提示词 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-4">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-5">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -74,26 +74,40 @@
           <small>填写 API 根路径，通常以 <code>/v1</code> 结尾；不要填写 <code>/models</code> 或 <code>/chat/completions</code>。</small>
         </label>
 
-        <label>
-          <span data-api-key-label>{{ selected_provider_spec.label }} API Key</span>
-          <input
-            type="password"
-            name="api_key"
-            maxlength="512"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="{{ '已保存：' ~ credential.key_hint ~ '（留空保留）' if credential else ('可选（Bearer API Key）' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
-          >
-          <small data-api-key-help>
+        <div class="studio-api-field">
+          <label for="studio-api-key">
+            <span data-api-key-label>{{ selected_provider_spec.label }} API Key</span>
+          </label>
+          <div class="studio-secret-field">
+            <input
+              id="studio-api-key"
+              type="password"
+              name="api_key"
+              maxlength="512"
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="studio-api-key-help"
+              placeholder="{{ '已保存：' ~ credential.key_hint ~ '（留空保留）' if credential else ('可选（Bearer API Key）' if not selected_provider_spec.capabilities.api_key_required else '输入 API Key') }}"
+              data-api-key-input
+            >
+            <button
+              class="studio-button studio-secret-toggle"
+              type="button"
+              aria-controls="studio-api-key"
+              aria-pressed="false"
+              data-api-key-toggle
+            >显示</button>
+          </div>
+          <small id="studio-api-key-help" data-api-key-help aria-live="polite">
             {% if credential %}
-              已保存凭据 {{ credential.key_hint }}；出于安全考虑不会回显完整内容，留空即可继续使用。
+              已保存凭据 {{ credential.key_hint }}；默认隐藏，点击“显示”可临时查看，留空即可继续使用。
             {% elif selected_provider_spec.capabilities.api_key_required %}
-              只在保存时加密写入本机数据库，不会再次完整显示。
+              保存后加密写入数据库；默认隐藏，之后可以按需临时查看。
             {% else %}
               可选；直连通常无需 Key，经过鉴权网关时可填写 Bearer API Key。
             {% endif %}
           </small>
-        </label>
+        </div>
 
         <section class="studio-model-manager" aria-labelledby="personal-models-title">
           <div class="studio-model-manager-heading">
@@ -261,6 +275,94 @@
       const thinkingOptions = form.querySelector("[data-thinking-options]");
       const thinkingInput = form.elements.thinking;
       const reasoningEffort = form.elements.reasoning_effort;
+      const apiKeyInput = form.querySelector("[data-api-key-input]");
+      const apiKeyToggle = form.querySelector("[data-api-key-toggle]");
+      const apiKeyHelp = form.querySelector("[data-api-key-help]");
+      const originalApiKeyHelp = apiKeyHelp.textContent.trim();
+      let revealedStoredKey = "";
+      let showingApiKey = false;
+
+      const hideApiKey = () => {
+        if (revealedStoredKey && apiKeyInput.value === revealedStoredKey) {
+          apiKeyInput.value = "";
+        }
+        revealedStoredKey = "";
+        showingApiKey = false;
+        apiKeyInput.type = "password";
+        apiKeyToggle.textContent = "显示";
+        apiKeyToggle.setAttribute("aria-pressed", "false");
+        apiKeyHelp.textContent = originalApiKeyHelp;
+      };
+
+      const showApiKey = async () => {
+        if (apiKeyInput.value) {
+          showingApiKey = true;
+          apiKeyInput.type = "text";
+          apiKeyToggle.textContent = "隐藏";
+          apiKeyToggle.setAttribute("aria-pressed", "true");
+          apiKeyHelp.textContent = "API Key 当前可见；请留意屏幕共享和身边人员。";
+          apiKeyInput.focus();
+          return;
+        }
+        {% if credential %}
+          apiKeyToggle.disabled = true;
+          apiKeyToggle.textContent = "读取中…";
+          const payload = new FormData();
+          payload.set("csrf", form.elements.csrf.value);
+          payload.set("provider", providerSelect.value);
+          try {
+            const response = await fetch("/api/settings/api-key", {
+              method: "POST",
+              body: payload,
+              credentials: "same-origin",
+              cache: "no-store",
+              headers: {"Accept": "application/json"},
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || "读取 API Key 失败");
+            if (!result.api_key) {
+              apiKeyHelp.textContent = "当前配置没有设置 API Key。";
+              return;
+            }
+            revealedStoredKey = result.api_key;
+            apiKeyInput.value = result.api_key;
+            showingApiKey = true;
+            apiKeyInput.type = "text";
+            apiKeyToggle.textContent = "隐藏";
+            apiKeyToggle.setAttribute("aria-pressed", "true");
+            apiKeyHelp.textContent = "API Key 当前可见；隐藏后会立即从输入框清除，原配置不受影响。";
+            apiKeyInput.focus();
+          } catch (error) {
+            apiKeyHelp.textContent = error.message || "读取 API Key 失败，请刷新后重试。";
+          } finally {
+            apiKeyToggle.disabled = false;
+            if (!showingApiKey) apiKeyToggle.textContent = "显示";
+          }
+        {% else %}
+          showingApiKey = true;
+          apiKeyInput.type = "text";
+          apiKeyToggle.textContent = "隐藏";
+          apiKeyToggle.setAttribute("aria-pressed", "true");
+          apiKeyHelp.textContent = "输入的 API Key 当前可见；请留意屏幕共享和身边人员。";
+          apiKeyInput.focus();
+        {% endif %}
+      };
+
+      apiKeyToggle.addEventListener("click", () => {
+        if (showingApiKey) {
+          hideApiKey();
+          return;
+        }
+        showApiKey();
+      });
+      apiKeyInput.addEventListener("input", () => {
+        if (
+          revealedStoredKey
+          && apiKeyInput.value !== revealedStoredKey
+        ) {
+          revealedStoredKey = "";
+        }
+      });
 
       const syncProviderCapabilities = () => {
         const option = providerSelect.selectedOptions[0];
@@ -418,10 +520,18 @@
       form.addEventListener("submit", (event) => {
         const rows = personalModels.querySelectorAll("[data-personal-model]");
         const selected = personalModels.querySelector("input[name=model]:checked");
-        if (rows.length && selected) return;
-        event.preventDefault();
-        feedback.textContent = "请至少加入并选择一个模型后再保存。";
-        feedback.scrollIntoView({block: "center", behavior: "smooth"});
+        if (!rows.length || !selected) {
+          event.preventDefault();
+          feedback.textContent = "请至少加入并选择一个模型后再保存。";
+          feedback.scrollIntoView({block: "center", behavior: "smooth"});
+          return;
+        }
+        if (
+          revealedStoredKey
+          && apiKeyInput.value === revealedStoredKey
+        ) {
+          apiKeyInput.value = "";
+        }
       });
     });
   </script>
