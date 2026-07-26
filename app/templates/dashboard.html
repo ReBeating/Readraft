@@ -149,13 +149,6 @@
           <div class="studio-empty">
             <strong>还没有作品</strong>
             <p>可以从一个念头开始，也可以导入已有文本。</p>
-            <div class="studio-empty-actions">
-              <a class="studio-button" href="/import">导入文本</a>
-              <form method="post" action="/novels/new/blank" class="studio-inline-form">
-                <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                <button class="studio-button primary" type="submit">新建作品</button>
-              </form>
-            </div>
           </div>
         {% endif %}
       </section>

@@ -467,7 +467,6 @@ body.studio-surface textarea {
   background: var(--studio-input);
 }
 
-.studio-empty-actions,
 .studio-view-heading-actions {
   display: flex;
   align-items: center;

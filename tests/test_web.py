@@ -85,6 +85,9 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
         assert "尚未配置模型服务" in dashboard.text
         assert "本地模拟回复" not in dashboard.text
         assert "本地演示模式" not in dashboard.text
+        assert dashboard.text.count('href="/import"') == 1
+        assert dashboard.text.count('action="/novels/new/blank"') == 1
+        assert "studio-empty-actions" not in dashboard.text
 
         upload = client.get("/upload")
         imported = client.post(
