@@ -427,12 +427,14 @@ body.studio-surface textarea {
 }
 
 .studio-book-actions a {
+  position: relative;
   display: inline-flex;
-  width: 38px;
+  width: 54px;
   height: 38px;
-  flex: 0 0 38px;
+  flex: 0 0 54px;
   align-items: center;
   justify-content: center;
+  gap: 4px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -441,14 +443,49 @@ body.studio-surface textarea {
 }
 
 .studio-book-actions svg {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.8;
+}
+
+.studio-export-format {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.studio-book-actions a::after {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  z-index: 20;
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: var(--studio-page);
+  background: var(--studio-ink);
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--studio-ink) 20%, transparent);
+  content: attr(data-tooltip);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.studio-book-actions a:hover::after,
+.studio-book-actions a:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
 }
 
 .studio-book-actions a:hover,
