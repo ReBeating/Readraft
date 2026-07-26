@@ -21,7 +21,7 @@
   >
     <header class="studio-workbench-toolbar">
       <div class="studio-toolbar-side">
-        <a class="studio-icon-button" href="/dashboard" aria-label="返回书库" data-save-before-navigation>
+        <a class="studio-icon-button" href="/dashboard" aria-label="返回作品库" data-save-before-navigation>
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m15 18-6-6 6-6"></path>
           </svg>
@@ -45,6 +45,22 @@
             <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
           </svg>
         </button>
+        {% if work and reading_mode_document %}
+          <a class="studio-icon-button" href="/documents/{{ reading_mode_document.document_id }}" aria-label="切换到阅读模式" data-save-before-navigation>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v17H7.5A3.5 3.5 0 0 0 4 22V5.5ZM20 5.5A3.5 3.5 0 0 0 16.5 2H12v17h4.5A3.5 3.5 0 0 1 20 22V5.5Z"></path>
+            </svg>
+          </a>
+        {% elif work %}
+          <form class="studio-toolbar-form" method="post" action="/novels/{{ project.id }}/reading-snapshots" data-save-before-submit>
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="studio-icon-button" type="submit" aria-label="生成阅读版" title="生成阅读版">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v17H7.5A3.5 3.5 0 0 0 4 22V5.5ZM20 5.5A3.5 3.5 0 0 0 16.5 2H12v17h4.5A3.5 3.5 0 0 1 20 22V5.5Z"></path>
+              </svg>
+            </button>
+          </form>
+        {% endif %}
         <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
@@ -65,11 +81,17 @@
           <strong>{{ display_title }}</strong>
         </div>
 
-        <p class="studio-section-label">作品资料</p>
+        <p class="studio-section-label">作品档案</p>
         <a class="studio-directory-link {% if view == 'settings' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=settings{% if chapter %}&chapter_id={{ chapter.id }}{% endif %}" data-save-before-navigation>
-          <span>设定</span>
+          <span>创作资料</span>
           <small>›</small>
         </a>
+        {% if work %}
+          <a class="studio-directory-link" href="/works/{{ work.id }}/archive" data-save-before-navigation>
+            <span>档案总览</span>
+            <small>›</small>
+          </a>
+        {% endif %}
 
         <p class="studio-section-label">章节</p>
         <nav class="studio-chapter-list" aria-label="章节目录">
@@ -107,11 +129,20 @@
           <section class="studio-settings-view">
             <div class="studio-view-heading">
               <div>
-                <h1>设定</h1>
-                <p>这些内容会作为本书的长期创作上下文。</p>
+                <h1>作品档案</h1>
+                <p>作者确认的创作资料会作为本书的长期写作上下文。</p>
               </div>
+              {% if work %}
+                <div class="studio-view-heading-actions">
+                  <a class="studio-button" href="/works/{{ work.id }}/archive">查看汇总</a>
+                  <form method="post" action="/novels/{{ project.id }}/reading-snapshots">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <button class="studio-button" type="submit">生成阅读版</button>
+                  </form>
+                </div>
+              {% endif %}
             </div>
-            <nav class="studio-settings-tabs" role="tablist" aria-label="设定分类">
+            <nav class="studio-settings-tabs" role="tablist" aria-label="作品档案分类">
               {% for tab_key, tab_label in setting_tabs %}
                 <button
                   id="settings-tab-{{ tab_key }}"
@@ -328,7 +359,7 @@
               </section>
 
               <div class="studio-settings-actions">
-                <button class="studio-button primary" type="submit">保存设定</button>
+                <button class="studio-button primary" type="submit">保存创作资料</button>
               </div>
             </form>
           </section>
@@ -460,7 +491,7 @@
                           {% if item.novel_chapter_id %}
                             第{{ item.novel_chapter_position }}章 · {{ item.novel_chapter_title or '未命名章节' }}
                           {% else %}
-                            全书设定
+                            全书档案
                           {% endif %}
                           {% if item.latest_status in ['queued', 'running'] %} · 回复中{% endif %}
                         </small>
@@ -524,7 +555,7 @@
                   <blockquote>{{ message.quote.quote_text }}</blockquote>
                 {% endif %}
                 {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
-                  <p>正在读取当前设定与章节……</p>
+                  <p>正在读取当前创作资料与章节……</p>
                 {% elif message.status == 'failed' %}
                   <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
                 {% else %}
@@ -533,7 +564,7 @@
                   {% if message.response.settings_patch %}
                     <section class="studio-settings-candidate">
                       <header>
-                        <strong>候选设定</strong>
+                        <strong>候选创作资料</strong>
                         <span>{% if message.response.settings_patch_status == 'applied' %}已应用{% else %}尚未写入{% endif %}</span>
                       </header>
                       <dl>
@@ -548,7 +579,7 @@
                         <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
-                          <button class="studio-button primary" type="submit">应用到设定</button>
+                          <button class="studio-button primary" type="submit">应用到创作资料</button>
                         </form>
                       {% endif %}
                     </section>
@@ -752,7 +783,7 @@
           {% else %}
             <div class="studio-chat-empty">
               {% if view == 'settings' %}
-                <p>不必先想好书名。告诉 AI 一个角色、一段画面或你想获得的阅读感受，它会先整理成待确认设定。</p>
+                <p>不必先想好书名。告诉 AI 一个角色、一段画面或你想获得的阅读感受，它会先整理成待确认的创作资料。</p>
               {% else %}
                 <p>可以讨论剧情、续写方向、人物反应或选中的正文。</p>
               {% endif %}

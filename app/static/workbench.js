@@ -114,12 +114,15 @@
     });
   }
 
-  bindDestructiveConfirmation("[data-delete-project-form]", {
+  bindDestructiveConfirmation(
+    "[data-delete-project-form], [data-delete-work-form]",
+    {
     title: "删除这部作品？",
     message:
-      "作品设定、章节正文、全部版本及对应对话都会被永久删除，且无法恢复。",
+      "阅读原文、分析、创作分支、章节正文和对应对话都会被永久删除，且无法恢复。",
     confirmLabel: "删除作品",
-  });
+    },
+  );
 
   bindDestructiveConfirmation("[data-delete-conversation-form]", {
     title: "删除这段对话？",
@@ -133,6 +136,30 @@
     message: "保存的凭据、接口地址和模型列表都会被永久删除。",
     confirmLabel: "删除配置",
   });
+
+  const unifiedImport = document.querySelector("[data-unified-import]");
+  if (unifiedImport) {
+    const fileInput = unifiedImport.querySelector("[data-import-file]");
+    const modeField = unifiedImport.querySelector("[data-import-mode]");
+    const archiveNote = unifiedImport.querySelector(
+      "[data-import-archive-note]",
+    );
+    const updateImportKind = () => {
+      const filename = fileInput?.files?.[0]?.name?.toLowerCase() || "";
+      const isArchive = filename.endsWith(".zip");
+      if (modeField) {
+        modeField.hidden = isArchive;
+        modeField.querySelectorAll("input").forEach((input) => {
+          input.disabled = isArchive;
+        });
+      }
+      if (archiveNote) {
+        archiveNote.hidden = !isArchive;
+      }
+    };
+    fileInput?.addEventListener("change", updateImportKind);
+    updateImportKind();
+  }
 
   const workbench = document.querySelector("[data-workbench]");
   if (!workbench) return;

@@ -1675,6 +1675,171 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
         assert len(projects) == 2
 
 
+def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
+    tmp_path,
+):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "统一作品用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        import_page = client.get("/import")
+        assert "导入后先做什么" in import_page.text
+        imported = client.post(
+            "/import",
+            data={
+                "title": "雨夜来信",
+                "initial_mode": "read",
+                "csrf": csrf_from(import_page.text),
+            },
+            files={
+                "work_file": (
+                    "rain.txt",
+                    (
+                        "第一章 来信\n记者在雨夜收到一封旧信。\n"
+                        "第二章 回声\n寄信人早已失踪。"
+                    ).encode(),
+                    "text/plain",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert imported.status_code == 303
+        assert imported.headers["location"].startswith("/documents/")
+        reader = client.get(imported.headers["location"])
+        assert "改写" in reader.text
+        assert "续写" in reader.text
+        assert "作品档案" in reader.text
+
+        document_id = imported.headers["location"].split("/documents/", 1)[1]
+        rewritten = client.post(
+            f"/documents/{document_id}/writing-branches",
+            data={
+                "intent": "rewrite",
+                "csrf": csrf_from(reader.text),
+            },
+            follow_redirects=False,
+        )
+        assert rewritten.status_code == 303
+        assert rewritten.headers["location"].startswith("/novels/")
+
+        user = application.state.database.get_user_by_username(
+            "统一作品用户"
+        )
+        works = application.state.database.list_works(int(user["id"]))
+        assert len(works) == 1
+        assert works[0]["has_reading"]
+        assert works[0]["has_writing"]
+        assert len(works[0]["editions"]) == 2
+        project_id = rewritten.headers["location"].split("/novels/", 1)[1].split(
+            "/", 1
+        )[0]
+        chapters = application.state.database.list_novel_chapters(
+            int(user["id"]), project_id
+        )
+        assert len(chapters) == 2
+        assert "记者在雨夜" in Path(chapters[0]["content_path"]).read_text(
+            encoding="utf-8"
+        )
+
+        dashboard = client.get("/dashboard")
+        assert dashboard.text.count("studio-work-row") == 1
+        assert "阅读分析" in dashboard.text
+        assert "创作" in dashboard.text
+        archive = client.get(f"/works/{works[0]['id']}/archive")
+        assert "导入原文" in archive.text
+        assert "改写稿" in archive.text
+
+        saved = client.post(
+            f"/works/{works[0]['id']}/archive",
+            data={
+                "entry_type": "analysis_note",
+                "title": "节奏观察",
+                "content": "第一章先给结果，再延迟解释。",
+                "evidence": "第 1 章",
+                "csrf": csrf_from(archive.text),
+            },
+            follow_redirects=False,
+        )
+        assert saved.status_code == 303
+        saved_archive = client.get(saved.headers["location"])
+        assert "节奏观察" in saved_archive.text
+        assert "第一章先给结果" in saved_archive.text
+
+
+def test_imported_writing_draft_can_create_reading_snapshot(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "阅读版本用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        import_page = client.get("/import?mode=write")
+        imported = client.post(
+            "/import",
+            data={
+                "title": "海边录音",
+                "initial_mode": "write",
+                "csrf": csrf_from(import_page.text),
+            },
+            files={
+                "work_file": (
+                    "sea.md",
+                    "第一章 录音\n海浪盖住了最后一句话。".encode(),
+                    "text/markdown",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert imported.status_code == 303
+        assert imported.headers["location"].startswith("/novels/")
+        project_id = imported.headers["location"].split("/novels/", 1)[1].split(
+            "/", 1
+        )[0]
+        workbench = client.get(imported.headers["location"])
+        assert "作品档案" in workbench.text
+        assert "生成阅读版" in workbench.text
+
+        snapshot = client.post(
+            f"/novels/{project_id}/reading-snapshots",
+            data={"csrf": csrf_from(workbench.text)},
+            follow_redirects=False,
+        )
+        assert snapshot.status_code == 303
+        assert snapshot.headers["location"].startswith("/documents/")
+        reader = client.get(snapshot.headers["location"])
+        assert "阅读版" in reader.text
+        assert "切换到创作模式" in reader.text
+
+        user = application.state.database.get_user_by_username(
+            "阅读版本用户"
+        )
+        works = application.state.database.list_works(int(user["id"]))
+        assert len(works) == 1
+        assert len(works[0]["writing_editions"]) == 1
+        assert len(works[0]["reading_editions"]) == 1
+        assert works[0]["reading_editions"][0]["kind"] == "snapshot"
+
+
 def test_full_mock_novel_writing_workflow(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:

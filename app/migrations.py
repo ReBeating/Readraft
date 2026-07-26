@@ -2920,6 +2920,167 @@ def _unified_model_adapter_v30(
     )
 
 
+def _unified_work_library_v31(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS works (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '',
+                origin TEXT NOT NULL DEFAULT 'created',
+                last_mode TEXT NOT NULL DEFAULT 'write',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS work_editions (
+                id TEXT PRIMARY KEY,
+                work_id TEXT NOT NULL
+                    REFERENCES works(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                project_id TEXT
+                    REFERENCES novel_projects(id) ON DELETE CASCADE,
+                document_id TEXT
+                    REFERENCES documents(id) ON DELETE CASCADE,
+                source_edition_id TEXT
+                    REFERENCES work_editions(id) ON DELETE SET NULL,
+                branch_intent TEXT NOT NULL DEFAULT 'original',
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK (
+                    (project_id IS NOT NULL AND document_id IS NULL)
+                    OR
+                    (project_id IS NULL AND document_id IS NOT NULL)
+                )
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS work_archive_entries (
+                id TEXT PRIMARY KEY,
+                work_id TEXT NOT NULL
+                    REFERENCES works(id) ON DELETE CASCADE,
+                edition_id TEXT
+                    REFERENCES work_editions(id) ON DELETE SET NULL,
+                entry_type TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                provenance TEXT NOT NULL DEFAULT 'author',
+                status TEXT NOT NULL DEFAULT 'draft',
+                evidence TEXT NOT NULL DEFAULT '',
+                source_ref TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_work_editions_project
+            ON work_editions(project_id)
+            WHERE project_id IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_work_editions_document
+            ON work_editions(document_id)
+            WHERE document_id IS NOT NULL
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_works_user_updated
+            ON works(user_id, updated_at DESC)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_work_editions_work_created
+            ON work_editions(work_id, is_primary DESC, created_at DESC)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_work_archive_entries_work
+            ON work_archive_entries(work_id, entry_type, updated_at DESC)
+            """,
+        ),
+    )
+
+    projects = connection.execute(
+        """
+        SELECT p.*
+        FROM novel_projects p
+        LEFT JOIN work_editions e ON e.project_id=p.id
+        WHERE e.id IS NULL
+        ORDER BY p.created_at, p.id
+        """
+    ).fetchall()
+    for project in projects:
+        work_id = uuid.uuid4().hex
+        edition_id = uuid.uuid4().hex
+        created_at = str(project["created_at"] or applied_at)
+        updated_at = str(project["updated_at"] or created_at)
+        connection.execute(
+            """
+            INSERT INTO works(
+                id, user_id, title, origin, last_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, 'created', 'write', ?, ?)
+            """,
+            (
+                work_id,
+                int(project["user_id"]),
+                str(project["title"] or ""),
+                created_at,
+                updated_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO work_editions(
+                id, work_id, kind, label, project_id, branch_intent,
+                is_primary, created_at, updated_at
+            ) VALUES (?, ?, 'writing', '创作稿', ?, 'original', 1, ?, ?)
+            """,
+            (edition_id, work_id, str(project["id"]), created_at, updated_at),
+        )
+
+    documents = connection.execute(
+        """
+        SELECT d.*
+        FROM documents d
+        LEFT JOIN work_editions e ON e.document_id=d.id
+        WHERE e.id IS NULL
+        ORDER BY d.created_at, d.id
+        """
+    ).fetchall()
+    for document in documents:
+        work_id = uuid.uuid4().hex
+        edition_id = uuid.uuid4().hex
+        created_at = str(document["created_at"] or applied_at)
+        connection.execute(
+            """
+            INSERT INTO works(
+                id, user_id, title, origin, last_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, 'imported', 'read', ?, ?)
+            """,
+            (
+                work_id,
+                int(document["user_id"]),
+                str(document["title"] or ""),
+                created_at,
+                created_at,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO work_editions(
+                id, work_id, kind, label, document_id, branch_intent,
+                is_primary, created_at, updated_at
+            ) VALUES (?, ?, 'source', '导入原文', ?, 'original', 1, ?, ?)
+            """,
+            (edition_id, work_id, str(document["id"]), created_at, created_at),
+        )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3030,6 +3191,11 @@ MIGRATIONS = (
         30,
         "unified_model_adapter_v30",
         _unified_model_adapter_v30,
+    ),
+    Migration(
+        31,
+        "unified_work_library_v31",
+        _unified_work_library_v31,
     ),
 )
 

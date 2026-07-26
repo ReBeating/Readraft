@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}导入 · {{ app_name }}{% endblock %}
+{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-14">
+{% endblock %}
+{% block site_header %}{% endblock %}
+{% block status_banner %}{% endblock %}
+{% block site_footer %}{% endblock %}
+{% block main_class %}studio-settings-page{% endblock %}
+{% block content %}
+  <div class="studio-settings-shell" data-studio-theme>
+    <header class="studio-settings-header">
+      <a class="studio-icon-button" href="/dashboard" aria-label="返回作品库">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m15 18-6-6 6-6"></path>
+        </svg>
+      </a>
+      <h1>导入</h1>
+      <div class="studio-toolbar-side studio-toolbar-trailing">
+        <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+          <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+          </svg>
+          <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+        </button>
+        <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
+          </svg>
+        </a>
+      </div>
+    </header>
+
+    <main class="studio-import-main">
+      <form
+        method="post"
+        action="/import"
+        enctype="multipart/form-data"
+        class="studio-import-card"
+        data-unified-import
+      >
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        {% if error %}<div class="studio-alert error" role="alert">{{ error }}</div>{% endif %}
+
+        <div class="studio-import-heading">
+          <h2>选择文件</h2>
+          <p>支持 TXT、Markdown 和 novelAI 作品归档。</p>
+        </div>
+
+        <label class="studio-import-file">
+          <input
+            type="file"
+            name="work_file"
+            accept=".txt,.text,.md,.zip,.novelai.zip,text/plain,text/markdown,application/zip"
+            required
+            data-import-file
+          >
+          <span aria-hidden="true">⇧</span>
+          <strong>选择文件</strong>
+          <small>文本最大 {{ max_upload_mb }} MB · 归档最大 {{ max_archive_mb }} MB</small>
+        </label>
+
+        <label>
+          <span>作品名（可选）</span>
+          <input name="title" value="{{ title or '' }}" maxlength="120" placeholder="不填则使用文件名">
+        </label>
+
+        <fieldset class="studio-import-mode" data-import-mode>
+          <legend>导入后先做什么</legend>
+          <label>
+            <input type="radio" name="initial_mode" value="read" {% if initial_mode != 'write' %}checked{% endif %}>
+            <span>
+              <strong>阅读与分析</strong>
+              <small>保留只读原文，之后仍可创建改写或续写分支。</small>
+            </span>
+          </label>
+          <label>
+            <input type="radio" name="initial_mode" value="write" {% if initial_mode == 'write' %}checked{% endif %}>
+            <span>
+              <strong>作为创作稿</strong>
+              <small>章节直接进入可编辑工作台。</small>
+            </span>
+          </label>
+        </fieldset>
+
+        <p class="studio-import-archive-note" data-import-archive-note hidden>
+          作品归档会按原结构恢复，不需要选择模式。
+        </p>
+
+        <div class="studio-api-actions">
+          <a class="studio-button" href="/dashboard">取消</a>
+          <button class="studio-button primary" type="submit">导入</button>
+        </div>
+      </form>
+    </main>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-3" defer></script>
+{% endblock %}

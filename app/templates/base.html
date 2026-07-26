@@ -18,10 +18,10 @@
         </a>
         {% if user %}
           <nav class="nav-actions" aria-label="主导航">
-            <a href="/dashboard">创作</a>
+            <a href="/dashboard">作品库</a>
             <a href="/techniques">技法库</a>
             <a href="{{ model_settings_url }}" data-model-settings-open>模型配置</a>
-            <a class="button small" href="/upload">拆文工具</a>
+            <a class="button small" href="/import">导入</a>
             <form method="post" action="/logout">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <button class="link-button" type="submit">退出 {{ user.username }}</button>
@@ -51,7 +51,7 @@
       {% include "_model_settings_dialog.html" %}
     {% endif %}
     {% block site_footer %}
-    <footer class="shell footer">{{ app_name }} · 设定、正文与 API 凭据保存在你自己的服务器</footer>
+    <footer class="shell footer">{{ app_name }} · 作品档案、正文与 API 凭据保存在你自己的服务器</footer>
     {% endblock %}
     {% block scripts %}{% endblock %}
     {% if user and not suppress_model_settings_dialog %}

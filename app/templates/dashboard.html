@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}我的书 · {{ app_name }}{% endblock %}
+{% block title %}作品库 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-13">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-14">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -49,15 +49,18 @@
 
     <main class="studio-library">
       <div class="studio-library-heading">
-        <h1>我的书</h1>
         <div>
-          <a class="studio-button" href="/projects/import">
-            <span aria-hidden="true">⇧</span> 导入作品
+          <h1>作品库</h1>
+          <p>同一本作品可以同时拥有阅读分析和创作版本。</p>
+        </div>
+        <div class="studio-library-create">
+          <a class="studio-button" href="/import" aria-description="导入作品；导入参考书">
+            <span aria-hidden="true">⇧</span> 导入
           </a>
           <form method="post" action="/novels/new/blank" class="studio-inline-form">
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <button class="studio-button primary" type="submit">
-              <span aria-hidden="true">＋</span> 新建作品
+              <span aria-hidden="true">＋</span> 新建
             </button>
           </form>
         </div>
@@ -65,100 +68,106 @@
 
       {% if error %}<div class="studio-alert error" role="alert">{{ error }}</div>{% endif %}
       {% if deleted %}<div class="studio-alert success" role="status">作品已删除。</div>{% endif %}
-      {% if imported %}<div class="studio-alert success" role="status">作品归档已验证并导入。</div>{% endif %}
+      {% if imported %}<div class="studio-alert success" role="status">作品已导入。</div>{% endif %}
 
       <section class="studio-library-section">
-        <h2>创作中的作品</h2>
-        {% if projects %}
+        <h2>全部作品</h2>
+        {% if works %}
           <div class="studio-book-list">
-            {% for project in projects %}
-              <div class="studio-book-row studio-project-row">
-                <a class="studio-book-link" href="/novels/{{ project.id }}/workbench">
+            {% for work in works %}
+              <article class="studio-book-row studio-work-row">
+                <a class="studio-book-link" href="{{ work.resume_url }}">
                   <span>
-                    <strong>{{ project.title or '未命名作品' }}</strong>
-                    <small>{% if project.genre %}{{ project.genre }}{% else %}构思中{% endif %} · {{ project.chapter_count }} 章{% if project.total_chars %} · {{ project.total_chars|human_size }}{% endif %}</small>
+                    <strong>{{ work.title or '未命名作品' }}</strong>
+                    <small>
+                      {% if work.has_writing %}
+                        创作 · {{ work.active_project.project_chapter_count }} 章
+                      {% endif %}
+                      {% if work.has_writing and work.has_reading %} · {% endif %}
+                      {% if work.has_reading %}
+                        阅读分析 · {{ work.reading_editions|length }} 个版本{% if work.analysis_count %} · {{ work.analysis_count }} 章已分析{% endif %}
+                      {% endif %}
+                    </small>
                   </span>
                 </a>
+
                 <div class="studio-book-controls">
-                  <nav class="studio-book-actions" aria-label="《{{ project.title or '未命名作品' }}》文件操作">
-                    <a
-                      href="/novels/{{ project.id }}/export.txt"
-                      aria-label="导出正文"
-                      data-tooltip="导出正文（TXT）"
-                    >
-                      <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
-                      </svg>
-                      <span class="studio-export-format" aria-hidden="true">TXT</span>
-                    </a>
-                    <a
-                      href="/novels/{{ project.id }}/export.novelai.zip"
-                      aria-label="导出归档"
-                      data-tooltip="导出归档（ZIP）"
-                    >
-                      <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
-                      </svg>
-                      <span class="studio-export-format" aria-hidden="true">ZIP</span>
-                    </a>
+                  <nav class="studio-mode-actions" aria-label="《{{ work.title or '未命名作品' }}》打开方式">
+                    {% if work.active_document %}
+                      <a href="/documents/{{ work.active_document.document_id }}">阅读</a>
+                    {% endif %}
+                    {% if work.active_project %}
+                      <a href="/novels/{{ work.active_project.project_id }}/workbench">创作</a>
+                    {% endif %}
+                    <a href="/works/{{ work.id }}/archive">档案</a>
                   </nav>
-                  <form class="studio-delete-book-form" data-delete-project-form method="post" action="/novels/{{ project.id }}/delete">
+
+                  {% if work.active_project %}
+                    <nav class="studio-book-actions" aria-label="《{{ work.title or '未命名作品' }}》文件操作">
+                      <a
+                        href="/novels/{{ work.active_project.project_id }}/export.txt"
+                        aria-label="导出正文"
+                        data-tooltip="导出正文（TXT）"
+                      >
+                        <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
+                        </svg>
+                        <span class="studio-export-format" aria-hidden="true">TXT</span>
+                      </a>
+                      <a
+                        href="/novels/{{ work.active_project.project_id }}/export.novelai.zip"
+                        aria-label="导出归档"
+                        data-tooltip="导出归档（ZIP）"
+                      >
+                        <svg class="studio-export-icon" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"></path>
+                        </svg>
+                        <span class="studio-export-format" aria-hidden="true">ZIP</span>
+                      </a>
+                    </nav>
+                  {% endif %}
+
+                  <form
+                    class="studio-delete-book-form"
+                    data-delete-work-form
+                    data-delete-project-form
+                    method="post"
+                    action="{% if work.has_writing and not work.has_reading and work.writing_editions|length == 1 %}/novels/{{ work.active_project.project_id }}/delete{% else %}/works/{{ work.id }}/delete{% endif %}"
+                  >
                     <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                    <button class="studio-delete-book" type="submit" aria-label="删除《{{ project.title or '未命名作品' }}》" title="删除作品">
+                    <button class="studio-delete-book" type="submit" aria-label="删除《{{ work.title or '未命名作品' }}》" title="删除作品">
                       <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
                       </svg>
                     </button>
                   </form>
                 </div>
-              </div>
+              </article>
             {% endfor %}
           </div>
         {% else %}
           <div class="studio-empty">
             <strong>还没有作品</strong>
-            <p>不需要先想好书名，从一个人物、画面或念头开始就可以。</p>
-            <form method="post" action="/novels/new/blank" class="studio-inline-form">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <button class="studio-button primary" type="submit">开始第一部小说</button>
-            </form>
+            <p>可以从一个念头开始，也可以导入已有文本。</p>
+            <div class="studio-empty-actions">
+              <a class="studio-button" href="/import">导入文本</a>
+              <form method="post" action="/novels/new/blank" class="studio-inline-form">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button class="studio-button primary" type="submit">新建作品</button>
+              </form>
+            </div>
           </div>
-        {% endif %}
-      </section>
-
-      <section class="studio-library-section">
-        <div class="studio-library-heading">
-          <h2>参考书库</h2>
-          <a class="studio-button" href="/upload">导入参考书</a>
-        </div>
-        {% if documents %}
-          <div class="studio-book-list">
-            {% for document in documents %}
-              <a class="studio-book-row studio-book-link" href="/documents/{{ document.id }}">
-                <span>
-                  <strong>{{ document.title }}</strong>
-                  <small>只读参考 · {{ document.chapter_count }} 个分析单元</small>
-                </span>
-              </a>
-            {% endfor %}
-          </div>
-        {% else %}
-          <p class="studio-muted">尚未导入参考书。导入内容默认只读，拆解结果用于学习方法。</p>
         {% endif %}
       </section>
 
       {% if using_mock %}
-        <p class="studio-local-note">
-          当前为自动化测试模式，AI 输出来自确定性测试模型。
-        </p>
+        <p class="studio-local-note">当前为自动化测试模式，AI 输出来自确定性测试模型。</p>
       {% elif api_missing %}
-        <p class="studio-local-note">
-          尚未配置模型服务；完成配置后才能开始 AI 创作与分析。
-        </p>
+        <p class="studio-local-note">尚未配置模型服务；完成配置后才能开始 AI 创作与分析。</p>
       {% endif %}
     </main>
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-2" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-3" defer></script>
 {% endblock %}

@@ -1211,7 +1211,7 @@ def test_v20_migrates_v17_links_without_creating_ai_or_adoption_records(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 30
+                ).fetchone()[0] == 31
         assert migrated.execute(
             "SELECT COUNT(*) FROM novel_chapter_causal_links"
         ).fetchone()[0] == 1

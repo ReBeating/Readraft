@@ -1,55 +1,127 @@
 {% extends "base.html" %}
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
+{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-14">
+{% endblock %}
+{% block site_header %}{% endblock %}
+{% block status_banner %}{% endblock %}
+{% block site_footer %}{% endblock %}
+{% block main_class %}studio-settings-page{% endblock %}
 {% block content %}
-  <section class="page-heading split-heading">
-    <div>
-      <a class="back-link" href="/dashboard">← 返回创作工作台</a>
+  <div class="studio-settings-shell" data-studio-theme>
+    <header class="studio-settings-header">
+      <a class="studio-icon-button" href="/dashboard" aria-label="返回作品库">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m15 18-6-6 6-6"></path>
+        </svg>
+      </a>
       <h1>{{ document.title }}</h1>
-      <p>{{ document.original_filename }} · {{ document.char_count|human_size }} · {{ document.chapter_count }} 个分析单元</p>
-    </div>
-    <div class="heading-actions">
-      <a class="button" href="/documents/{{ document.id }}/assistant">和 AI 拆书讨论</a>
-      {% if document.latest_job_id %}
-        <a class="button" href="/jobs/{{ document.latest_job_id }}">查看最近任务</a>
-      {% endif %}
-      {% if document.latest_job_status not in ['queued', 'running'] %}
-        <form method="post" action="/documents/{{ document.id }}/analyze">
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <button class="button primary" type="submit">
-            {% if document.latest_job_id %}重新分析{% else %}开始 DeepSeek 拆文{% endif %}
-          </button>
-        </form>
-      {% endif %}
-    </div>
-  </section>
+      <div class="studio-toolbar-side studio-toolbar-trailing">
+        <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+          <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+          </svg>
+          <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+        </button>
+        {% if work and writing_mode_project %}
+          <a class="studio-icon-button" href="/novels/{{ writing_mode_project.project_id }}/workbench" aria-label="切换到创作模式">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20ZM13.8 6.7l3.5 3.5M14.8 5.7l1.4-1.4a2 2 0 0 1 2.8 0l.7.7a2 2 0 0 1 0 2.8l-1.4 1.4"></path>
+            </svg>
+          </a>
+        {% endif %}
+        <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
+          </svg>
+        </a>
+        <a class="studio-icon-button" href="/documents/{{ document.id }}/assistant" aria-label="AI 对话">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m12 3 1.1 3.4L16.5 7.5l-3.4 1.1L12 12l-1.1-3.4-3.4-1.1 3.4-1.1L12 3Z"></path>
+            <path d="m18 13 .8 2.2L21 16l-2.2.8L18 19l-.8-2.2L15 16l2.2-.8L18 13Z"></path>
+          </svg>
+        </a>
+      </div>
+    </header>
 
-  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-
-  <section class="card table-card">
-    <div class="section-heading">
-      <h2>章节目录</h2>
-      <span>{{ chapters|length }} 项</span>
-    </div>
-    <div class="chapter-list">
-      {% for chapter in chapters %}
-        <div class="chapter-row">
-          <span class="chapter-number">{{ "%03d"|format(chapter.position) }}</span>
-          <div class="chapter-main">
-            <strong>{{ chapter.title }}</strong>
-            <span>{{ chapter.char_count|human_size }} · {{ chapter.kind }}</span>
-          </div>
-          <div class="chapter-row-actions">
-            <a class="text-link" href="/documents/{{ document.id }}/assistant?new=true&amp;reference_chapter_id={{ chapter.id }}">引用本章提问</a>
-            {% if chapter.analysis_id and chapter.analysis_status == 'completed' %}
-              <a class="text-link" href="/analyses/{{ chapter.analysis_id }}">查看结果 →</a>
-            {% elif chapter.analysis_status %}
-              <span class="status {{ chapter.analysis_status }}">{{ chapter.analysis_status|status_label }}</span>
-            {% else %}
-              <span class="muted">未分析</span>
-            {% endif %}
-          </div>
+    <main class="studio-reader-main">
+      <div class="studio-reader-heading">
+        <div>
+          <span class="studio-section-label">
+            {% if document_edition and document_edition.kind == 'snapshot' %}阅读版{% else %}导入原文{% endif %}
+          </span>
+          <h2>{{ document.title }}</h2>
+          <p>{{ document.char_count|human_size }} · {{ document.chapter_count }} 章</p>
         </div>
-      {% endfor %}
-    </div>
-  </section>
+        <div class="studio-reader-actions">
+          {% if work %}
+            <a class="studio-button" href="/works/{{ work.id }}/archive">作品档案</a>
+          {% endif %}
+          {% if not document_edition or document_edition.kind != 'snapshot' %}
+            <form method="post" action="/documents/{{ document.id }}/writing-branches">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="intent" value="rewrite">
+              <button class="studio-button" type="submit">改写</button>
+            </form>
+            <form method="post" action="/documents/{{ document.id }}/writing-branches">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="intent" value="sequel">
+              <button class="studio-button" type="submit">续写</button>
+            </form>
+          {% endif %}
+          {% if document.latest_job_id %}
+            <a class="studio-button" href="/jobs/{{ document.latest_job_id }}">分析任务</a>
+          {% endif %}
+          {% if document.latest_job_status not in ['queued', 'running'] %}
+            <form method="post" action="/documents/{{ document.id }}/analyze">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="studio-button primary" type="submit">
+                {% if document.latest_job_id %}重新分析{% else %}开始分析{% endif %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
+
+      <section class="studio-reader-chapters">
+        <div class="studio-archive-section-heading">
+          <div>
+            <h3>章节</h3>
+            <p>原文保持只读；分析结果会汇总到作品档案。</p>
+          </div>
+          <span>{{ chapters|length }} 章</span>
+        </div>
+        <div class="studio-reader-chapter-list">
+          {% for chapter in chapters %}
+            <article class="studio-reader-chapter">
+              <span>{{ "%03d"|format(chapter.position) }}</span>
+              <div>
+                <strong>{{ chapter.title }}</strong>
+                <small>{{ chapter.char_count|human_size }} · {{ chapter.kind }}</small>
+              </div>
+              <nav>
+                <a href="/documents/{{ document.id }}/assistant?new=true&amp;reference_chapter_id={{ chapter.id }}">引用提问</a>
+                {% if chapter.analysis_id and chapter.analysis_status == 'completed' %}
+                  <a href="/analyses/{{ chapter.analysis_id }}">查看分析</a>
+                {% elif chapter.analysis_status %}
+                  <span>{{ chapter.analysis_status|status_label }}</span>
+                {% else %}
+                  <span>未分析</span>
+                {% endif %}
+              </nav>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-3" defer></script>
 {% endblock %}

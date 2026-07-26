@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}作品档案 · {{ work.title or '未命名作品' }}{% endblock %}
+{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-14">
+{% endblock %}
+{% block site_header %}{% endblock %}
+{% block status_banner %}{% endblock %}
+{% block site_footer %}{% endblock %}
+{% block main_class %}studio-settings-page{% endblock %}
+{% block content %}
+  <div class="studio-settings-shell" data-studio-theme>
+    <header class="studio-settings-header">
+      <a class="studio-icon-button" href="/dashboard" aria-label="返回作品库">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m15 18-6-6 6-6"></path>
+        </svg>
+      </a>
+      <h1>{{ work.title or '未命名作品' }}</h1>
+      <div class="studio-toolbar-side studio-toolbar-trailing">
+        <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+          <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+          </svg>
+          <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+        </button>
+        <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
+          </svg>
+        </a>
+      </div>
+    </header>
+
+    <main class="studio-archive-main">
+      <div class="studio-archive-heading">
+        <div>
+          <span class="studio-section-label">作品档案</span>
+          <h2>{{ work.title or '未命名作品' }}</h2>
+          <p>分析记录事实与观察；创作资料约束接下来要写什么。</p>
+        </div>
+        <nav class="studio-mode-actions" aria-label="打开作品">
+          {% if work.active_document %}
+            <a href="/documents/{{ work.active_document.document_id }}">阅读</a>
+          {% endif %}
+          {% if work.active_project %}
+            <a href="/novels/{{ work.active_project.project_id }}/workbench">创作</a>
+          {% endif %}
+        </nav>
+      </div>
+
+      {% if error %}<div class="studio-alert error" role="alert">{{ error }}</div>{% endif %}
+      {% if saved %}<div class="studio-alert success" role="status">已加入作品档案。</div>{% endif %}
+
+      <section class="studio-archive-section">
+        <div class="studio-archive-section-heading">
+          <div>
+            <h3>版本</h3>
+            <p>原文、阅读快照和创作分支归在同一本作品下。</p>
+          </div>
+        </div>
+        <div class="studio-edition-grid">
+          {% for edition in work.editions %}
+            <a
+              class="studio-edition-card"
+              href="{% if edition.project_id %}/novels/{{ edition.project_id }}/workbench{% else %}/documents/{{ edition.document_id }}{% endif %}"
+            >
+              <span>
+                {% if edition.kind == 'source' %}原文
+                {% elif edition.kind == 'snapshot' %}阅读版
+                {% elif edition.branch_intent == 'rewrite' %}改写
+                {% elif edition.branch_intent == 'sequel' %}续写
+                {% else %}创作稿{% endif %}
+              </span>
+              <strong>{{ edition.label }}</strong>
+              <small>
+                {% if edition.project_id %}
+                  {{ edition.project_chapter_count }} 章 · 可编辑
+                {% else %}
+                  {{ edition.document_chapter_count }} 章 · 只读
+                {% endif %}
+              </small>
+            </a>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="studio-archive-section">
+        <div class="studio-archive-section-heading">
+          <div>
+            <h3>分析与事实</h3>
+            <p>这里是对已有文本的描述，不会自动变成创作规则。</p>
+          </div>
+          <details class="studio-archive-add">
+            <summary>＋ 添加记录</summary>
+            <form method="post" action="/works/{{ work.id }}/archive">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <label>
+                <span>类型</span>
+                <select name="entry_type">
+                  <option value="analysis_note">分析笔记</option>
+                  <option value="source_fact">原文事实</option>
+                  <option value="creative_rule">创作规则</option>
+                  <option value="material">素材</option>
+                </select>
+              </label>
+              <label>
+                <span>标题（可选）</span>
+                <input name="title" maxlength="120">
+              </label>
+              <label>
+                <span>内容</span>
+                <textarea name="content" rows="5" maxlength="20000" required></textarea>
+              </label>
+              <label>
+                <span>依据（可选）</span>
+                <input name="evidence" maxlength="2000" placeholder="例如：第 3 章">
+              </label>
+              <button class="studio-button primary" type="submit">保存</button>
+            </form>
+          </details>
+        </div>
+
+        {% if entries %}
+          <div class="studio-archive-note-grid">
+            {% for entry in entries %}
+              <article>
+                <small>
+                  {% if entry.entry_type == 'source_fact' %}原文事实
+                  {% elif entry.entry_type == 'creative_rule' %}创作规则
+                  {% elif entry.entry_type == 'material' %}素材
+                  {% else %}分析笔记{% endif %}
+                </small>
+                {% if entry.title %}<strong>{{ entry.title }}</strong>{% endif %}
+                <p>{{ entry.content }}</p>
+                {% if entry.evidence %}<span>依据：{{ entry.evidence }}</span>{% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        {% if analyses %}
+          <div class="studio-analysis-list">
+            {% for analysis in analyses %}
+              <a href="/analyses/{{ analysis.id }}">
+                <span>{{ analysis.document_title }} · 第{{ analysis.position }}章</span>
+                <strong>{{ analysis.result.chapter_title or analysis.chapter_title }}</strong>
+                <p>{{ analysis.result.summary or '查看本章分析' }}</p>
+              </a>
+            {% endfor %}
+          </div>
+        {% elif not entries %}
+          <div class="studio-settings-empty">
+            <strong>还没有分析记录</strong>
+            <p>在阅读模式开始分析，结果会自动汇总到这里。</p>
+          </div>
+        {% endif %}
+      </section>
+
+      <section class="studio-archive-section">
+        <div class="studio-archive-section-heading">
+          <div>
+            <h3>创作资料</h3>
+            <p>只有作者确认的内容才会作为写作约束。</p>
+          </div>
+          {% if work.active_project %}
+            <a class="studio-button" href="/novels/{{ work.active_project.project_id }}/workbench?view=settings">编辑</a>
+          {% endif %}
+        </div>
+        {% if project %}
+          <div class="studio-creative-records">
+            <article>
+              <small>故事核心</small>
+              <p>{{ project.premise or '尚未填写' }}</p>
+            </article>
+            <article>
+              <small>世界规则</small>
+              <p>{{ project.world_setting or '尚未填写' }}</p>
+            </article>
+            <article>
+              <small>结局与结构约束</small>
+              <p>{{ project.ending_constraint or '尚未填写' }}</p>
+            </article>
+            <article>
+              <small>人物</small>
+              <p>
+                {% if characters %}
+                  {% for character in characters %}{{ character.name }}{% if not loop.last %}、{% endif %}{% endfor %}
+                {% else %}
+                  尚未建立人物卡
+                {% endif %}
+              </p>
+            </article>
+          </div>
+        {% else %}
+          <div class="studio-settings-empty">
+            <strong>还没有创作分支</strong>
+            <p>从阅读页选择“改写”或“续写”后，创作资料会显示在这里。</p>
+          </div>
+        {% endif %}
+      </section>
+    </main>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-3" defer></script>
+{% endblock %}

@@ -118,6 +118,12 @@ from .voice_extraction import build_voice_profile_extractor
 from .version_diff import build_version_diff
 from .workflow import ChapterWorkflowService
 from .writing import build_default_writer
+from .work_library import (
+    create_reading_document_from_chunks,
+    create_reading_snapshot,
+    create_writing_branch_from_document,
+    create_writing_project_from_chunks,
+)
 
 
 logging.basicConfig(
@@ -2029,8 +2035,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        projects = database.list_novel_projects(int(user["id"]))
-        documents = database.list_documents(int(user["id"]))
+        works = database.list_works(int(user["id"]))
         technique_count = technique_service.count_cards(
             user_id=int(user["id"])
         )
@@ -2039,13 +2044,398 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             _template_context(
                 request,
                 user=user,
-                projects=projects,
-                documents=documents,
+                works=works,
                 technique_count=technique_count,
                 error=error,
                 deleted=deleted,
                 imported=imported,
             ),
+        )
+
+    @application.get("/import", response_class=HTMLResponse)
+    async def unified_import_page(
+        request: Request,
+        mode: str = "read",
+        error: Optional[str] = None,
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        initial_mode = mode if mode in {"read", "write"} else "read"
+        return render_template(
+            "work_import.html",
+            _template_context(
+                request,
+                user=user,
+                initial_mode=initial_mode,
+                error=error,
+                max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
+                max_archive_mb=(
+                    app_settings.max_project_archive_bytes // 1024 // 1024
+                ),
+            ),
+        )
+
+    @application.post("/import", response_class=HTMLResponse)
+    async def unified_import(
+        request: Request,
+        work_file: UploadFile = File(...),
+        title: str = Form(""),
+        initial_mode: str = Form("read"),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        selected_mode = (
+            initial_mode if initial_mode in {"read", "write"} else "read"
+        )
+        filename = Path(work_file.filename or "untitled.txt").name
+        lower_filename = filename.lower()
+
+        def render_import_error(message: str, status_code: int = 400):
+            return render_template(
+                "work_import.html",
+                _template_context(
+                    request,
+                    user=user,
+                    initial_mode=selected_mode,
+                    error=message,
+                    title=title.strip()[:120],
+                    max_upload_mb=(
+                        app_settings.max_upload_bytes // 1024 // 1024
+                    ),
+                    max_archive_mb=(
+                        app_settings.max_project_archive_bytes
+                        // 1024
+                        // 1024
+                    ),
+                ),
+                status_code=status_code,
+            )
+
+        if lower_filename.endswith(".zip"):
+            temporary = tempfile.NamedTemporaryFile(
+                prefix="novelai-unified-import-",
+                suffix=".zip",
+                delete=False,
+            )
+            temporary_path = Path(temporary.name)
+            total_bytes = 0
+            try:
+                while True:
+                    chunk = await work_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > app_settings.max_project_archive_bytes:
+                        raise ProjectArchiveError("作品归档文件超过允许大小")
+                    temporary.write(chunk)
+                temporary.close()
+                if total_bytes == 0:
+                    raise ProjectArchiveError("请选择非空的作品归档")
+                imported_project = import_project_archive(
+                    database=database,
+                    novels_dir=app_settings.novels_dir,
+                    user_id=user_id,
+                    archive_path=temporary_path,
+                    max_uncompressed_bytes=(
+                        app_settings.max_project_archive_bytes
+                    ),
+                )
+                database.ensure_project_work(
+                    user_id=user_id,
+                    project_id=imported_project.project_id,
+                )
+            except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
+                logger.warning("unified archive import rejected: %s", exc)
+                return render_import_error(str(exc))
+            finally:
+                temporary.close()
+                temporary_path.unlink(missing_ok=True)
+                await work_file.close()
+            return RedirectResponse(
+                f"/dashboard?imported=true&project={imported_project.project_id}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+
+        extension = Path(filename).suffix.lower()
+        if extension not in ALLOWED_EXTENSIONS:
+            await work_file.close()
+            return render_import_error(
+                "支持 TXT、Markdown 和 .novelai.zip 作品归档"
+            )
+        raw = await work_file.read(app_settings.max_upload_bytes + 1)
+        await work_file.close()
+        if len(raw) > app_settings.max_upload_bytes:
+            return render_import_error(
+                f"文件超过 {app_settings.max_upload_bytes // 1024 // 1024} MB 限制"
+            )
+        if not raw:
+            return render_import_error("文件为空")
+        try:
+            text, encoding = decode_upload(raw)
+            if not text.strip():
+                raise ValueError("文件中没有可导入的正文")
+            if len(text) > app_settings.max_text_chars:
+                raise ValueError(
+                    f"正文超过 {app_settings.max_text_chars:,} 字限制"
+                )
+            chunks = split_chapters(
+                text,
+                target_chars=app_settings.target_chapter_chars,
+                max_chars=app_settings.max_chapter_chars,
+            )
+            if not chunks:
+                raise ValueError("没有识别到可导入内容")
+            clean_title = (title.strip() or Path(filename).stem)[:120]
+            if selected_mode == "write":
+                project_id = create_writing_project_from_chunks(
+                    database=database,
+                    novels_dir=app_settings.novels_dir,
+                    user_id=user_id,
+                    title=clean_title,
+                    chunks=chunks,
+                )
+                return RedirectResponse(
+                    f"/novels/{project_id}/workbench",
+                    status_code=status.HTTP_303_SEE_OTHER,
+                )
+            document_id = create_reading_document_from_chunks(
+                database=database,
+                documents_dir=app_settings.documents_dir,
+                user_id=user_id,
+                title=clean_title,
+                original_filename=filename,
+                source_encoding=encoding,
+                source_text=text,
+                chunks=chunks,
+                max_documents=app_settings.max_documents_per_user,
+                max_stored_chars=app_settings.max_stored_chars_per_user,
+            )
+            return RedirectResponse(
+                f"/documents/{document_id}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        except ValueError as exc:
+            return render_import_error(str(exc))
+        except Exception:
+            logger.exception("failed to import work")
+            return render_import_error("导入失败，请稍后重试", 500)
+
+    @application.get(
+        "/works/{work_id}/archive", response_class=HTMLResponse
+    )
+    async def work_archive_page(
+        request: Request,
+        work_id: str,
+        saved: bool = False,
+        error: Optional[str] = None,
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work:
+            return render_template(
+                "not_found.html",
+                _template_context(request, user=user),
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        primary_project = work.get("active_project")
+        project = (
+            database.get_novel_project(
+                user_id, str(primary_project["project_id"])
+            )
+            if primary_project
+            else None
+        )
+        characters = (
+            database.list_novel_characters(
+                user_id, str(primary_project["project_id"])
+            )
+            if primary_project
+            else []
+        )
+        entries = database.list_work_archive_entries(user_id, work_id)
+        analyses = database.list_work_analyses(user_id, work_id)
+        return render_template(
+            "work_archive.html",
+            _template_context(
+                request,
+                user=user,
+                work=work,
+                project=project,
+                characters=characters,
+                entries=entries,
+                analyses=analyses,
+                saved=saved,
+                error=error,
+            ),
+        )
+
+    @application.post("/works/{work_id}/archive")
+    async def add_work_archive_note(
+        request: Request,
+        work_id: str,
+        entry_type: str = Form("analysis_note"),
+        title: str = Form(""),
+        content: str = Form(...),
+        evidence: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            clean_title = _clean_field(title, "标题", max_length=120)
+            clean_content = _clean_field(
+                content,
+                "档案内容",
+                max_length=20_000,
+                required=True,
+            )
+            clean_evidence = _clean_field(
+                evidence, "依据", max_length=2_000
+            )
+            database.add_work_archive_entry(
+                user_id=int(user["id"]),
+                work_id=work_id,
+                entry_type=entry_type,
+                title=clean_title,
+                content=clean_content,
+                evidence=clean_evidence,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                f"/works/{work_id}/archive?error={quote(str(exc))}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            f"/works/{work_id}/archive?saved=true",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post("/works/{work_id}/delete")
+    async def delete_work(
+        request: Request,
+        work_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        try:
+            deleted = database.delete_work(user_id=user_id, work_id=work_id)
+        except ValueError as exc:
+            return RedirectResponse(
+                "/dashboard?error=" + quote(str(exc)),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        if deleted is None:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        cleanup_paths = [
+            app_settings.novels_dir / str(user_id) / project_id
+            for project_id in deleted["project_ids"]
+        ]
+        cleanup_paths.extend(
+            Path(path) for path in deleted["document_paths"]
+        )
+        cleanup_failed = False
+        for path in cleanup_paths:
+            try:
+                if path.exists():
+                    shutil.rmtree(path)
+            except OSError:
+                cleanup_failed = True
+                logger.exception(
+                    "work database rows deleted but files remain path=%s",
+                    path,
+                )
+        if cleanup_failed:
+            return RedirectResponse(
+                "/dashboard?error="
+                + quote("作品已删除，但部分本地文件清理失败"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            "/dashboard?deleted=true", status_code=status.HTTP_303_SEE_OTHER
+        )
+
+    @application.post("/documents/{document_id}/writing-branches")
+    async def create_document_writing_branch(
+        request: Request,
+        document_id: str,
+        intent: str = Form(...),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            project_id = create_writing_branch_from_document(
+                database=database,
+                novels_dir=app_settings.novels_dir,
+                user_id=int(user["id"]),
+                document_id=document_id,
+                intent=intent,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                f"/documents/{document_id}?error={quote(str(exc))}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        except Exception:
+            logger.exception("failed to create writing branch")
+            return RedirectResponse(
+                f"/documents/{document_id}?error={quote('创建创作分支失败')}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            f"/novels/{project_id}/workbench",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post("/novels/{project_id}/reading-snapshots")
+    async def create_project_reading_snapshot(
+        request: Request,
+        project_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            document_id = create_reading_snapshot(
+                database=database,
+                documents_dir=app_settings.documents_dir,
+                user_id=int(user["id"]),
+                project_id=project_id,
+                max_documents=app_settings.max_documents_per_user,
+                max_stored_chars=app_settings.max_stored_chars_per_user,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                _workbench_path(project_id, error=str(exc)),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        except Exception:
+            logger.exception("failed to create reading snapshot")
+            return RedirectResponse(
+                _workbench_path(project_id, error="生成阅读版失败"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            f"/documents/{document_id}",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.get(
@@ -2075,6 +2465,50 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
+        work = database.get_work_for_project(user_id, project_id)
+        if not work:
+            database.ensure_project_work(
+                user_id=user_id, project_id=project_id
+            )
+            work = database.get_work_for_project(user_id, project_id)
+        if work:
+            database.set_work_mode(
+                user_id=user_id, work_id=str(work["id"]), mode="write"
+            )
+        project_edition = (
+            next(
+                (
+                    edition
+                    for edition in work["editions"]
+                    if str(edition.get("project_id") or "") == project_id
+                ),
+                None,
+            )
+            if work
+            else None
+        )
+        related_reading_editions = (
+            [
+                edition
+                for edition in work["reading_editions"]
+                if project_edition
+                and str(edition.get("source_edition_id") or "")
+                == str(project_edition["id"])
+            ]
+            if work
+            else []
+        )
+        reading_mode_document = (
+            max(
+                related_reading_editions,
+                key=lambda edition: (
+                    str(edition.get("created_at") or ""),
+                    int(edition.get("edition_rowid") or 0),
+                ),
+            )
+            if related_reading_editions
+            else (work.get("active_document") if work else None)
+        )
         chapters = database.list_novel_chapters(user_id, project_id)
         effective_view = view if view in {"body", "settings"} else "body"
         if not chapters:
@@ -2255,6 +2689,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             _template_context(
                 request,
                 user=user,
+                work=work,
+                reading_mode_document=reading_mode_document,
                 project=project,
                 display_title=display_title,
                 chapters=chapters,
@@ -8055,17 +8491,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        return render_template(
-            "project_import.html",
-            _template_context(
-                request,
-                user=user,
-                max_archive_mb=(
-                    app_settings.max_project_archive_bytes
-                    // 1024
-                    // 1024
-                ),
-            ),
+        return RedirectResponse(
+            "/import", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @application.post("/projects/import", response_class=HTMLResponse)
@@ -8108,14 +8535,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     app_settings.max_project_archive_bytes
                 ),
             )
+            database.ensure_project_work(
+                user_id=int(user["id"]),
+                project_id=imported.project_id,
+            )
         except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
             logger.warning("project archive import rejected: %s", exc)
             return render_template(
-                "project_import.html",
+                "work_import.html",
                 _template_context(
                     request,
                     user=user,
                     error=str(exc),
+                    initial_mode="read",
+                    max_upload_mb=(
+                        app_settings.max_upload_bytes // 1024 // 1024
+                    ),
                     max_archive_mb=(
                         app_settings.max_project_archive_bytes
                         // 1024
@@ -9453,13 +9888,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        return render_template(
-            "upload.html",
-            _template_context(
-                request,
-                user=user,
-                max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
-            ),
+        return RedirectResponse(
+            "/import?mode=read", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @application.post("/upload", response_class=HTMLResponse)
@@ -9532,13 +9962,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         clean_title = clean_title[:120]
         if error:
             return render_template(
-                "upload.html",
+                "work_import.html",
                 _template_context(
                     request,
                     user=user,
                     error=error,
                     title=clean_title,
+                    initial_mode="read",
                     max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
+                    max_archive_mb=(
+                        app_settings.max_project_archive_bytes // 1024 // 1024
+                    ),
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -9577,13 +10011,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except ValueError as exc:
             shutil.rmtree(document_dir, ignore_errors=True)
             return render_template(
-                "upload.html",
+                "work_import.html",
                 _template_context(
                     request,
                     user=user,
                     error=str(exc),
                     title=clean_title,
+                    initial_mode="read",
                     max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
+                    max_archive_mb=(
+                        app_settings.max_project_archive_bytes // 1024 // 1024
+                    ),
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
@@ -9591,13 +10029,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             shutil.rmtree(document_dir, ignore_errors=True)
             logger.exception("failed to persist uploaded document")
             return render_template(
-                "upload.html",
+                "work_import.html",
                 _template_context(
                     request,
                     user=user,
                     error="保存文件失败，请稍后重试",
                     title=clean_title,
+                    initial_mode="read",
                     max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
+                    max_archive_mb=(
+                        app_settings.max_project_archive_bytes // 1024 // 1024
+                    ),
                 ),
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -9619,6 +10061,57 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
+        work = database.get_work_for_document(
+            int(user["id"]), document_id
+        )
+        document_edition = (
+            next(
+                (
+                    edition
+                    for edition in work["editions"]
+                    if str(edition.get("document_id") or "")
+                    == document_id
+                ),
+                None,
+            )
+            if work
+            else None
+        )
+        writing_mode_project = None
+        if work and document_edition:
+            if document_edition.get("source_edition_id"):
+                writing_mode_project = next(
+                    (
+                        edition
+                        for edition in work["writing_editions"]
+                        if str(edition.get("id") or "")
+                        == str(document_edition["source_edition_id"])
+                    ),
+                    None,
+                )
+            else:
+                related_writing = [
+                    edition
+                    for edition in work["writing_editions"]
+                    if str(edition.get("source_edition_id") or "")
+                    == str(document_edition["id"])
+                ]
+                if related_writing:
+                    writing_mode_project = max(
+                        related_writing,
+                        key=lambda edition: (
+                            str(edition.get("created_at") or ""),
+                            int(edition.get("edition_rowid") or 0),
+                        ),
+                    )
+        if not writing_mode_project and work:
+            writing_mode_project = work.get("active_project")
+        if work:
+            database.set_work_mode(
+                user_id=int(user["id"]),
+                work_id=str(work["id"]),
+                mode="read",
+            )
         chapters = database.list_chapters(
             int(user["id"]), document_id, document.get("latest_job_id")
         )
@@ -9627,6 +10120,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             _template_context(
                 request,
                 user=user,
+                work=work,
+                document_edition=document_edition,
+                writing_mode_project=writing_mode_project,
                 document=document,
                 chapters=chapters,
                 error=error,

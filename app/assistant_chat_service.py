@@ -2888,6 +2888,104 @@ class AssistantChatService:
         }
         return {"context": context, "sources": sources[:12]}
 
+    def _build_linked_work_context(
+        self, *, user_id: int, project_id: str
+    ) -> Dict[str, Any]:
+        with self.database.connection() as connection:
+            linked_rows = connection.execute(
+                """
+                SELECT target.branch_intent, d.id AS document_id,
+                       d.title AS document_title,
+                       c.id AS chapter_id, c.position, c.title,
+                       c.content_path, a.result_json
+                FROM work_editions target
+                JOIN work_editions source
+                  ON source.id=target.source_edition_id
+                JOIN documents d ON d.id=source.document_id
+                JOIN chapters c ON c.document_id=d.id
+                LEFT JOIN chapter_analyses a ON a.id=(
+                    SELECT latest.id
+                    FROM chapter_analyses latest
+                    JOIN analysis_jobs job ON job.id=latest.job_id
+                    WHERE latest.chapter_id=c.id
+                      AND latest.status='completed'
+                      AND job.user_id=?
+                    ORDER BY latest.finished_at DESC, latest.rowid DESC
+                    LIMIT 1
+                )
+                WHERE target.project_id=?
+                ORDER BY c.position
+                LIMIT 120
+                """,
+                (user_id, project_id),
+            ).fetchall()
+            archive_rows = connection.execute(
+                """
+                SELECT entry.entry_type, entry.title, entry.content,
+                       entry.evidence, entry.status
+                FROM work_editions edition
+                JOIN work_archive_entries entry
+                  ON entry.work_id=edition.work_id
+                WHERE edition.project_id=?
+                ORDER BY entry.updated_at DESC
+                LIMIT 80
+                """,
+                (project_id,),
+            ).fetchall()
+        linked_source = None
+        if linked_rows:
+            excerpt_ids = {
+                str(row["chapter_id"]) for row in linked_rows[-4:]
+            }
+            linked_source = {
+                "document_id": str(linked_rows[0]["document_id"]),
+                "title": str(linked_rows[0]["document_title"]),
+                "relationship": str(linked_rows[0]["branch_intent"]),
+                "semantics": (
+                    "这是不可变的来源文本及其描述性分析。改写或续写时可"
+                    "参考事实与结构，但不得把分析观察自动当成作者确认的"
+                    "创作规则。"
+                ),
+                "chapters": [
+                    {
+                        "id": str(row["chapter_id"]),
+                        "position": int(row["position"]),
+                        "title": str(row["title"]),
+                        "analysis": self._compact_analysis(
+                            _load_json(row["result_json"], {})
+                        ),
+                        "excerpt": (
+                            _read_text(row["content_path"])[:4_000]
+                            if str(row["chapter_id"]) in excerpt_ids
+                            else ""
+                        ),
+                    }
+                    for row in linked_rows
+                ],
+            }
+        archive_items = [dict(row) for row in archive_rows]
+        return {
+            "linked_source": linked_source,
+            "work_archive": {
+                "descriptive_observations": [
+                    item
+                    for item in archive_items
+                    if item["entry_type"]
+                    in {"source_fact", "analysis_note"}
+                ],
+                "creative_rules": [
+                    item
+                    for item in archive_items
+                    if item["entry_type"] == "creative_rule"
+                ],
+                "materials": [
+                    item
+                    for item in archive_items
+                    if item["entry_type"] == "material"
+                ],
+            },
+        }
+
     def _build_novel_context(
         self,
         *,
@@ -2959,6 +3057,11 @@ class AssistantChatService:
                 current_content
             )
             snapshot["current_version_id"] = current_version_id
+            snapshot.update(
+                self._build_linked_work_context(
+                    user_id=user_id, project_id=project_id
+                )
+            )
             return snapshot, sources
 
         with self.database.connection() as connection:
@@ -3084,6 +3187,9 @@ class AssistantChatService:
                     max_chars=5_000,
                 )
             )
+        linked_work_context = self._build_linked_work_context(
+            user_id=user_id, project_id=project_id
+        )
         return (
             {
                 "scope": "novel_project",
@@ -3093,6 +3199,7 @@ class AssistantChatService:
                 "confirmed_story_blueprint": blueprint_item,
                 "confirmed_plot_arcs": arc_items,
                 "canonical_recent_memory": memory_items,
+                **linked_work_context,
             },
             sources,
         )

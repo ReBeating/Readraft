@@ -325,6 +325,122 @@ def has_active_project_ai_task(
     return row is not None
 
 
+def has_active_document_ai_task(
+    connection: sqlite3.Connection, *, user_id: int, document_id: str
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM analysis_jobs
+        WHERE user_id=? AND document_id=? AND status IN ('queued', 'running')
+        LIMIT 1
+        """,
+        (user_id, document_id),
+    ).fetchone()
+    return row is not None
+
+
+def _attach_work_edition(
+    connection: sqlite3.Connection,
+    *,
+    user_id: int,
+    title: str,
+    kind: str,
+    label: str,
+    branch_intent: str,
+    project_id: Optional[str] = None,
+    document_id: Optional[str] = None,
+    work_id: Optional[str] = None,
+    source_edition_id: Optional[str] = None,
+    is_primary: bool = False,
+    origin: str = "created",
+    now: Optional[str] = None,
+) -> tuple[str, str]:
+    if (project_id is None) == (document_id is None):
+        raise ValueError("作品版本必须且只能关联一个内容对象")
+    timestamp = now or utc_now()
+    target_work_id = work_id or uuid.uuid4().hex
+    if work_id:
+        owner = connection.execute(
+            "SELECT 1 FROM works WHERE id=? AND user_id=?",
+            (work_id, user_id),
+        ).fetchone()
+        if not owner:
+            raise ValueError("作品不存在")
+    else:
+        connection.execute(
+            """
+            INSERT INTO works(
+                id, user_id, title, origin, last_mode, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                target_work_id,
+                user_id,
+                title,
+                origin,
+                "write" if project_id else "read",
+                timestamp,
+                timestamp,
+            ),
+        )
+        is_primary = True
+    if source_edition_id:
+        source = connection.execute(
+            """
+            SELECT 1 FROM work_editions
+            WHERE id=? AND work_id=?
+            """,
+            (source_edition_id, target_work_id),
+        ).fetchone()
+        if not source:
+            raise ValueError("来源版本不属于当前作品")
+    if is_primary:
+        connection.execute(
+            "UPDATE work_editions SET is_primary=0 WHERE work_id=?",
+            (target_work_id,),
+        )
+    edition_id = uuid.uuid4().hex
+    connection.execute(
+        """
+        INSERT INTO work_editions(
+            id, work_id, kind, label, project_id, document_id,
+            source_edition_id, branch_intent, is_primary,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            edition_id,
+            target_work_id,
+            kind,
+            label,
+            project_id,
+            document_id,
+            source_edition_id,
+            branch_intent,
+            int(is_primary),
+            timestamp,
+            timestamp,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE works
+        SET title=CASE WHEN TRIM(title)='' THEN ? ELSE title END,
+            last_mode=?,
+            updated_at=?
+        WHERE id=?
+        """,
+        (
+            title,
+            "write" if project_id else "read",
+            timestamp,
+            target_work_id,
+        ),
+    )
+    return target_work_id, edition_id
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
@@ -788,9 +904,15 @@ class Database:
         ending_constraint: str = "",
         planning_horizon: int = 20,
         ai_instructions: str = "",
+        work_id: Optional[str] = None,
+        source_edition_id: Optional[str] = None,
+        branch_intent: str = "original",
+        edition_label: str = "创作稿",
+        is_primary_edition: bool = False,
     ) -> str:
         now = utc_now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 INSERT INTO novel_projects(
@@ -830,8 +952,467 @@ class Database:
                 """,
                 (uuid.uuid4().hex, project_id, style_guide, now, now),
             )
+            _attach_work_edition(
+                connection,
+                user_id=user_id,
+                title=title,
+                kind="writing",
+                label=edition_label,
+                branch_intent=branch_intent,
+                project_id=project_id,
+                work_id=work_id,
+                source_edition_id=source_edition_id,
+                is_primary=is_primary_edition,
+                origin="created",
+                now=now,
+            )
             connection.commit()
         return project_id
+
+    def _hydrate_work(
+        self, connection: sqlite3.Connection, row: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        work = dict(row)
+        editions = [
+            dict(item)
+            for item in connection.execute(
+                """
+                SELECT e.*, e.rowid AS edition_rowid,
+                    p.title AS project_title,
+                    p.genre AS project_genre,
+                    p.updated_at AS project_updated_at,
+                    (
+                        SELECT COUNT(*) FROM novel_chapters ch
+                        WHERE ch.project_id=p.id
+                    ) AS project_chapter_count,
+                    (
+                        SELECT COALESCE(SUM(ch.char_count), 0)
+                        FROM novel_chapters ch
+                        WHERE ch.project_id=p.id
+                    ) AS project_char_count,
+                    d.title AS document_title,
+                    d.original_filename AS document_filename,
+                    d.char_count AS document_char_count,
+                    d.created_at AS document_created_at,
+                    (
+                        SELECT COUNT(*) FROM chapters c
+                        WHERE c.document_id=d.id
+                    ) AS document_chapter_count,
+                    (
+                        SELECT COUNT(*) FROM chapter_analyses a
+                        JOIN analysis_jobs j ON j.id=a.job_id
+                        WHERE j.document_id=d.id AND a.status='completed'
+                    ) AS completed_analysis_count
+                FROM work_editions e
+                LEFT JOIN novel_projects p ON p.id=e.project_id
+                LEFT JOIN documents d ON d.id=e.document_id
+                WHERE e.work_id=?
+                ORDER BY e.is_primary DESC, e.created_at DESC, e.id
+                """,
+                (str(work["id"]),),
+            ).fetchall()
+        ]
+        writing_editions = [
+            item for item in editions if item.get("project_id")
+        ]
+        reading_editions = [
+            item for item in editions if item.get("document_id")
+        ]
+        primary_edition = next(
+            (item for item in editions if bool(item.get("is_primary"))),
+            editions[0] if editions else None,
+        )
+        primary_project = next(
+            (
+                item
+                for item in writing_editions
+                if bool(item.get("is_primary"))
+            ),
+            writing_editions[0] if writing_editions else None,
+        )
+        primary_document = next(
+            (
+                item
+                for item in reading_editions
+                if bool(item.get("is_primary"))
+            ),
+            reading_editions[0] if reading_editions else None,
+        )
+        active_project = (
+            max(
+                writing_editions,
+                key=lambda item: (
+                    str(item.get("created_at") or ""),
+                    int(item.get("edition_rowid") or 0),
+                ),
+            )
+            if writing_editions
+            else None
+        )
+        active_document = (
+            max(
+                reading_editions,
+                key=lambda item: (
+                    str(item.get("created_at") or ""),
+                    int(item.get("edition_rowid") or 0),
+                ),
+            )
+            if reading_editions
+            else None
+        )
+        display_title = str(work.get("title") or "").strip()
+        if not display_title and primary_edition:
+            display_title = str(
+                primary_edition.get("project_title")
+                or primary_edition.get("document_title")
+                or ""
+            ).strip()
+        work.update(
+            {
+                "title": display_title,
+                "editions": editions,
+                "writing_editions": writing_editions,
+                "reading_editions": reading_editions,
+                "primary_edition": primary_edition,
+                "primary_project": primary_project,
+                "primary_document": primary_document,
+                "active_project": active_project,
+                "active_document": active_document,
+                "has_writing": bool(writing_editions),
+                "has_reading": bool(reading_editions),
+                "analysis_count": sum(
+                    int(item.get("completed_analysis_count") or 0)
+                    for item in reading_editions
+                ),
+            }
+        )
+        last_mode = str(work.get("last_mode") or "")
+        if last_mode == "read" and active_document:
+            resume_url = f"/documents/{active_document['document_id']}"
+        elif active_project:
+            resume_url = f"/novels/{active_project['project_id']}/workbench"
+        elif active_document:
+            resume_url = f"/documents/{active_document['document_id']}"
+        else:
+            resume_url = f"/works/{work['id']}/archive"
+        work["resume_url"] = resume_url
+        return work
+
+    def list_works(self, user_id: int) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT w.*,
+                    MAX(
+                        w.updated_at,
+                        COALESCE((
+                            SELECT MAX(p.updated_at)
+                            FROM work_editions e
+                            JOIN novel_projects p ON p.id=e.project_id
+                            WHERE e.work_id=w.id
+                        ), w.updated_at),
+                        COALESCE((
+                            SELECT MAX(d.created_at)
+                            FROM work_editions e
+                            JOIN documents d ON d.id=e.document_id
+                            WHERE e.work_id=w.id
+                        ), w.updated_at)
+                    ) AS activity_at
+                FROM works w
+                WHERE w.user_id=?
+                ORDER BY activity_at DESC, w.id
+                """,
+                (user_id,),
+            ).fetchall()
+            return [self._hydrate_work(connection, row) for row in rows]
+
+    def get_work(
+        self, user_id: int, work_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM works WHERE id=? AND user_id=?",
+                (work_id, user_id),
+            ).fetchone()
+            return self._hydrate_work(connection, row) if row else None
+
+    def get_work_for_project(
+        self, user_id: int, project_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT w.*
+                FROM works w
+                JOIN work_editions e ON e.work_id=w.id
+                WHERE e.project_id=? AND w.user_id=?
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            return self._hydrate_work(connection, row) if row else None
+
+    def get_work_for_document(
+        self, user_id: int, document_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT w.*
+                FROM works w
+                JOIN work_editions e ON e.work_id=w.id
+                WHERE e.document_id=? AND w.user_id=?
+                """,
+                (document_id, user_id),
+            ).fetchone()
+            return self._hydrate_work(connection, row) if row else None
+
+    def ensure_project_work(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        origin: str = "restored",
+    ) -> tuple[str, str]:
+        with self.connection() as connection:
+            existing = connection.execute(
+                """
+                SELECT e.work_id, e.id
+                FROM work_editions e
+                JOIN works w ON w.id=e.work_id
+                WHERE e.project_id=? AND w.user_id=?
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            if existing:
+                return str(existing["work_id"]), str(existing["id"])
+            project = connection.execute(
+                """
+                SELECT * FROM novel_projects
+                WHERE id=? AND user_id=?
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            if not project:
+                raise ValueError("作品不存在")
+            connection.execute("BEGIN IMMEDIATE")
+            result = _attach_work_edition(
+                connection,
+                user_id=user_id,
+                title=str(project["title"] or ""),
+                kind="writing",
+                label="创作稿",
+                branch_intent="original",
+                project_id=project_id,
+                origin=origin,
+                now=str(project["updated_at"] or utc_now()),
+            )
+            connection.commit()
+            return result
+
+    def set_work_mode(
+        self, *, user_id: int, work_id: str, mode: str
+    ) -> bool:
+        if mode not in {"read", "write"}:
+            raise ValueError("不支持的作品模式")
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE works SET last_mode=?, updated_at=?
+                WHERE id=? AND user_id=?
+                """,
+                (mode, utc_now(), work_id, user_id),
+            )
+            connection.commit()
+            return cursor.rowcount == 1
+
+    def list_work_archive_entries(
+        self, user_id: int, work_id: str
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT entry.*
+                FROM work_archive_entries entry
+                JOIN works w ON w.id=entry.work_id
+                WHERE entry.work_id=? AND w.user_id=?
+                ORDER BY entry.updated_at DESC, entry.id
+                """,
+                (work_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_work_archive_entry(
+        self,
+        *,
+        user_id: int,
+        work_id: str,
+        entry_type: str,
+        title: str,
+        content: str,
+        evidence: str = "",
+        edition_id: Optional[str] = None,
+    ) -> str:
+        if entry_type not in {
+            "source_fact",
+            "analysis_note",
+            "creative_rule",
+            "material",
+        }:
+            raise ValueError("不支持的档案类型")
+        now = utc_now()
+        entry_id = uuid.uuid4().hex
+        with self.connection() as connection:
+            owner = connection.execute(
+                "SELECT 1 FROM works WHERE id=? AND user_id=?",
+                (work_id, user_id),
+            ).fetchone()
+            if not owner:
+                raise ValueError("作品不存在")
+            if edition_id:
+                edition = connection.execute(
+                    """
+                    SELECT 1 FROM work_editions
+                    WHERE id=? AND work_id=?
+                    """,
+                    (edition_id, work_id),
+                ).fetchone()
+                if not edition:
+                    raise ValueError("档案来源版本不存在")
+            connection.execute(
+                """
+                INSERT INTO work_archive_entries(
+                    id, work_id, edition_id, entry_type, title, content,
+                    provenance, status, evidence, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'author', 'draft', ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    work_id,
+                    edition_id,
+                    entry_type,
+                    title,
+                    content,
+                    evidence,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE works SET updated_at=? WHERE id=?",
+                (now, work_id),
+            )
+            connection.commit()
+        return entry_id
+
+    def list_work_analyses(
+        self, user_id: int, work_id: str
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.id, a.result_json, a.finished_at,
+                    c.id AS chapter_id, c.position, c.title AS chapter_title,
+                    d.id AS document_id, d.title AS document_title,
+                    e.id AS edition_id, e.label AS edition_label
+                FROM work_editions e
+                JOIN works w ON w.id=e.work_id
+                JOIN documents d ON d.id=e.document_id
+                JOIN chapters c ON c.document_id=d.id
+                JOIN chapter_analyses a ON a.chapter_id=c.id
+                JOIN analysis_jobs j ON j.id=a.job_id
+                WHERE e.work_id=? AND w.user_id=? AND a.status='completed'
+                  AND j.id=(
+                      SELECT newest.id
+                      FROM analysis_jobs newest
+                      WHERE newest.document_id=d.id
+                      ORDER BY newest.created_at DESC, newest.rowid DESC
+                      LIMIT 1
+                  )
+                ORDER BY e.created_at DESC, c.position
+                """,
+                (work_id, user_id),
+            ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["result"] = _load_json(item.get("result_json"), {})
+            results.append(item)
+        return results
+
+    def delete_work(
+        self, *, user_id: int, work_id: str
+    ) -> Optional[Dict[str, List[str]]]:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            owner = connection.execute(
+                "SELECT 1 FROM works WHERE id=? AND user_id=?",
+                (work_id, user_id),
+            ).fetchone()
+            if not owner:
+                connection.rollback()
+                return None
+            project_rows = connection.execute(
+                """
+                SELECT p.id
+                FROM novel_projects p
+                JOIN work_editions e ON e.project_id=p.id
+                WHERE e.work_id=?
+                """,
+                (work_id,),
+            ).fetchall()
+            document_rows = connection.execute(
+                """
+                SELECT d.id, d.source_path
+                FROM documents d
+                JOIN work_editions e ON e.document_id=d.id
+                WHERE e.work_id=?
+                """,
+                (work_id,),
+            ).fetchall()
+            project_ids = [str(row["id"]) for row in project_rows]
+            document_ids = [str(row["id"]) for row in document_rows]
+            for project_id in project_ids:
+                if has_active_project_ai_task(
+                    connection, user_id=user_id, project_id=project_id
+                ):
+                    connection.rollback()
+                    raise ValueError(
+                        "作品有 AI 任务正在排队或运行，请完成后再删除"
+                    )
+            for document_id in document_ids:
+                if has_active_document_ai_task(
+                    connection, user_id=user_id, document_id=document_id
+                ):
+                    connection.rollback()
+                    raise ValueError(
+                        "作品有分析任务正在排队或运行，请完成后再删除"
+                    )
+            connection.execute(
+                "DELETE FROM novel_projects WHERE id IN "
+                f"({','.join('?' for _ in project_ids)})"
+                if project_ids
+                else "DELETE FROM novel_projects WHERE 0",
+                tuple(project_ids),
+            )
+            connection.execute(
+                "DELETE FROM documents WHERE id IN "
+                f"({','.join('?' for _ in document_ids)})"
+                if document_ids
+                else "DELETE FROM documents WHERE 0",
+                tuple(document_ids),
+            )
+            connection.execute(
+                "DELETE FROM works WHERE id=? AND user_id=?",
+                (work_id, user_id),
+            )
+            connection.commit()
+        return {
+            "project_ids": project_ids,
+            "document_paths": [
+                str(Path(str(row["source_path"])).parent)
+                for row in document_rows
+            ],
+        }
 
     def list_novel_projects(self, user_id: int) -> List[Dict[str, Any]]:
         with self.connection() as connection:
@@ -880,8 +1461,10 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             project = connection.execute(
                 """
-                SELECT 1 FROM novel_projects
-                WHERE id=? AND user_id=?
+                SELECT p.id, e.work_id
+                FROM novel_projects p
+                LEFT JOIN work_editions e ON e.project_id=p.id
+                WHERE p.id=? AND p.user_id=?
                 """,
                 (project_id, user_id),
             ).fetchone()
@@ -902,6 +1485,17 @@ class Database:
                 """,
                 (project_id, user_id),
             )
+            if project["work_id"]:
+                connection.execute(
+                    """
+                    DELETE FROM works
+                    WHERE id=? AND NOT EXISTS(
+                        SELECT 1 FROM work_editions
+                        WHERE work_id=works.id
+                    )
+                    """,
+                    (str(project["work_id"]),),
+                )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -955,6 +1549,18 @@ class Database:
                     user_id,
                 ),
             )
+            if cursor.rowcount:
+                connection.execute(
+                    """
+                    UPDATE works
+                    SET title=?, updated_at=?
+                    WHERE id IN (
+                        SELECT work_id FROM work_editions
+                        WHERE project_id=? AND is_primary=1
+                    )
+                    """,
+                    (title, utc_now(), project_id),
+                )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -3626,6 +4232,12 @@ class Database:
         chapter_paths: Iterable[Path],
         max_documents: Optional[int] = None,
         max_stored_chars: Optional[int] = None,
+        work_id: Optional[str] = None,
+        source_edition_id: Optional[str] = None,
+        edition_kind: str = "source",
+        branch_intent: str = "original",
+        edition_label: str = "导入原文",
+        is_primary_edition: bool = False,
     ) -> str:
         document_id = source_path.parent.name
         chunk_list = list(chunks)
@@ -3700,6 +4312,19 @@ class Database:
                         chunk.part_count,
                     ),
                 )
+            _attach_work_edition(
+                connection,
+                user_id=user_id,
+                title=title,
+                kind=edition_kind,
+                label=edition_label,
+                branch_intent=branch_intent,
+                document_id=document_id,
+                work_id=work_id,
+                source_edition_id=source_edition_id,
+                is_primary=is_primary_edition,
+                origin="imported",
+            )
             connection.commit()
         return document_id
 
