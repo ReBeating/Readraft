@@ -53,8 +53,6 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     database.upsert_api_credential(
         user_id=user_id,
@@ -63,8 +61,6 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         encrypted_key=cipher.encrypt("compatible-worker-key"),
         key_hint="••••-key",
         model="other-default-model",
-        thinking=False,
-        reasoning_effort="high",
     )
     seen = {}
 
@@ -107,7 +103,7 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
         "thinking": True,
-        "effort": "max",
+        "effort": "high",
     }
 
 
@@ -125,8 +121,6 @@ def test_writing_worker_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-flash",
-        thinking=False,
-        reasoning_effort="high",
     )
     seen = {}
 
@@ -193,8 +187,6 @@ def test_chat_worker_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -246,7 +238,7 @@ def test_chat_worker_uses_owning_users_decrypted_api_key(
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
         "thinking": True,
-        "effort": "max",
+        "effort": "high",
     }
 
 
@@ -266,8 +258,6 @@ def test_memory_worker_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -315,8 +305,8 @@ def test_memory_worker_uses_owning_users_decrypted_api_key(
     assert seen == {
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
-        "thinking": True,
-        "effort": "max",
+        "thinking": False,
+        "effort": "high",
     }
 
 
@@ -336,8 +326,6 @@ def test_planner_worker_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -410,8 +398,6 @@ def test_style_editor_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -459,7 +445,7 @@ def test_style_editor_uses_owning_users_decrypted_api_key(
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
         "thinking": True,
-        "effort": "max",
+        "effort": "high",
     }
 
 
@@ -479,8 +465,6 @@ def test_reader_planner_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -534,5 +518,5 @@ def test_reader_planner_uses_owning_users_decrypted_api_key(
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
         "thinking": True,
-        "effort": "max",
+        "effort": "high",
     }

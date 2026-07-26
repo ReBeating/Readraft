@@ -39,8 +39,6 @@ def test_api_credential_database_never_stores_plaintext(tmp_path: Path):
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-flash",
-        thinking=True,
-        reasoning_effort="max",
         system_prompt="减少解释性总结。",
         base_url="https://api.deepseek.com",
     )
@@ -49,7 +47,6 @@ def test_api_credential_database_never_stores_plaintext(tmp_path: Path):
     assert stored is not None
     assert raw_key not in stored["encrypted_key"]
     assert stored["key_hint"] == "sk-••••9876"
-    assert stored["thinking"] == 1
     assert stored["system_prompt"] == "减少解释性总结。"
     assert stored["base_url"] == "https://api.deepseek.com"
     assert cipher.decrypt(stored["encrypted_key"]) == raw_key
@@ -83,8 +80,6 @@ def test_credentials_and_models_are_kept_per_provider(tmp_path: Path):
         key_hint="sk-••••deep",
         model="deepseek-chat",
         models=["deepseek-chat", "deepseek-reasoner"],
-        thinking=False,
-        reasoning_effort="high",
     )
     database.upsert_api_credential(
         user_id=user_id,
@@ -94,8 +89,6 @@ def test_credentials_and_models_are_kept_per_provider(tmp_path: Path):
         key_hint="••••comp",
         model="writer-pro",
         models=["writer-pro", "writer-fast"],
-        thinking=False,
-        reasoning_effort="high",
     )
 
     default = database.get_api_credential(user_id)
@@ -181,6 +174,118 @@ def test_v27_credential_is_migrated_to_provider_collection(tmp_path: Path):
             if row["pk"]
         ]
         assert primary_key == ["user_id", "provider"]
+        credential_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(api_credentials)"
+            ).fetchall()
+        }
+        assert "thinking" not in credential_columns
+        assert "reasoning_effort" not in credential_columns
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_v28_reasoning_fields_are_removed_without_losing_provider_keys(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "v28.db")
+    database.initialize()
+    with database.connection() as connection:
+        connection.execute(
+            "ALTER TABLE api_credentials "
+            "ADD COLUMN thinking INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.execute(
+            "ALTER TABLE api_credentials "
+            "ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'high'"
+        )
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version=29"
+        )
+        connection.execute(
+            """
+            INSERT INTO users(id, username, password_hash, created_at)
+            VALUES (
+                9, 'v28-owner', 'password-hash',
+                '2026-01-01T00:00:00+00:00'
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO api_credentials(
+                user_id, provider, base_url, encrypted_key, key_hint, model,
+                system_prompt, is_default, created_at, updated_at,
+                thinking, reasoning_effort
+            ) VALUES (
+                9, ?, ?, ?, ?, ?, '', ?,
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00', ?, ?
+            )
+            """,
+            [
+                (
+                    "deepseek",
+                    "https://api.deepseek.com",
+                    "encrypted-deepseek",
+                    "sk-••••deep",
+                    "deepseek-chat",
+                    0,
+                    1,
+                    "max",
+                ),
+                (
+                    "openai_compatible",
+                    "https://models.example.com/v1",
+                    "encrypted-compatible",
+                    "sk-••••comp",
+                    "writer-pro",
+                    1,
+                    0,
+                    "high",
+                ),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO api_models(
+                user_id, provider, model, position, created_at
+            ) VALUES (
+                9, ?, ?, 0, '2026-01-01T00:00:00+00:00'
+            )
+            """,
+            [
+                ("deepseek", "deepseek-chat"),
+                ("openai_compatible", "writer-pro"),
+            ],
+        )
+        connection.commit()
+
+    database.initialize()
+
+    assert (
+        database.get_api_credential(9, "deepseek")["encrypted_key"]
+        == "encrypted-deepseek"
+    )
+    assert (
+        database.get_api_credential(
+            9, "openai_compatible"
+        )["encrypted_key"]
+        == "encrypted-compatible"
+    )
+    assert database.list_api_models(9, "deepseek") == ["deepseek-chat"]
+    assert database.list_api_models(9, "openai_compatible") == [
+        "writer-pro"
+    ]
+    with database.connection() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(api_credentials)"
+            ).fetchall()
+        }
+        assert "thinking" not in columns
+        assert "reasoning_effort" not in columns
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -205,8 +310,6 @@ def test_active_voice_task_protects_credentials_and_project(tmp_path: Path):
         encrypted_key="encrypted-original-key",
         key_hint="sk-••••test",
         model="deepseek-v4-flash",
-        thinking=False,
-        reasoning_effort="high",
     )
     StyleService(database).create_voice_suggestion(
         user_id=user_id,
@@ -225,8 +328,6 @@ def test_active_voice_task_protects_credentials_and_project(tmp_path: Path):
             encrypted_key="encrypted-replacement-key",
             key_hint="sk-••••next",
             model="deepseek-v4-pro",
-            thinking=False,
-            reasoning_effort="high",
         )
     with pytest.raises(ValueError, match="任务正在运行"):
         database.delete_api_credential(user_id)

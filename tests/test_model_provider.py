@@ -12,6 +12,7 @@ from app.model_provider import (
     list_providers,
     normalize_provider_base_url,
     settings_for_credential,
+    settings_for_reasoning_policy,
 )
 
 
@@ -76,6 +77,26 @@ def test_deepseek_payload_keeps_native_thinking_contract(tmp_path):
     assert payload["reasoning_effort"] == "high"
     assert payload["user_id"] == "u-safe"
     assert "temperature" not in payload
+
+
+def test_internal_reasoning_policy_is_task_and_capability_aware(tmp_path):
+    settings = make_settings(tmp_path)
+
+    fast = settings_for_reasoning_policy(settings, "fast")
+    reasoning = settings_for_reasoning_policy(settings, "reasoning")
+    deep = settings_for_reasoning_policy(settings, "deep")
+
+    assert fast.deepseek_thinking is False
+    assert fast.deepseek_reasoning_effort == "high"
+    assert reasoning.deepseek_thinking is True
+    assert reasoning.deepseek_reasoning_effort == "high"
+    assert deep.deepseek_thinking is True
+    assert deep.deepseek_reasoning_effort == "max"
+
+    openai = replace(settings, model_provider="openai")
+    portable = settings_for_reasoning_policy(openai, "deep")
+    assert portable.deepseek_thinking is False
+    assert portable.deepseek_reasoning_effort == "high"
 
 
 def test_openai_payload_uses_compatible_fields(tmp_path):
@@ -148,8 +169,6 @@ def test_personal_credential_selects_fixed_provider_url(
         credential={
             "provider": "gemini",
             "model": "gemini-2.5-flash",
-            "thinking": 0,
-            "reasoning_effort": "high",
             "system_prompt": "concise",
         },
         api_key="secret",
@@ -168,8 +187,6 @@ def test_openai_compatible_credential_uses_normalized_custom_url(tmp_path):
             "provider": "openai_compatible",
             "base_url": "https://llm.example.com/api/v1/",
             "model": "custom-chat",
-            "thinking": 0,
-            "reasoning_effort": "high",
         },
         api_key="",
     )

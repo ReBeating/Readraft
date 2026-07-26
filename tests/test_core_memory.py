@@ -623,10 +623,10 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
         connection.execute(
             """
             INSERT INTO api_credentials(
-                user_id, provider, encrypted_key, key_hint, model, thinking,
-                reasoning_effort, created_at, updated_at
+                user_id, provider, encrypted_key, key_hint, model,
+                created_at, updated_at
             ) VALUES (7, 'deepseek', 'encrypted-secret', 'sk-••••1234',
-                      'deepseek-chat', 0, 'high',
+                      'deepseek-chat',
                       '2026-01-01T00:00:00+00:00',
                       '2026-01-01T00:00:00+00:00')
             """
@@ -763,6 +763,10 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                             {
                                 "version": 28,
                                 "name": "multi_provider_credentials_v28",
+                            },
+                            {
+                                "version": 29,
+                                "name": "automatic_reasoning_policy_v29",
                             },
                         ]
         assert database.get_api_credential(7)["base_url"] == ""

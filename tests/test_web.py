@@ -598,14 +598,15 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
 
         page = client.get("/settings/api")
         assert page.status_code == 200
+        assert "开启思考模式" not in page.text
+        assert "思考强度" not in page.text
+        assert "系统会按任务自动选择快速、推理或深度推理策略" in page.text
         raw_key = "sk-personal-secret-5678"
         response = client.post(
             "/settings/api",
             data={
                 "api_key": raw_key,
                 "model": "deepseek-v4-flash",
-                "thinking": "enabled",
-                "reasoning_effort": "max",
                 "csrf": csrf_from(page.text),
             },
             follow_redirects=False,
@@ -675,7 +676,6 @@ def test_api_key_reveal_is_scoped_to_current_user_and_provider(tmp_path):
                 "api_key": owner_key,
                 "model": "deepseek-chat",
                 "models": ["deepseek-chat"],
-                "reasoning_effort": "high",
                 "csrf": csrf_from(page.text),
             },
             follow_redirects=False,
@@ -755,7 +755,6 @@ def test_user_can_select_ollama_without_api_key(tmp_path):
                 "base_url": "http://192.168.50.20:11434/v1/",
                 "api_key": "",
                 "model": "qwen3:8b",
-                "reasoning_effort": "high",
                 "csrf": csrf_from(page.text),
             },
             follow_redirects=False,
@@ -806,7 +805,6 @@ def test_user_can_save_keyless_openai_compatible_endpoint(tmp_path):
                 "base_url": "https://gateway.example.com/openai/v1/",
                 "api_key": "",
                 "model": "my-chat-model",
-                "reasoning_effort": "high",
                 "csrf": csrf_from(page.text),
             },
             follow_redirects=False,
@@ -902,7 +900,6 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
                 "api_key": deepseek_key,
                 "model": "deepseek-reasoner",
                 "models": ["deepseek-chat", "deepseek-reasoner"],
-                "reasoning_effort": "high",
                 "csrf": csrf_from(page.text),
             },
             follow_redirects=False,
@@ -922,7 +919,6 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
                 "api_key": compatible_key,
                 "model": "writer-fast",
                 "models": ["writer-fast", "writer-pro"],
-                "reasoning_effort": "high",
                 "csrf": csrf_from(compatible_page.text),
             },
             follow_redirects=False,
@@ -993,7 +989,6 @@ def test_workbench_model_picker_controls_queued_chat_model(
                 "api_key": "sk-chat-model-picker-1234",
                 "model": "deepseek-chat",
                 "models": ["deepseek-chat", "deepseek-reasoner"],
-                "reasoning_effort": "high",
                 "csrf": csrf_from(settings_page.text),
             },
             follow_redirects=False,
@@ -1028,7 +1023,9 @@ def test_workbench_model_picker_controls_queued_chat_model(
         assert queued["credential_source"] == "personal"
 
 
-def test_remote_provider_rejects_missing_key_and_thinking(tmp_path):
+def test_remote_provider_rejects_missing_key_and_ignores_legacy_thinking(
+    tmp_path,
+):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         page = client.get("/register")
@@ -1051,7 +1048,6 @@ def test_remote_provider_rejects_missing_key_and_thinking(tmp_path):
                 "provider": "openai",
                 "api_key": "",
                 "model": "gpt-4.1-mini",
-                "reasoning_effort": "high",
                 "csrf": csrf_from(page.text),
             },
         )
@@ -1068,9 +1064,18 @@ def test_remote_provider_rejects_missing_key_and_thinking(tmp_path):
                 "reasoning_effort": "high",
                 "csrf": csrf_from(response.text),
             },
+            follow_redirects=False,
         )
-        assert response.status_code == 400
-        assert "暂不支持 novelAI 的思考模式" in response.text
+        assert response.status_code == 303
+        user = application.state.database.get_user_by_username(
+            "远程模型用户"
+        )
+        credential = application.state.database.get_api_credential(
+            user["id"], "gemini"
+        )
+        assert credential["provider"] == "gemini"
+        assert "thinking" not in credential
+        assert "reasoning_effort" not in credential
 
 
 def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):

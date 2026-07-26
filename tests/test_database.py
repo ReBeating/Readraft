@@ -47,8 +47,6 @@ def test_database_job_lifecycle(tmp_path: Path):
             encrypted_key="encrypted-test-key",
             key_hint="sk-••••test",
             model="deepseek-v4-flash",
-            thinking=False,
-            reasoning_effort="high",
         )
 
     first = database.claim_next_analysis()

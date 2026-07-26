@@ -40,7 +40,12 @@ from .memory_extraction import (
     DeepSeekMemoryExtractor,
 )
 from .memory_service import MemoryService
-from .model_provider import ProviderConfigError, settings_for_credential
+from .model_provider import (
+    ProviderConfigError,
+    ReasoningPolicy,
+    settings_for_credential,
+    settings_for_reasoning_policy,
+)
 from .planning_ai import (
     BaseChapterPlanner,
     DeepSeekChapterPlanner,
@@ -183,7 +188,9 @@ class AnalysisWorker:
     def wake(self) -> None:
         self._wake.set()
 
-    async def _personal_model_settings(self, item: dict) -> Settings:
+    async def _personal_model_settings(
+        self, item: dict, reasoning_policy: ReasoningPolicy
+    ) -> Settings:
         user_id = int(item["user_id"])
         provider = str(item["provider"])
         credential = await asyncio.to_thread(
@@ -197,11 +204,14 @@ class AnalysisWorker:
             api_key = self.credential_cipher.decrypt(
                 str(credential["encrypted_key"])
             )
-            return settings_for_credential(
-                self.settings,
-                credential=credential,
-                api_key=api_key,
-                model=str(item["model"]),
+            return settings_for_reasoning_policy(
+                settings_for_credential(
+                    self.settings,
+                    credential=credential,
+                    api_key=api_key,
+                    model=str(item["model"]),
+                ),
+                reasoning_policy,
             )
         except (CredentialError, ProviderConfigError) as exc:
             raise AnalyzerError(str(exc)) from exc
@@ -2085,7 +2095,9 @@ class AnalysisWorker:
         writer = self.writer
         close_writer = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "reasoning"
+            )
             writer = DeepSeekWriter(personal_settings)
             close_writer = True
         elif self.writer is None or (
@@ -2120,7 +2132,9 @@ class AnalysisWorker:
         extractor = self.memory_extractor
         close_extractor = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "fast"
+            )
             extractor = DeepSeekMemoryExtractor(personal_settings)
             close_extractor = True
         elif self.memory_extractor is None or (
@@ -2152,7 +2166,9 @@ class AnalysisWorker:
         planner = self.chapter_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             planner = DeepSeekChapterPlanner(personal_settings)
             close_planner = True
         elif self.chapter_planner is None or (
@@ -2185,7 +2201,9 @@ class AnalysisWorker:
         planner = self.chapter_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             planner = DeepSeekChapterPlanner(personal_settings)
             close_planner = True
         elif self.chapter_planner is None or (
@@ -2218,7 +2236,9 @@ class AnalysisWorker:
         planner = self.story_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             planner = DeepSeekStoryPlanner(personal_settings)
             close_planner = True
         elif self.story_planner is None or (
@@ -2251,7 +2271,9 @@ class AnalysisWorker:
         planner = self.story_structure_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             planner = DeepSeekStoryStructurePlanner(personal_settings)
             close_planner = True
         elif self.story_structure_planner is None or (
@@ -2284,7 +2306,9 @@ class AnalysisWorker:
         planner = self.causal_suggestion_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             planner = DeepSeekCausalSuggestionPlanner(personal_settings)
             close_planner = True
         elif self.causal_suggestion_planner is None or (
@@ -2318,7 +2342,9 @@ class AnalysisWorker:
         planner = self.causal_branch_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             planner = DeepSeekCausalBranchPlanner(personal_settings)
             close_planner = True
         elif self.causal_branch_planner is None or (
@@ -2350,7 +2376,9 @@ class AnalysisWorker:
         planner = self.reader_planner
         close_planner = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "reasoning"
+            )
             planner = DeepSeekReaderPlanner(personal_settings)
             close_planner = True
         elif self.reader_planner is None or (
@@ -2383,7 +2411,9 @@ class AnalysisWorker:
         auditor = self.quality_auditor
         close_auditor = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "deep"
+            )
             auditor = DeepSeekQualityAuditor(personal_settings)
             close_auditor = True
         elif self.quality_auditor is None or (
@@ -2461,7 +2491,9 @@ class AnalysisWorker:
         extractor = self.voice_profile_extractor
         close_extractor = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "fast"
+            )
             extractor = DeepSeekVoiceProfileExtractor(personal_settings)
             close_extractor = True
         elif self.voice_profile_extractor is None or (
@@ -2499,7 +2531,9 @@ class AnalysisWorker:
         extractor = self.edit_preference_extractor
         close_extractor = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "fast"
+            )
             extractor = DeepSeekEditPreferenceExtractor(personal_settings)
             close_extractor = True
         elif self.edit_preference_extractor is None or (
@@ -2539,7 +2573,9 @@ class AnalysisWorker:
     ) -> tuple[BaseStyleEditor, bool]:
         user_id = int(item["user_id"])
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "reasoning"
+            )
             return DeepSeekStyleEditor(personal_settings), True
         if self.style_editor is None or (
             str(item["provider"]) != self.style_editor.provider
@@ -2565,7 +2601,9 @@ class AnalysisWorker:
                 str(item["chapter_title"]), content, provider_user_id
             )
 
-        personal_settings = await self._personal_model_settings(item)
+        personal_settings = await self._personal_model_settings(
+            item, "reasoning"
+        )
         analyzer = DeepSeekAnalyzer(personal_settings)
         try:
             return await analyzer.analyze(
@@ -2587,7 +2625,9 @@ class AnalysisWorker:
         model = self.assistant_chat_model
         close_model = False
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(item)
+            personal_settings = await self._personal_model_settings(
+                item, "reasoning"
+            )
             model = DeepSeekAssistantChatModel(personal_settings)
             close_model = True
         elif self.assistant_chat_model is None or (

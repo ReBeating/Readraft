@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+)
 from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
@@ -11,6 +20,9 @@ if TYPE_CHECKING:
 
 class ProviderConfigError(ValueError):
     pass
+
+
+ReasoningPolicy = Literal["fast", "reasoning", "deep"]
 
 
 @dataclass(frozen=True)
@@ -62,7 +74,7 @@ _PROVIDERS = (
             api_key_required=True,
         ),
         user_field="user_id",
-        notes="完整支持当前工作流、JSON 输出与思考模式。",
+        notes="完整支持当前工作流；系统会按任务复杂度自动使用推理能力。",
     ),
     ProviderSpec(
         id="openai",
@@ -285,6 +297,32 @@ def build_chat_payload(
     return payload
 
 
+def settings_for_reasoning_policy(
+    settings: "Settings", policy: ReasoningPolicy
+) -> "Settings":
+    """Apply one internal task policy without exposing provider knobs.
+
+    Only providers with a native, verified contract receive reasoning
+    parameters. Other providers keep their own defaults rather than receiving
+    guessed cross-vendor equivalents.
+    """
+
+    if policy not in {"fast", "reasoning", "deep"}:
+        raise ProviderConfigError("不支持的模型推理策略")
+    provider = get_provider(settings.model_provider)
+    thinking = (
+        provider.capabilities.thinking
+        and policy in {"reasoning", "deep"}
+    )
+    return replace(
+        settings,
+        deepseek_thinking=thinking,
+        deepseek_reasoning_effort=(
+            "max" if thinking and policy == "deep" else "high"
+        ),
+    )
+
+
 def settings_for_credential(
     settings: "Settings",
     *,
@@ -293,11 +331,6 @@ def settings_for_credential(
     model: Optional[str] = None,
 ) -> "Settings":
     provider = get_provider(str(credential.get("provider") or "deepseek"))
-    thinking = bool(credential.get("thinking"))
-    if thinking and not provider.capabilities.thinking:
-        raise ProviderConfigError(
-            f"{provider.label} 暂不支持 novelAI 的思考模式参数"
-        )
     base_url = normalize_provider_base_url(
         provider,
         credential.get("base_url"),
@@ -310,10 +343,8 @@ def settings_for_credential(
         deepseek_api_key=api_key or None,
         deepseek_base_url=base_url,
         deepseek_model=str(model or credential.get("model") or "").strip(),
-        deepseek_thinking=thinking,
-        deepseek_reasoning_effort=str(
-            credential.get("reasoning_effort") or "high"
-        ),
+        deepseek_thinking=False,
+        deepseek_reasoning_effort="high",
         deepseek_system_prompt=str(
             credential.get("system_prompt") or ""
         ),

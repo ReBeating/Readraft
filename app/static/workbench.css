@@ -2213,32 +2213,6 @@ body.studio-surface .studio-personal-model input[type="radio"] {
   margin: 5px 0 0;
 }
 
-.studio-api-options {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px;
-  gap: 14px;
-}
-
-.studio-api-options[hidden] {
-  display: none;
-}
-
-.studio-api-options .studio-check {
-  display: flex;
-  min-height: 46px;
-  align-items: center;
-  gap: 9px;
-  padding: 10px 12px;
-  border: 1px solid var(--studio-line);
-  border-radius: 10px;
-  background: var(--studio-input);
-}
-
-.studio-check input {
-  width: auto !important;
-  min-height: auto !important;
-}
-
 .studio-api-actions {
   display: flex;
   justify-content: flex-end;
@@ -2601,8 +2575,7 @@ body.studio-surface .studio-personal-model input[type="radio"] {
 
   .studio-model-field,
   .studio-model-manual,
-  .studio-secret-field,
-  .studio-api-options {
+  .studio-secret-field {
     grid-template-columns: 1fr;
   }
 

@@ -126,10 +126,11 @@ class Settings:
                 "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
             ).rstrip("/"),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-            deepseek_thinking=_as_bool("DEEPSEEK_THINKING", False),
-            deepseek_reasoning_effort=os.getenv(
-                "DEEPSEEK_REASONING_EFFORT", "high"
-            ),
+            # Runtime task policy owns these internal request fields. Keep the
+            # Settings attributes for provider payload construction, but do
+            # not expose deployment-wide switches that can weaken every task.
+            deepseek_thinking=False,
+            deepseek_reasoning_effort="high",
             deepseek_max_tokens=_as_int("DEEPSEEK_MAX_TOKENS", 5_000),
             deepseek_connect_timeout_seconds=_as_int(
                 "DEEPSEEK_CONNECT_TIMEOUT_SECONDS", 10

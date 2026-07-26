@@ -74,6 +74,7 @@ from .model_provider import (
     get_provider,
     list_providers,
     normalize_provider_base_url,
+    settings_for_reasoning_policy,
 )
 from .planning_schema import ChapterTaskCard, SceneBeat
 from .planning_ai import build_chapter_planner
@@ -1174,31 +1175,40 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 app_settings.deepseek_api_key
             ) or app_settings.uses_test_models
             if default_provider_configured:
-                analyzer = build_analyzer(app_settings)
-                writer = build_default_writer(app_settings)
-                memory_extractor = build_memory_extractor(app_settings)
-                chapter_planner = build_chapter_planner(app_settings)
-                quality_auditor = build_quality_auditor(app_settings)
-                style_editor = build_style_editor(app_settings)
-                reader_planner = build_reader_planner(app_settings)
-                story_planner = build_story_planner(app_settings)
+                fast_settings = settings_for_reasoning_policy(
+                    app_settings, "fast"
+                )
+                reasoning_settings = settings_for_reasoning_policy(
+                    app_settings, "reasoning"
+                )
+                deep_settings = settings_for_reasoning_policy(
+                    app_settings, "deep"
+                )
+                analyzer = build_analyzer(reasoning_settings)
+                writer = build_default_writer(reasoning_settings)
+                memory_extractor = build_memory_extractor(fast_settings)
+                chapter_planner = build_chapter_planner(deep_settings)
+                quality_auditor = build_quality_auditor(deep_settings)
+                style_editor = build_style_editor(reasoning_settings)
+                reader_planner = build_reader_planner(reasoning_settings)
+                story_planner = build_story_planner(deep_settings)
                 story_structure_planner = (
-                    build_story_structure_planner(app_settings)
+                    build_story_structure_planner(deep_settings)
                 )
                 causal_suggestion_planner = (
-                    build_causal_suggestion_planner(app_settings)
+                    build_causal_suggestion_planner(deep_settings)
                 )
                 causal_branch_planner = build_causal_branch_planner(
-                    app_settings
+                    deep_settings
                 )
                 voice_profile_extractor = (
-                    build_voice_profile_extractor(app_settings)
+                    build_voice_profile_extractor(fast_settings)
                 )
                 edit_preference_extractor = (
-                    build_edit_preference_extractor(app_settings)
+                    build_edit_preference_extractor(fast_settings)
                 )
                 assistant_chat_model = build_assistant_chat_model(
-                    app_settings
+                    reasoning_settings
                 )
             else:
                 analyzer = None
@@ -1500,8 +1510,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        thinking: Optional[bool] = None,
-        reasoning_effort: Optional[str] = None,
         system_prompt: Optional[str] = None,
         models: Optional[list[str]] = None,
         status_code: int = status.HTTP_200_OK,
@@ -1568,20 +1576,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         if current_model and current_model not in current_models:
             current_models.insert(0, current_model)
-        current_thinking = (
-            thinking
-            if thinking is not None
-            else (
-                bool(credential["thinking"])
-                if credential
-                else app_settings.deepseek_thinking
-            )
-        )
-        current_effort = reasoning_effort or (
-            str(credential["reasoning_effort"])
-            if credential
-            else app_settings.deepseek_reasoning_effort
-        )
         current_system_prompt = (
             system_prompt
             if system_prompt is not None
@@ -1612,8 +1606,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 removed=removed,
                 selected_model=current_model,
                 selected_models=current_models,
-                selected_thinking=current_thinking,
-                selected_effort=current_effort,
                 selected_system_prompt=current_system_prompt,
                 default_system_prompt=DEFAULT_SYSTEM_PROMPT,
                 server_api_available=bool(app_settings.deepseek_api_key),
@@ -1649,8 +1641,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         base_url: str = Form(""),
         model: str = Form(""),
         models: list[str] = Form([]),
-        thinking: Optional[str] = Form(None),
-        reasoning_effort: str = Form("high"),
         system_prompt: str = Form(""),
         csrf: str = Form(...),
     ):
@@ -1658,7 +1648,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
-        thinking_enabled = thinking == "enabled"
         try:
             provider_spec = get_provider(provider)
             clean_base_url = normalize_provider_base_url(
@@ -1682,15 +1671,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "全局系统提示词",
                 max_length=20_000,
             )
-            if reasoning_effort not in {"high", "max"}:
-                raise CredentialError("思考强度只能选择 high 或 max")
-            if (
-                thinking_enabled
-                and not provider_spec.capabilities.thinking
-            ):
-                raise CredentialError(
-                    f"{provider_spec.label} 暂不支持 novelAI 的思考模式"
-                )
             existing = database.get_api_credential(
                 int(user["id"]), provider_spec.id
             )
@@ -1719,8 +1699,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 encrypted_key=encrypted_key,
                 key_hint=masked_key,
                 model=clean_model,
-                thinking=thinking_enabled,
-                reasoning_effort=reasoning_effort,
                 system_prompt=clean_system_prompt,
                 models=clean_models,
             )
@@ -1732,8 +1710,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 provider=provider,
                 base_url=base_url,
                 model=model,
-                thinking=thinking_enabled,
-                reasoning_effort=reasoning_effort,
                 system_prompt=system_prompt,
                 models=models,
                 status_code=status.HTTP_400_BAD_REQUEST,

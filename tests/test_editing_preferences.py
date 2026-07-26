@@ -728,8 +728,6 @@ def test_edit_preference_extractor_uses_owning_personal_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -785,8 +783,8 @@ def test_edit_preference_extractor_uses_owning_personal_key(
     assert seen == {
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
-        "thinking": True,
-        "effort": "max",
+        "thinking": False,
+        "effort": "high",
     }
 
 

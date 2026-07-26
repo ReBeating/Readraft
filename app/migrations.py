@@ -2841,6 +2841,22 @@ def _multi_provider_credentials_v28(
     )
 
 
+def _automatic_reasoning_policy_v29(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    credential_columns = _columns(connection, "api_credentials")
+    if "thinking" in credential_columns:
+        connection.execute(
+            "ALTER TABLE api_credentials DROP COLUMN thinking"
+        )
+    credential_columns = _columns(connection, "api_credentials")
+    if "reasoning_effort" in credential_columns:
+        connection.execute(
+            "ALTER TABLE api_credentials DROP COLUMN reasoning_effort"
+        )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -2941,6 +2957,11 @@ MIGRATIONS = (
         28,
         "multi_provider_credentials_v28",
         _multi_provider_credentials_v28,
+    ),
+    Migration(
+        29,
+        "automatic_reasoning_policy_v29",
+        _automatic_reasoning_policy_v29,
     ),
 )
 

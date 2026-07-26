@@ -446,8 +446,6 @@ def test_voice_extractor_uses_owning_users_decrypted_api_key(
         encrypted_key=cipher.encrypt(raw_key),
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
-        thinking=True,
-        reasoning_effort="max",
     )
     seen = {}
 
@@ -498,8 +496,8 @@ def test_voice_extractor_uses_owning_users_decrypted_api_key(
     assert seen == {
         "api_key": raw_key,
         "model": "deepseek-v4-pro",
-        "thinking": True,
-        "effort": "max",
+        "thinking": False,
+        "effort": "high",
     }
 
 

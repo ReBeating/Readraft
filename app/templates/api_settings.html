@@ -2,7 +2,7 @@
 {% block title %}模型与提示词 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-5">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-6">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -44,7 +44,6 @@
                 value="{{ provider.id }}"
                 data-label="{{ provider.label }}"
                 data-api-key-required="{{ 'true' if provider.capabilities.api_key_required else 'false' }}"
-                data-thinking="{{ 'true' if provider.capabilities.thinking else 'false' }}"
                 data-base-url-configurable="{{ 'true' if provider.capabilities.configurable_base_url else 'false' }}"
                 data-default-base-url="{{ provider.base_url }}"
                 data-notes="{{ provider.notes }}"
@@ -165,20 +164,6 @@
           </div>
         </section>
 
-        <div class="studio-api-options" data-thinking-options>
-          <label class="studio-check">
-            <input type="checkbox" name="thinking" value="enabled" {% if selected_thinking %}checked{% endif %}>
-            <span>开启思考模式</span>
-          </label>
-          <label>
-            <span>思考强度</span>
-            <select name="reasoning_effort">
-              <option value="high" {% if selected_effort == 'high' %}selected{% endif %}>高</option>
-              <option value="max" {% if selected_effort == 'max' %}selected{% endif %}>最高</option>
-            </select>
-          </label>
-        </div>
-
         <label>
           <span>全局系统提示词</span>
           <textarea
@@ -227,6 +212,9 @@
         <h2>提示词层级</h2>
         <p>基础执行边界 → 全局系统提示词 → 本书补充指令 → 当前章节与对话。越靠后的内容越具体，但不能覆盖前面的服务端权限与事实边界。</p>
 
+        <h2>运行策略</h2>
+        <p>系统会按任务自动选择快速、推理或深度推理策略；模型不支持对应能力时使用服务商默认行为。</p>
+
         <h2>隐私</h2>
         <ul>
           <li>凭据不会存进浏览器 Cookie。</li>
@@ -272,9 +260,6 @@
       const addManualModel = form.querySelector("[data-add-manual-model]");
       const prompt = form.querySelector("[data-system-prompt]");
       const promptTemplate = form.querySelector("[data-default-system-prompt]");
-      const thinkingOptions = form.querySelector("[data-thinking-options]");
-      const thinkingInput = form.elements.thinking;
-      const reasoningEffort = form.elements.reasoning_effort;
       const apiKeyInput = form.querySelector("[data-api-key-input]");
       const apiKeyToggle = form.querySelector("[data-api-key-toggle]");
       const apiKeyHelp = form.querySelector("[data-api-key-help]");
@@ -366,15 +351,10 @@
 
       const syncProviderCapabilities = () => {
         const option = providerSelect.selectedOptions[0];
-        const supportsThinking = option.dataset.thinking === "true";
         const configurableBaseUrl = option.dataset.baseUrlConfigurable === "true";
         baseUrlField.hidden = !configurableBaseUrl;
         baseUrlInput.disabled = !configurableBaseUrl;
         baseUrlInput.required = configurableBaseUrl;
-        thinkingOptions.hidden = !supportsThinking;
-        thinkingInput.disabled = !supportsThinking;
-        reasoningEffort.disabled = !supportsThinking;
-        if (!supportsThinking) thinkingInput.checked = false;
       };
 
       const personalModelIds = () => new Set(

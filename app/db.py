@@ -62,8 +62,6 @@ CREATE TABLE IF NOT EXISTS api_credentials (
     encrypted_key TEXT NOT NULL,
     key_hint TEXT NOT NULL,
     model TEXT NOT NULL,
-    thinking INTEGER NOT NULL DEFAULT 0,
-    reasoning_effort TEXT NOT NULL DEFAULT 'high',
     system_prompt TEXT NOT NULL DEFAULT '',
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -491,7 +489,7 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, encrypted_key, key_hint,
-                           model, thinking, reasoning_effort, system_prompt,
+                           model, system_prompt,
                            is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=? AND provider=?
@@ -502,7 +500,7 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, encrypted_key, key_hint,
-                           model, thinking, reasoning_effort, system_prompt,
+                           model, system_prompt,
                            is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=?
@@ -521,7 +519,7 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, key_hint, model,
-                           thinking, reasoning_effort, system_prompt,
+                           system_prompt,
                            is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=? AND provider=?
@@ -532,7 +530,7 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT user_id, provider, base_url, key_hint, model,
-                           thinking, reasoning_effort, system_prompt,
+                           system_prompt,
                            is_default, created_at, updated_at
                     FROM api_credentials
                     WHERE user_id=?
@@ -548,7 +546,7 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT user_id, provider, base_url, key_hint, model,
-                       thinking, reasoning_effort, system_prompt,
+                       system_prompt,
                        is_default, created_at, updated_at
                 FROM api_credentials
                 WHERE user_id=?
@@ -610,8 +608,6 @@ class Database:
         encrypted_key: str,
         key_hint: str,
         model: str,
-        thinking: bool,
-        reasoning_effort: str,
         system_prompt: str = "",
         provider: str = "deepseek",
         base_url: str = "",
@@ -638,16 +634,13 @@ class Database:
                 """
                 INSERT INTO api_credentials(
                     user_id, provider, base_url, encrypted_key, key_hint, model,
-                    thinking, reasoning_effort, system_prompt,
-                    is_default, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    system_prompt, is_default, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, provider) DO UPDATE SET
                     base_url=excluded.base_url,
                     encrypted_key=excluded.encrypted_key,
                     key_hint=excluded.key_hint,
                     model=excluded.model,
-                    thinking=excluded.thinking,
-                    reasoning_effort=excluded.reasoning_effort,
                     system_prompt=excluded.system_prompt,
                     is_default=excluded.is_default,
                     updated_at=excluded.updated_at
@@ -659,8 +652,6 @@ class Database:
                     encrypted_key,
                     key_hint,
                     model,
-                    int(thinking),
-                    reasoning_effort,
                     system_prompt,
                     int(make_default),
                     now,

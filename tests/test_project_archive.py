@@ -154,8 +154,6 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
         encrypted_key="CREDENTIAL-MUST-NOT-BE-EXPORTED",
         key_hint="sk-••••test",
         model="deepseek-v4-flash",
-        thinking=False,
-        reasoning_effort="high",
     )
     return database, user_id, project_id, chapter_id
 
