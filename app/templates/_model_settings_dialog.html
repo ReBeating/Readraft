@@ -1,0 +1,28 @@
+<dialog
+  class="model-settings-dialog"
+  data-model-settings-dialog
+  data-settings-url="{{ model_settings_panel_url }}"
+  aria-labelledby="model-settings-dialog-title"
+>
+  <section class="model-settings-dialog-shell">
+    <header class="model-settings-dialog-header">
+      <div>
+        <small>全局设置</small>
+        <h2 id="model-settings-dialog-title">模型配置</h2>
+      </div>
+      <button type="button" data-model-settings-close aria-label="关闭模型配置">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m6 6 12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </header>
+    <div class="model-settings-dialog-body">
+      <p class="model-settings-dialog-loading" data-model-settings-loading>正在载入模型配置……</p>
+      <iframe
+        title="模型配置"
+        data-model-settings-frame
+        hidden
+      ></iframe>
+    </div>
+  </section>
+</dialog>

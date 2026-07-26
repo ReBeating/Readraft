@@ -229,7 +229,7 @@
           <div class="assistant-model-picker">
             <label>
               <span>本轮模型</span>
-              <select name="model_choice" {% if not model_groups %}disabled{% endif %}>
+              <select name="model_choice" data-model-choice {% if not model_groups %}disabled{% endif %}>
                 {% if model_groups %}
                   {% for group in model_groups %}
                     <optgroup label="{{ group.label }}">
@@ -243,7 +243,6 @@
                 {% endif %}
               </select>
             </label>
-            <a href="{{ model_settings_url }}">管理模型</a>
           </div>
           <div class="assistant-selected-quote" id="assistant-selected-quote" hidden>
             <span>已引用</span>

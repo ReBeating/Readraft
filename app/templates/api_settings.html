@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}模型设置 · {{ app_name }}{% endblock %}
-{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block title %}模型配置 · {{ app_name }}{% endblock %}
+{% block body_class %}studio-surface studio-settings-page{% if embedded %} studio-settings-embedded{% endif %}{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-8">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-9">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -10,29 +10,46 @@
 {% block main_class %}studio-settings-page{% endblock %}
 {% block content %}
   <div class="studio-settings-shell" data-studio-theme>
-    <header class="studio-settings-header">
-      <a class="studio-icon-button" href="{{ settings_back_url }}" aria-label="返回上一页">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m15 18-6-6 6-6"></path>
-        </svg>
-      </a>
-      <h1>模型设置</h1>
-      <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
-        <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
-        </svg>
-        <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
-          <circle cx="12" cy="12" r="4"></circle>
-          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
-        </svg>
-      </button>
-    </header>
+    {% if not embedded %}
+      <header class="studio-settings-header">
+        <a class="studio-icon-button" href="{{ settings_back_url }}" aria-label="返回上一页">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6"></path>
+          </svg>
+        </a>
+        <h1>模型配置</h1>
+        <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+          <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+          </svg>
+          <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+        </button>
+      </header>
+    {% endif %}
 
-    <div class="studio-api-grid">
+    <nav class="studio-api-tabs" aria-label="模型配置分类">
+      <a
+        href="{{ provider_tab_url }}"
+        class="{% if active_settings_tab == 'providers' %}active{% endif %}"
+        {% if active_settings_tab == 'providers' %}aria-current="page"{% endif %}
+      >模型供应商</a>
+      <a
+        href="{{ prompt_tab_url }}"
+        class="{% if active_settings_tab == 'prompts' %}active{% endif %}"
+        {% if active_settings_tab == 'prompts' %}aria-current="page"{% endif %}
+      >提示词</a>
+    </nav>
+
+    {% if active_settings_tab == "providers" %}
+      <div class="studio-api-grid">
       <div class="studio-api-main">
         <form method="post" action="/settings/api" class="studio-api-form" data-api-settings-form>
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
         <input type="hidden" name="return_to" value="{{ return_to }}">
+        <input type="hidden" name="embedded" value="{{ 'true' if embedded else 'false' }}">
 
         {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
         {% if saved %}<div class="studio-alert success">设置已保存。</div>{% endif %}
@@ -170,37 +187,6 @@
           <button class="studio-button primary" type="submit">保存模型配置</button>
         </div>
         </form>
-
-        <form
-          method="post"
-          action="/settings/model-adapter"
-          class="studio-api-form studio-adapter-form"
-        >
-          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-          <input type="hidden" name="provider" value="{{ selected_provider }}">
-          <input type="hidden" name="return_to" value="{{ return_to }}">
-
-          {% if adapter_error %}<div class="studio-alert error">{{ adapter_error }}</div>{% endif %}
-          {% if adapter_saved %}<div class="studio-alert success">通用模型适配策略已保存。</div>{% endif %}
-
-          <header class="studio-adapter-heading">
-            <h2>通用模型适配策略</h2>
-            <p>账号下所有服务商和模型共用；切换模型时不会改变。</p>
-          </header>
-          <label>
-            <span>模型受限时如何继续（可选）</span>
-            <textarea
-              name="model_adapter_prompt"
-              maxlength="20000"
-              data-model-adapter-prompt
-              placeholder="例如：如果无法直接描写虚构暴力的具体过程，保留事件、因果和人物后果，改用非露骨叙述或镜头转移，不要只返回拒绝。"
-            >{{ model_adapter_prompt }}</textarea>
-            <small>留空时不注入额外策略。它不能覆盖工具权限、正史边界、任务输出格式或模型服务自身的限制。</small>
-          </label>
-          <div class="studio-api-actions">
-            <button class="studio-button primary" type="submit">保存通用策略</button>
-          </div>
-        </form>
       </div>
 
       <aside class="studio-api-aside">
@@ -228,6 +214,7 @@
                   <input type="hidden" name="csrf" value="{{ csrf_token }}">
                   <input type="hidden" name="provider" value="{{ item.provider }}">
                   <input type="hidden" name="return_to" value="{{ return_to }}">
+                  <input type="hidden" name="embedded" value="{{ 'true' if embedded else 'false' }}">
                   <button
                     class="studio-provider-delete"
                     type="submit"
@@ -247,13 +234,54 @@
         {% endif %}
 
       </aside>
-    </div>
+      </div>
+    {% else %}
+      <div class="studio-prompt-settings">
+        <form
+          method="post"
+          action="/settings/model-adapter"
+          class="studio-api-form studio-adapter-form"
+        >
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="provider" value="{{ selected_provider }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <input type="hidden" name="embedded" value="{{ 'true' if embedded else 'false' }}">
+
+          {% if adapter_error %}<div class="studio-alert error">{{ adapter_error }}</div>{% endif %}
+          {% if adapter_saved %}<div class="studio-alert success">提示词已保存。</div>{% endif %}
+
+          <header class="studio-adapter-heading">
+            <h2>通用提示词</h2>
+            <p>账号下所有服务商和模型共用；切换模型时不会改变。</p>
+          </header>
+          <label>
+            <span>模型受限时如何继续（可选）</span>
+            <textarea
+              name="model_adapter_prompt"
+              maxlength="20000"
+              data-model-adapter-prompt
+              placeholder="例如：如果无法直接描写虚构暴力的具体过程，保留事件、因果和人物后果，改用非露骨叙述或镜头转移，不要只返回拒绝。"
+            >{{ model_adapter_prompt }}</textarea>
+            <small>留空时不注入额外策略。它不能覆盖工具权限、正史边界、任务输出格式或模型服务自身的限制。</small>
+          </label>
+          <div class="studio-api-actions">
+            <button class="studio-button primary" type="submit">保存提示词</button>
+          </div>
+        </form>
+      </div>
+    {% endif %}
   </div>
 {% endblock %}
 {% block scripts %}
   <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-2" defer></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
+      {% if embedded and (saved or removed or adapter_saved) %}
+        window.parent.postMessage(
+          {type: "novelai:model-settings-updated"},
+          window.location.origin,
+        );
+      {% endif %}
       const form = document.querySelector("[data-api-settings-form]");
       if (!form) return;
       const loadButton = form.querySelector("[data-load-models]");
@@ -453,6 +481,9 @@
       providerSelect.addEventListener("change", () => {
         const params = new URLSearchParams({provider: providerSelect.value});
         const returnTo = form.elements.return_to.value;
+        if (form.elements.embedded.value === "true") {
+          params.set("embedded", "true");
+        }
         if (returnTo && returnTo !== "/dashboard") {
           params.set("return_to", returnTo);
         }

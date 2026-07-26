@@ -1914,7 +1914,7 @@ body.studio-surface .studio-settings-form textarea:focus {
 .studio-chat-model-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
   margin-bottom: 8px;
 }
@@ -1926,8 +1926,7 @@ body.studio-surface .studio-settings-form textarea:focus {
   gap: 7px;
 }
 
-.studio-chat-model-bar span,
-.studio-chat-model-bar a {
+.studio-chat-model-bar span {
   flex: 0 0 auto;
   color: var(--studio-muted);
   font-size: 10px;
@@ -1942,10 +1941,6 @@ body.studio-surface .studio-chat-model-bar select {
   color: var(--studio-ink);
   background: var(--studio-input);
   font-size: 10px;
-}
-
-.studio-chat-model-bar a:hover {
-  color: var(--studio-accent);
 }
 
 .studio-chat-quote {
@@ -2061,6 +2056,38 @@ body.studio-surface .studio-chat-input button {
   justify-self: end;
 }
 
+.studio-api-tabs {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 20px;
+  padding: 4px;
+  border: 1px solid var(--studio-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--studio-input) 70%, transparent);
+}
+
+.studio-api-tabs a {
+  display: inline-flex;
+  min-height: 38px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: var(--studio-muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.studio-api-tabs a:hover {
+  color: var(--studio-ink);
+}
+
+.studio-api-tabs a.active {
+  color: var(--studio-accent-strong);
+  background: var(--studio-page);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--studio-ink) 8%, transparent);
+}
+
 .studio-api-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 260px;
@@ -2071,6 +2098,11 @@ body.studio-surface .studio-chat-input button {
 .studio-api-main {
   display: grid;
   gap: 22px;
+}
+
+.studio-prompt-settings {
+  width: min(680px, 100%);
+  margin-inline: auto;
 }
 
 .studio-api-form,
@@ -2382,6 +2414,56 @@ body.studio-surface .studio-personal-model input[type="radio"] {
 .studio-provider-delete:hover,
 .studio-provider-delete:focus-visible {
   text-decoration: underline;
+}
+
+.studio-settings-embedded {
+  overflow: auto;
+  background: var(--studio-panel);
+}
+
+.studio-settings-embedded .studio-settings-shell {
+  width: 100%;
+  padding: 18px;
+}
+
+.studio-settings-embedded .studio-api-tabs {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  margin: -18px -18px 18px;
+  padding: 14px 18px 9px;
+  border: 0;
+  border-bottom: 1px solid var(--studio-line);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--studio-panel) 94%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.studio-settings-embedded .studio-api-grid {
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.studio-settings-embedded .studio-api-aside {
+  order: -1;
+  padding: 18px;
+}
+
+.studio-settings-embedded .studio-api-aside > h2 {
+  margin-top: 0;
+}
+
+.studio-settings-embedded .studio-provider-summaries {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin-bottom: 0;
+}
+
+.studio-settings-embedded .studio-api-form {
+  padding: 20px;
+}
+
+.studio-settings-embedded .studio-prompt-settings {
+  width: 100%;
 }
 
 @media (max-width: 1040px) {

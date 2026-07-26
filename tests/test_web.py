@@ -605,24 +605,31 @@ def test_user_can_save_update_and_delete_personal_api_key(tmp_path):
         assert "提示词层级" not in page.text
         assert "隐私" not in page.text
         assert "退出登录" not in page.text
-        assert "通用模型适配策略" in page.text
+        assert "模型供应商" in page.text
+        assert "提示词" in page.text
+        assert "通用提示词" not in page.text
         assert "全局系统提示词" not in page.text
+        prompt_page = client.get("/settings/api?tab=prompts")
+        assert prompt_page.status_code == 200
+        assert "通用提示词" in prompt_page.text
+        assert "模型服务商" not in prompt_page.text
         adapter_prompt = "受限时保留事件因果，改用非露骨叙述。"
         response = client.post(
             "/settings/model-adapter",
             data={
                 "provider": "deepseek",
                 "model_adapter_prompt": adapter_prompt,
-                "csrf": csrf_from(page.text),
+                "csrf": csrf_from(prompt_page.text),
             },
             follow_redirects=False,
         )
         assert response.status_code == 303
         assert response.headers["location"] == (
-            "/settings/api?provider=deepseek&adapter_saved=true"
+            "/settings/api?provider=deepseek&tab=prompts"
+            "&adapter_saved=true"
         )
         page = client.get(response.headers["location"])
-        assert "通用模型适配策略已保存" in page.text
+        assert "提示词已保存" in page.text
         assert adapter_prompt in page.text
         raw_key = "sk-personal-secret-5678"
         response = client.post(
@@ -943,7 +950,8 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        page = client.get(response.headers["location"])
+        prompt_page = client.get(response.headers["location"])
+        assert adapter_prompt in prompt_page.text
         deepseek_key = "sk-deepseek-provider-5678"
         response = client.post(
             "/settings/api",
@@ -952,7 +960,7 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
                 "api_key": deepseek_key,
                 "model": "deepseek-reasoner",
                 "models": ["deepseek-chat", "deepseek-reasoner"],
-                "csrf": csrf_from(page.text),
+                "csrf": csrf_from(prompt_page.text),
             },
             follow_redirects=False,
         )
@@ -962,7 +970,11 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
             "/settings/api?provider=openai_compatible"
         )
         assert "还没有模型" in compatible_page.text
-        assert adapter_prompt in compatible_page.text
+        assert adapter_prompt not in compatible_page.text
+        compatible_prompt_page = client.get(
+            "/settings/api?provider=openai_compatible&tab=prompts"
+        )
+        assert adapter_prompt in compatible_prompt_page.text
         compatible_key = "compatible-provider-key-9012"
         response = client.post(
             "/settings/api",
@@ -979,7 +991,7 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
         assert response.status_code == 303
 
         deepseek_page = client.get("/settings/api?provider=deepseek")
-        assert adapter_prompt in deepseek_page.text
+        assert adapter_prompt not in deepseek_page.text
         assert "已保存：sk-••••5678（留空保留）" in deepseek_page.text
         assert 'name="models" value="deepseek-chat"' in deepseek_page.text
         assert 'name="models" value="deepseek-reasoner"' in deepseek_page.text
@@ -1063,8 +1075,21 @@ def test_workbench_model_picker_controls_queued_chat_model(
         workbench = client.get(created.headers["location"])
         project_id = project_id_from_workbench(created.headers["location"])
         assert 'name="model_choice"' in workbench.text
+        assert "data-model-choice" in workbench.text
         assert 'value="deepseek|deepseek-chat"' in workbench.text
         assert 'value="deepseek|deepseek-reasoner"' in workbench.text
+        model_choices = client.get("/api/settings/chat-models")
+        assert model_choices.status_code == 200
+        assert model_choices.json()["default"] == (
+            "deepseek|deepseek-chat"
+        )
+        assert [
+            model["value"]
+            for model in model_choices.json()["groups"][0]["models"]
+        ] == [
+            "deepseek|deepseek-chat",
+            "deepseek|deepseek-reasoner",
+        ]
 
         response = client.post(
             f"/novels/{project_id}/assistant/messages",
@@ -1197,17 +1222,49 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         assert '<p class="studio-section-label">文件</p>' not in workbench.text
         assert "导出正文" not in workbench.text
         assert "导出作品归档" not in workbench.text
-        model_settings_url = (
-            "/settings/api?return_to="
+        model_settings_panel_url = (
+            "/settings/api?embedded=true&return_to="
             + quote(workbench_url, safe="")
         )
-        assert f'href="{model_settings_url}"' in workbench.text
-        settings_page = client.get(model_settings_url)
+        assert 'data-model-settings-open aria-label="模型配置"' in (
+            workbench.text
+        )
+        assert "管理模型" not in workbench.text
+        assert (
+            'data-settings-url="'
+            + model_settings_panel_url.replace("&", "&amp;")
+            + '"'
+        ) in workbench.text
+        theme_position = workbench.text.index("data-theme-toggle")
+        model_position = workbench.text.index(
+            "data-model-settings-open aria-label=\"模型配置\""
+        )
+        ai_position = workbench.text.index('data-panel-toggle="ai"')
+        assert theme_position < model_position < ai_position
+        settings_page = client.get(model_settings_panel_url)
         assert settings_page.status_code == 200
         assert (
-            f'href="{workbench_url}" aria-label="返回上一页"'
+            'class="studio-surface studio-settings-page '
+            'studio-settings-embedded"'
             in settings_page.text
         )
+        assert "返回上一页" not in settings_page.text
+        assert "模型供应商" in settings_page.text
+        assert "提示词" in settings_page.text
+        assert 'name="embedded" value="true"' in settings_page.text
+        embedded_prompt_url = (
+            "/settings/api?provider=deepseek&tab=prompts"
+            "&embedded=true&return_to="
+            + quote(workbench_url, safe="")
+        )
+        assert (
+            'href="'
+            + embedded_prompt_url.replace("&", "&amp;")
+            + '"'
+        ) in settings_page.text
+        embedded_prompt_page = client.get(embedded_prompt_url)
+        assert "通用提示词" in embedded_prompt_page.text
+        assert "模型服务商" not in embedded_prompt_page.text
         assert "提示词层级" not in settings_page.text
         assert "运行策略" not in settings_page.text
         assert "隐私" not in settings_page.text
@@ -1494,6 +1551,20 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         assert 'data-delete-project-form' in dashboard.text
         assert f'action="/novels/{project_id}/delete"' in dashboard.text
         assert "退出登录" in dashboard.text
+        dashboard_theme_position = dashboard.text.index(
+            "data-theme-toggle"
+        )
+        dashboard_model_position = dashboard.text.index(
+            "data-model-settings-open aria-label=\"模型配置\""
+        )
+        dashboard_logout_position = dashboard.text.index(
+            'aria-label="退出登录"'
+        )
+        assert (
+            dashboard_theme_position
+            < dashboard_model_position
+            < dashboard_logout_position
+        )
         for export_path in (
             f"/novels/{project_id}/export.txt",
             f"/novels/{project_id}/export.novelai.zip",

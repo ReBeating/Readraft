@@ -302,6 +302,7 @@ def _template_context(
     **extra: Any,
 ) -> Dict[str, Any]:
     settings: Settings = request.app.state.settings
+    current_url = _request_relative_url(request)
     personal_api_configured = False
     if user:
         database: Database = request.app.state.database
@@ -324,8 +325,13 @@ def _template_context(
         ),
         "personal_api_configured": personal_api_configured,
         "model_settings_url": _api_settings_path(
-            return_to=_request_relative_url(request)
+            return_to=current_url
         ),
+        "model_settings_panel_url": _api_settings_path(
+            embedded="true",
+            return_to=current_url,
+        ),
+        "suppress_model_settings_dialog": False,
         **extra,
     }
 
@@ -1549,10 +1555,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         model: Optional[str] = None,
         models: Optional[list[str]] = None,
         return_to: str = "/dashboard",
+        embedded: bool = False,
+        settings_tab: str = "providers",
         status_code: int = status.HTTP_200_OK,
     ):
         user_id = int(user["id"])
         safe_return_to = _safe_next(return_to, "/dashboard")
+        active_settings_tab = (
+            "prompts" if settings_tab == "prompts" else "providers"
+        )
         default_credential = database.get_api_credential_summary(user_id)
         current_provider = provider or (
             str(default_credential["provider"])
@@ -1588,6 +1599,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             summary["settings_url"] = _api_settings_path(
                 provider=str(item["provider"]),
+                embedded="true" if embedded else None,
                 return_to=safe_return_to,
             )
             credential_summaries.append(summary)
@@ -1652,6 +1664,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 server_api_available=bool(app_settings.deepseek_api_key),
                 settings_back_url=safe_return_to,
                 return_to=safe_return_to,
+                embedded=embedded,
+                active_settings_tab=active_settings_tab,
+                provider_tab_url=_api_settings_path(
+                    provider=current_provider,
+                    embedded="true" if embedded else None,
+                    return_to=safe_return_to,
+                ),
+                prompt_tab_url=_api_settings_path(
+                    provider=current_provider,
+                    tab="prompts",
+                    embedded="true" if embedded else None,
+                    return_to=safe_return_to,
+                ),
+                suppress_model_settings_dialog=True,
             ),
             status_code=status_code,
         )
@@ -1665,6 +1691,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         error: Optional[str] = None,
         provider: Optional[str] = None,
         return_to: str = "/dashboard",
+        embedded: bool = False,
+        tab: str = "providers",
     ):
         user = _current_user(request)
         if not user:
@@ -1678,6 +1706,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             adapter_saved=adapter_saved,
             provider=provider,
             return_to=return_to,
+            embedded=embedded,
+            settings_tab=tab,
         )
 
     @application.post("/settings/api", response_class=HTMLResponse)
@@ -1689,6 +1719,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         model: str = Form(""),
         models: list[str] = Form([]),
         return_to: str = Form("/dashboard"),
+        embedded: bool = Form(False),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1753,10 +1784,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model=model,
                 models=models,
                 return_to=return_to,
+                embedded=embedded,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         return RedirectResponse(
-            _api_settings_path(saved="true", return_to=return_to),
+            _api_settings_path(
+                saved="true",
+                embedded="true" if embedded else None,
+                return_to=return_to,
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -1769,6 +1805,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         model_adapter_prompt: str = Form(""),
         provider: str = Form("deepseek"),
         return_to: str = Form("/dashboard"),
+        embedded: bool = Form(False),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1793,12 +1830,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model_adapter_prompt=model_adapter_prompt,
                 provider=provider,
                 return_to=return_to,
+                embedded=embedded,
+                settings_tab="prompts",
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         return RedirectResponse(
             _api_settings_path(
                 provider=current_provider,
+                tab="prompts",
                 adapter_saved="true",
+                embedded="true" if embedded else None,
                 return_to=return_to,
             ),
             status_code=status.HTTP_303_SEE_OTHER,
@@ -1934,6 +1975,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         provider: str = Form(""),
         return_to: str = Form("/dashboard"),
+        embedded: bool = Form(False),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -1947,13 +1989,34 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return RedirectResponse(
                 _api_settings_path(
                     error=str(exc),
+                    embedded="true" if embedded else None,
                     return_to=return_to,
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _api_settings_path(removed="true", return_to=return_to),
+            _api_settings_path(
+                removed="true",
+                embedded="true" if embedded else None,
+                return_to=return_to,
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.get("/api/settings/chat-models")
+    async def api_chat_models(request: Request):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        groups = chat_model_groups(int(user["id"]))
+        return JSONResponse(
+            {
+                "groups": groups,
+                "default": selected_chat_model(groups),
+            }
         )
 
     @application.get("/dashboard", response_class=HTMLResponse)

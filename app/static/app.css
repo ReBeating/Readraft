@@ -977,6 +977,119 @@ code {
   text-align: center;
 }
 
+.model-settings-dialog {
+  width: min(760px, calc(100vw - 32px));
+  height: min(780px, calc(100dvh - 96px));
+  max-width: none;
+  max-height: none;
+  margin: 76px clamp(16px, 3vw, 44px) auto auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--studio-line, var(--line));
+  border-radius: 20px;
+  color: var(--studio-ink, var(--ink));
+  background: var(--studio-panel, var(--paper));
+  box-shadow: 0 28px 90px rgba(12, 22, 17, 0.3);
+}
+
+.model-settings-dialog::backdrop {
+  background: rgba(12, 20, 16, 0.34);
+  backdrop-filter: blur(2px);
+}
+
+.model-settings-dialog-shell {
+  display: grid;
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.model-settings-dialog-header {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 16px 12px 22px;
+  border-bottom: 1px solid var(--studio-line, var(--line));
+  background: var(--studio-page, var(--card));
+}
+
+.model-settings-dialog-header small {
+  display: block;
+  color: var(--studio-muted, var(--muted));
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.model-settings-dialog-header h2 {
+  margin: 1px 0 0;
+  color: var(--studio-ink, var(--ink));
+  font-family: inherit;
+  font-size: 18px;
+}
+
+.model-settings-dialog-header button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  color: var(--studio-muted, var(--muted));
+  background: transparent;
+  cursor: pointer;
+}
+
+.model-settings-dialog-header button:hover,
+.model-settings-dialog-header button:focus-visible {
+  border-color: var(--studio-line, var(--line));
+  color: var(--studio-ink, var(--ink));
+  background: var(--studio-input, var(--paper-deep));
+}
+
+.model-settings-dialog-header svg {
+  width: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.model-settings-dialog-body {
+  position: relative;
+  min-height: 0;
+  background: var(--studio-panel, var(--paper));
+}
+
+.model-settings-dialog-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--studio-muted, var(--muted));
+  font-size: 12px;
+}
+
+.model-settings-dialog-loading[hidden] {
+  display: none;
+}
+
+.model-settings-dialog iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  color-scheme: inherit;
+  background: var(--studio-panel, var(--paper));
+}
+
+.model-settings-dialog iframe[hidden] {
+  display: none;
+}
+
 .eyebrow,
 .section-kicker {
   display: block;
@@ -6606,6 +6719,18 @@ select:focus {
 }
 
 @media (max-width: 590px) {
+  .model-settings-dialog {
+    width: calc(100vw - 20px);
+    height: calc(100dvh - 20px);
+    margin: 10px;
+    border-radius: 16px;
+  }
+
+  .model-settings-dialog-header {
+    min-height: 60px;
+    padding-inline: 16px 12px;
+  }
+
   .shell {
     width: min(100% - 24px, 1160px);
   }

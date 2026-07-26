@@ -2,7 +2,7 @@
 {% block title %}导入作品归档 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-8">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-9">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -17,15 +17,22 @@
         </svg>
       </a>
       <h1>导入作品归档</h1>
-      <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
-        <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
-        </svg>
-        <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
-          <circle cx="12" cy="12" r="4"></circle>
-          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
-        </svg>
-      </button>
+      <div class="studio-toolbar-side studio-toolbar-trailing">
+        <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
+          <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path>
+          </svg>
+          <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+        </button>
+        <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
+          </svg>
+        </a>
+      </div>
     </header>
 
     <div class="studio-api-grid">
