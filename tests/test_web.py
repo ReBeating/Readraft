@@ -1625,6 +1625,8 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
         dashboard = client.get("/dashboard")
         assert "导出正文" in dashboard.text
         assert "导出归档" in dashboard.text
+        assert dashboard.text.count('class="studio-export-icon"') == 2
+        assert '<span aria-hidden="true">›</span>' not in dashboard.text
         assert (
             f'href="/novels/{project_id}/export.novelai.zip"'
             in dashboard.text

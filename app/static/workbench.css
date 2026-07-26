@@ -412,12 +412,6 @@ body.studio-surface textarea {
   font-size: 12px;
 }
 
-.studio-book-link > span:last-child {
-  color: var(--studio-muted);
-  font-size: 28px;
-  font-weight: 300;
-}
-
 .studio-delete-book-form {
   display: inline-flex;
   flex: 0 0 auto;
@@ -436,6 +430,7 @@ body.studio-surface textarea {
   display: inline-flex;
   min-height: 34px;
   align-items: center;
+  gap: 6px;
   padding: 6px 9px;
   border: 1px solid transparent;
   border-radius: 9px;
@@ -444,6 +439,17 @@ body.studio-surface textarea {
   font-weight: 700;
   white-space: nowrap;
   transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.studio-book-actions svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .studio-book-actions a:hover,
