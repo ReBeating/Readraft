@@ -982,7 +982,7 @@ code {
   height: min(780px, calc(100dvh - 96px));
   max-width: none;
   max-height: none;
-  margin: 76px clamp(16px, 3vw, 44px) auto auto;
+  margin: auto;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--studio-line, var(--line));
