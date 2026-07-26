@@ -771,7 +771,7 @@ def test_latest_schema_migrates_v13_without_mutating_existing_project(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 33
+                ).fetchone()[0] == 34
         assert migrated.execute(
             "SELECT COUNT(*) FROM novel_story_blueprint_versions"
         ).fetchone()[0] == 0

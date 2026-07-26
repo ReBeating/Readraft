@@ -44,17 +44,15 @@ CONVERSATION_SCOPES = {
 SETTING_FIELD_LABELS = {
     "title": "书名",
     "genre": "题材",
-    "premise": "故事核心",
-    "story_promise": "作品承诺",
+    "premise": "一句话故事",
+    "theme": "主题",
+    "story_promise": "读者体验",
     "target_audience": "目标读者",
     "core_appeal": "核心吸引力",
-    "ending_constraint": "结局与结构约束",
-    "world_setting": "世界规则",
+    "ending_constraint": "结局约束",
+    "world_setting": "世界概述",
     "style_guide": "叙事风格规范",
-    "ai_instructions": "本书 AI 协作补充指令",
     "point_of_view": "叙事视角",
-    "target_chapter_chars": "默认单章篇幅",
-    "planning_horizon": "规划章节范围",
 }
 
 def _json(value: Any) -> str:
@@ -314,13 +312,13 @@ class AssistantChatService:
             return False
         supporting_fields = (
             "genre",
+            "theme",
             "story_promise",
             "target_audience",
             "core_appeal",
             "ending_constraint",
             "world_setting",
             "style_guide",
-            "ai_instructions",
         )
         if any(str(project.get(key) or "").strip() for key in supporting_fields):
             return True
@@ -3074,8 +3072,8 @@ class AssistantChatService:
         with self.database.connection() as connection:
             project = connection.execute(
                 """
-                SELECT id, title, genre, premise, world_setting,
-                       style_guide, ai_instructions, point_of_view,
+                SELECT id, title, genre, premise, theme, world_setting,
+                       style_guide, point_of_view,
                        target_chapter_chars,
                        story_promise, target_audience, core_appeal,
                        ending_constraint, planning_horizon

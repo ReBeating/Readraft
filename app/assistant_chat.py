@@ -48,7 +48,7 @@ ASSISTANT_CHAT_SYSTEM_PROMPT = """
 4. citations 最多 8 项。每项只能包含 source_id、quote、note；source_id 必须来自 sources，quote 必须是该 source 的逐字短引文。没有可靠依据时使用 []。
 5. rewrite 为 null，或包含 replacement_text、rationale。
 6. draft 为 null，或包含 mode、content、rationale。只有角色拥有 create_candidate_draft 且当前范围为章节时才能使用；mode 只能是 replace 或 append。它只是候选稿。
-7. settings_patch 为 null，或包含一个或多个可确认字段：title、genre、premise、story_promise、target_audience、core_appeal、ending_constraint、world_setting、style_guide、ai_instructions、point_of_view、target_chapter_chars、planning_horizon。
+7. settings_patch 为 null，或包含一个或多个可确认字段：title、genre、premise、theme、story_promise、target_audience、core_appeal、ending_constraint、world_setting、style_guide、point_of_view。
 8. story_plan 为 null，或包含 blueprint、rationale；只有角色拥有 propose_story_plan 时才能使用。blueprint 必须包含可确认的核心悬问、主角目标、冲突引擎、终局状态、关键转折和必须兑现项。
 
 输出示例：
@@ -805,12 +805,7 @@ class DeepSeekAssistantChatModel(BaseAssistantChatModel):
             {
                 "role": "system",
                 "content": compose_assistant_system_prompt(
-                    book_prompt=str(
-                        (context.get("project") or {}).get(
-                            "ai_instructions"
-                        )
-                        or ""
-                    ),
+                    book_prompt="",
                     agent_role=str(
                         (context.get("agent") or {}).get("role")
                         or "advisor"
@@ -934,12 +929,7 @@ class DeepSeekAssistantChatModel(BaseAssistantChatModel):
             {
                 "role": "system",
                 "content": compose_agent_loop_system_prompt(
-                    book_prompt=str(
-                        (context.get("project") or {}).get(
-                            "ai_instructions"
-                        )
-                        or ""
-                    ),
+                    book_prompt="",
                     agent_role=str(
                         (context.get("agent") or {}).get("role")
                         or "advisor"
@@ -1222,11 +1212,6 @@ def _mock_settings_patch(
         patch["genre"] = "科幻"
     elif re.search(r"奇幻|魔法|异世界", clean_question):
         patch["genre"] = "奇幻"
-    target_match = re.search(r"(\d{3,5})\s*字", clean_question)
-    if target_match:
-        target = int(target_match.group(1))
-        if 2000 <= target <= 12_000:
-            patch["target_chapter_chars"] = target
     if clean_question and (
         not str(project.get("core_appeal") or "").strip()
         and re.search(r"吸引|看点|情绪|悬念|冲突", clean_question)
@@ -1239,13 +1224,13 @@ def _mock_settings_patch(
         str(project.get(key) or "").strip()
         for key in (
             "genre",
+            "theme",
             "story_promise",
             "target_audience",
             "core_appeal",
             "ending_constraint",
             "world_setting",
             "style_guide",
-            "ai_instructions",
         )
     ):
         patch["story_promise"] = (

@@ -1243,7 +1243,7 @@ def test_remote_provider_rejects_missing_key_and_ignores_legacy_thinking(
         assert "reasoning_effort" not in credential
 
 
-def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
+def test_unified_workbench_uses_five_material_sections(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         page = client.get("/register")
@@ -1280,19 +1280,20 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         workbench = client.get(workbench_url)
         assert workbench.status_code == 200
         assert 'data-workbench' in workbench.text
-        assert "默认单章篇幅" in workbench.text
-        assert "创作设定" in workbench.text
+        assert "默认单章篇幅" not in workbench.text
+        assert "作品资料" in workbench.text
         for settings_tab in (
-            "作品核心",
-            "世界规则",
-            "人物关系",
-            "故事结构",
-            "文风约束",
-            "创作参数",
+            "作品概览",
+            "世界",
+            "人物",
+            "剧情与结构",
+            "叙事与文风",
         ):
             assert settings_tab in workbench.text
         assert 'data-settings-panel="core"' in workbench.text
-        assert 'data-settings-panel="parameters"' in workbench.text
+        assert 'data-settings-panel="parameters"' not in workbench.text
+        assert "创作参数" not in workbench.text
+        assert "补充设定" not in workbench.text
         assert "高级规划" not in workbench.text
         assert "模型识别任务 · 服务端裁决权限" not in workbench.text
         assert "data-agent-note" not in workbench.text
@@ -1369,11 +1370,6 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         assert '<p class="studio-section-label">创作系统</p>' not in (
             workbench.text
         )
-        assert (
-            'name="title" maxlength="120" required'
-            not in workbench.text
-        )
-
         response = client.post(
             f"/novels/{project_id}/chapters",
             data={
@@ -1440,21 +1436,18 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
                 "title": project["title"],
                 "genre": project["genre"],
                 "premise": project["premise"],
-                "world_setting": project["world_setting"],
-                "style_guide": project["style_guide"],
-                "point_of_view": project["point_of_view"],
-                "target_chapter_chars": project["target_chapter_chars"],
-                "planning_horizon": project["planning_horizon"],
-                "ai_instructions": "本书让人物先行动，再解释。",
-                "settings_tab": "parameters",
-                "return_to_workbench": "1",
+                "theme": "记忆如何改变责任",
+                "story_promise": "克制而持续的悬念",
+                "target_audience": "偏爱人物驱动悬疑的读者",
+                "core_appeal": "未来警报与旧案互相印证",
+                "settings_tab": "core",
                 "csrf": csrf_from(settings_page.text),
             },
             follow_redirects=False,
         )
         assert response.status_code == 303
         assert (
-            "view=archive&archive_tab=creative&settings_tab=parameters&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=core&saved=true"
             in response.headers["location"]
         )
         project = application.state.database.get_novel_project(
@@ -1463,7 +1456,8 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
             ],
             project_id,
         )
-        assert project["ai_instructions"] == "本书让人物先行动，再解释。"
+        assert project["theme"] == "记忆如何改变责任"
+        assert project["ai_instructions"] == ""
 
         logout = client.post(
             "/logout",
@@ -1493,6 +1487,238 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
             f"/novels/{project_id}/chapters/{chapter_id}/scenes",
         ):
             assert client.get(owner_scoped_path).status_code == 404
+
+
+def test_five_material_sections_are_editable_and_fixed_in_tags(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "五项资料作者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        dashboard = client.get("/dashboard")
+        created = client.post(
+            "/novels/new/blank",
+            data={"csrf": csrf_from(dashboard.text)},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        project_id = project_id_from_workbench(created.headers["location"])
+        page = client.get(created.headers["location"])
+        csrf = csrf_from(page.text)
+
+        overview = client.post(
+            f"/novels/{project_id}/settings",
+            data={
+                "title": "无潮之城",
+                "genre": "幻想悬疑",
+                "premise": "潮汐消失后，两名守塔人必须找回城市的时间。",
+                "theme": "共同记忆是否构成真实",
+                "story_promise": "逐层揭开城市失去潮汐的代价",
+                "target_audience": "偏爱关系驱动谜团的读者",
+                "core_appeal": "时间规则与搭档信任互相牵制",
+                "settings_tab": "core",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert overview.status_code == 303
+        world = client.post(
+            f"/novels/{project_id}/settings",
+            data={
+                "world_setting": "城市以潮汐计时，退潮后所有钟表停摆。",
+                "settings_tab": "world",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert world.status_code == 303
+        world_entry = client.post(
+            f"/novels/{project_id}/world-entries",
+            data={
+                "entry_type": "rule",
+                "name": "潮汐钟",
+                "description": "全城唯一仍能记录时间的装置。",
+                "constraints": "每次启动都会抹去使用者一天的记忆。",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert world_entry.status_code == 303
+
+        for name, role, goal in (
+            ("岑野", "守塔人", "恢复潮汐钟"),
+            ("苏弥", "档案员", "找回被抹去的城市史"),
+        ):
+            character = client.post(
+                f"/novels/{project_id}/characters",
+                data={
+                    "name": name,
+                    "role": role,
+                    "external_goal": goal,
+                    "internal_need": "学会把判断交给他人验证",
+                    "central_conflict": "必须用自己的记忆换取线索",
+                    "secret": "曾经主动启动过潮汐钟",
+                    "traits": "克制，观察敏锐",
+                    "speech_style": "短句，很少直接回答感受",
+                    "background": "在无潮之夜后留在城中。",
+                    "initial_state": "不信任搭档",
+                    "character_arc": "从独自承担到共享真相",
+                    "csrf": csrf,
+                },
+                follow_redirects=False,
+            )
+            assert character.status_code == 303
+
+        user = application.state.database.get_user_by_username(
+            "五项资料作者"
+        )
+        user_id = int(user["id"])
+        characters = application.state.database.list_novel_characters(
+            user_id, project_id
+        )
+        relationship = client.post(
+            f"/novels/{project_id}/relationships",
+            data={
+                "character_a_id": characters[0]["id"],
+                "character_b_id": characters[1]["id"],
+                "relationship": "互相需要、互不完全信任的搭档",
+                "tension": "双方都隐瞒了一次启动记录",
+                "change_direction": "从交换线索到共同承担记忆损失",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert relationship.status_code == 303
+
+        blueprint = client.post(
+            f"/novels/{project_id}/story-blueprint",
+            data={
+                "central_question": "潮汐为何消失？",
+                "protagonist_goal": "让城市重新开始计时",
+                "core_conflict": "每条线索都要以个人记忆为代价",
+                "stakes": "城市将永远停在同一天",
+                "opening_state": "全城钟表停摆",
+                "ending_state": "两人共同决定如何恢复时间",
+                "major_turns": "发现潮汐钟的代价\n确认两人都改写过记录",
+                "must_payoffs": "解释无潮之夜\n兑现两人的信任选择",
+                "forbidden_shortcuts": "不能用无代价的魔法修复",
+                "author_notes": "",
+                "action": "confirm",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert blueprint.status_code == 303
+        volume = client.post(
+            f"/novels/{project_id}/volumes",
+            data={
+                "title": "停摆之城",
+                "goal": "确认潮汐钟仍能启动",
+                "start_state": "两人互不信任",
+                "end_state": "两人决定共同调查",
+                "major_conflict": "谁来支付第一次记忆代价",
+                "payoff": "找到第一条未被改写的记录",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert volume.status_code == 303
+        voice = client.post(
+            f"/novels/{project_id}/voice",
+            data={
+                "point_of_view": "第三人称限知",
+                "style_guide": "克制，不替人物总结全部情绪。",
+                "narrative_tense": "过去时",
+                "narrative_distance": "紧贴当前视角人物的感官",
+                "tone": "冷静、潮湿、持续不安",
+                "narration_rules": "只写当前人物可观察或推断的内容。",
+                "sentence_rhythm": "调查段落使用短句。",
+                "dialogue_voice": "重要问题经常以反问回避。",
+                "sensory_palette": "盐、锈、停摆机械。",
+                "metaphor_policy": "只使用城市生活经验中的意象。",
+                "allowed_omissions": "用动作承担恐惧。",
+                "preferred_patterns": "动作先于判断",
+                "banned_expressions": "内心深处",
+                "style_examples": (
+                    "他听见齿轮停下，才想起城里已经没有潮声。"
+                ),
+                "author_notes": "",
+                "action": "confirm",
+                "csrf": csrf,
+            },
+            follow_redirects=False,
+        )
+        assert voice.status_code == 303
+
+        chapter = client.post(
+            f"/novels/{project_id}/chapters",
+            data={"title": "无潮之夜", "csrf": csrf},
+            follow_redirects=False,
+        )
+        assert chapter.status_code == 303
+        chapter_id = chapter.headers["location"].split("chapter_id=", 1)[1]
+        chapter_page = client.get(chapter.headers["location"])
+        saved_chapter = client.post(
+            f"/novels/{project_id}/chapters/{chapter_id}/save",
+            data={
+                "content": "潮汐停下的那一刻，塔顶最后一枚齿轮也失去了声音。",
+                "csrf": csrf_from(chapter_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert saved_chapter.status_code == 303
+        work = application.state.database.get_work_for_project(
+            user_id, project_id
+        )
+        assert work
+        tagged = client.post(
+            f"/works/{work['id']}/tags",
+            data={"label": "资料快照", "csrf": csrf},
+            follow_redirects=False,
+        )
+        assert tagged.status_code == 303
+        assert "error=" not in tagged.headers["location"], (
+            tagged.headers["location"]
+        )
+        fixed_work = application.state.database.get_work(
+            user_id, str(work["id"])
+        )
+        fixed = next(
+            item
+            for item in fixed_work["tag_versions"]
+            if item["label"] == "资料快照"
+        )
+        snapshot = fixed["creative_snapshot"]
+        assert snapshot["schema"] == "novelai-creative-snapshot-v2"
+        assert snapshot["project"]["theme"] == "共同记忆是否构成真实"
+        assert snapshot["world_entries"][0]["name"] == "潮汐钟"
+        assert snapshot["characters"][0]["external_goal"]
+        assert snapshot["character_relationships"][0]["relationship"]
+        assert snapshot["story_blueprint"]["central_question"] == (
+            "潮汐为何消失？"
+        )
+        assert snapshot["volumes"][0]["title"] == "停摆之城"
+        assert snapshot["voice"]["narrative_tense"] == "过去时"
+
+        document_id = fixed["document_id"]
+        readonly = client.get(
+            f"/documents/{document_id}?view=archive"
+            "&archive_tab=creative&settings_tab=world"
+        )
+        assert readonly.status_code == 200
+        assert "潮汐钟" in readonly.text
+        assert "每次启动都会抹去" in readonly.text
+        assert "创作参数" not in readonly.text
+        assert 'action="/novels/' not in readonly.text
 
 
 def test_zero_input_project_enters_settings_and_applies_ai_candidate(
@@ -1534,7 +1760,7 @@ def test_zero_input_project_enters_settings_and_applies_ai_candidate(
             f'action="/novels/{project_id}/assistant/new"'
             in workbench.text
         )
-        assert "默认单章篇幅" in workbench.text
+        assert "作品概览" in workbench.text
 
         question = "我想写一个记者在雨夜收到七年前来信的悬疑故事。"
         response = client.post(

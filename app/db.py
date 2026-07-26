@@ -45,18 +45,15 @@ def _load_json(value: Any, fallback: Any) -> Any:
         return fallback
 
 
-WORK_ARCHIVE_CATEGORIES = frozenset(
-    {
-        "core",
-        "world",
-        "character",
-        "structure",
-        "style",
-        "general",
-    }
+WORK_MATERIAL_CATEGORIES = frozenset(
+    {"core", "world", "character", "structure", "style"}
 )
+WORK_ARCHIVE_CATEGORIES = WORK_MATERIAL_CATEGORIES | {"uncategorized"}
 WORK_ARCHIVE_ANALYSIS_TYPES = frozenset(
     {"source_fact", "analysis_note", "material"}
+)
+WORLD_ENTRY_TYPES = frozenset(
+    {"background", "rule", "faction", "location", "element"}
 )
 
 
@@ -936,6 +933,7 @@ class Database:
         style_guide: str,
         point_of_view: str,
         target_chapter_chars: int,
+        theme: str = "",
         story_promise: str = "",
         target_audience: str = "",
         core_appeal: str = "",
@@ -954,10 +952,12 @@ class Database:
                 INSERT INTO novel_projects(
                     id, user_id, title, genre, premise, world_setting,
                     style_guide, point_of_view, target_chapter_chars,
-                    story_promise, target_audience, core_appeal,
+                    theme, story_promise, target_audience, core_appeal,
                     ending_constraint, planning_horizon, ai_instructions,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     project_id,
@@ -969,6 +969,7 @@ class Database:
                     style_guide,
                     point_of_view,
                     target_chapter_chars,
+                    theme,
                     story_promise,
                     target_audience,
                     core_appeal,
@@ -1328,11 +1329,9 @@ class Database:
         with self.connection() as connection:
             project = connection.execute(
                 """
-                SELECT id, title, genre, premise, world_setting,
-                       style_guide, ai_instructions, point_of_view,
-                       target_chapter_chars, story_promise,
-                       target_audience, core_appeal, ending_constraint,
-                       planning_horizon
+                SELECT id, title, genre, premise, theme, world_setting,
+                       style_guide, point_of_view, story_promise,
+                       target_audience, core_appeal, ending_constraint
                 FROM novel_projects
                 WHERE id=? AND user_id=?
                 """,
@@ -1342,11 +1341,38 @@ class Database:
                 raise ValueError("main 分支不存在")
             characters = connection.execute(
                 """
-                SELECT position, name, role, traits, background,
-                       character_arc
+                SELECT id, position, name, role, traits, background,
+                       external_goal, internal_need, central_conflict,
+                       hidden_fact, speech_style, initial_state, character_arc
                 FROM novel_characters
                 WHERE project_id=?
                 ORDER BY position, created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
+            world_entries = connection.execute(
+                """
+                SELECT position, entry_type, name, description, constraints
+                FROM novel_world_entries
+                WHERE project_id=?
+                ORDER BY position, created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
+            relationships = connection.execute(
+                """
+                SELECT relation.position,
+                       first.name AS character_a,
+                       second.name AS character_b,
+                       relation.relationship, relation.tension,
+                       relation.change_direction
+                FROM novel_character_relationships relation
+                JOIN novel_characters first
+                  ON first.id=relation.character_a_id
+                JOIN novel_characters second
+                  ON second.id=relation.character_b_id
+                WHERE relation.project_id=?
+                ORDER BY relation.position, relation.created_at, relation.id
                 """,
                 (project_id,),
             ).fetchall()
@@ -1361,10 +1387,12 @@ class Database:
             ).fetchall()
             voice = connection.execute(
                 """
-                SELECT narration_rules, sentence_rhythm, dialogue_voice,
+                SELECT narrative_tense, narrative_distance, tone,
+                       narration_rules, sentence_rhythm, dialogue_voice,
                        sensory_palette, metaphor_policy,
                        allowed_omissions, preferred_patterns_json,
-                       banned_expressions_json, author_notes, status
+                       banned_expressions_json, style_examples_json,
+                       author_notes, status
                 FROM novel_voice_profiles
                 WHERE project_id=?
                 ORDER BY
@@ -1398,6 +1426,16 @@ class Database:
                 """,
                 (project_id,),
             ).fetchall()
+            volumes = connection.execute(
+                """
+                SELECT position, title, goal, start_state, end_state,
+                       major_conflict, payoff, status
+                FROM novel_volumes
+                WHERE project_id=?
+                ORDER BY position, created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
             rules = connection.execute(
                 """
                 SELECT entry.category, entry.title, entry.content,
@@ -1412,14 +1450,30 @@ class Database:
                 """,
                 (project_id,),
             ).fetchall()
+        voice_item = dict(voice) if voice else None
+        if voice_item:
+            voice_item["preferred_patterns"] = _load_json(
+                voice_item.pop("preferred_patterns_json", "[]"), []
+            )
+            voice_item["banned_expressions"] = _load_json(
+                voice_item.pop("banned_expressions_json", "[]"), []
+            )
+            voice_item["style_examples"] = _load_json(
+                voice_item.pop("style_examples_json", "[]"), []
+            )
         return {
-            "schema": "novelai-creative-snapshot-v1",
+            "schema": "novelai-creative-snapshot-v2",
             "project": dict(project),
+            "world_entries": [dict(row) for row in world_entries],
             "characters": [dict(row) for row in characters],
+            "character_relationships": [
+                dict(row) for row in relationships
+            ],
             "chapters": [dict(row) for row in chapters],
-            "voice": dict(voice) if voice else None,
+            "voice": voice_item,
             "story_blueprint": dict(blueprint) if blueprint else None,
             "plot_arcs": [dict(row) for row in arcs],
+            "volumes": [dict(row) for row in volumes],
             "confirmed_rules": [dict(row) for row in rules],
         }
 
@@ -1547,7 +1601,7 @@ class Database:
         content: str,
         evidence: str = "",
         content_version_id: Optional[str] = None,
-        category: str = "general",
+        category: str = "uncategorized",
     ) -> str:
         if entry_type not in WORK_ARCHIVE_ANALYSIS_TYPES:
             raise ValueError("不支持的档案类型")
@@ -1613,7 +1667,7 @@ class Database:
         title: str = "",
         content: str = "",
     ) -> str:
-        if category not in WORK_ARCHIVE_CATEGORIES:
+        if category not in WORK_MATERIAL_CATEGORIES:
             raise ValueError("请选择有效的创作设定分类")
         now = utc_now()
         with self.connection() as connection:
@@ -1712,7 +1766,7 @@ class Database:
         title: str,
         content: str,
     ) -> str:
-        if category not in WORK_ARCHIVE_CATEGORIES:
+        if category not in WORK_MATERIAL_CATEGORIES:
             raise ValueError("请选择有效的创作设定分类")
         clean_content = str(content or "").strip()
         if not clean_content:
@@ -2071,6 +2125,7 @@ class Database:
         style_guide: str,
         point_of_view: str,
         target_chapter_chars: int,
+        theme: str = "",
         story_promise: str = "",
         target_audience: str = "",
         core_appeal: str = "",
@@ -2084,7 +2139,7 @@ class Database:
                 UPDATE novel_projects
                 SET title=?, genre=?, premise=?, world_setting=?,
                     style_guide=?, point_of_view=?, target_chapter_chars=?,
-                    story_promise=?, target_audience=?, core_appeal=?,
+                    theme=?, story_promise=?, target_audience=?, core_appeal=?,
                     ending_constraint=?, planning_horizon=?,
                     ai_instructions=?,
                     updated_at=?
@@ -2098,6 +2153,7 @@ class Database:
                     style_guide,
                     point_of_view,
                     target_chapter_chars,
+                    theme,
                     story_promise,
                     target_audience,
                     core_appeal,
@@ -2150,6 +2206,12 @@ class Database:
         traits: str,
         background: str,
         character_arc: str,
+        external_goal: str = "",
+        internal_need: str = "",
+        central_conflict: str = "",
+        secret: str = "",
+        speech_style: str = "",
+        initial_state: str = "",
     ) -> str:
         character_id = uuid.uuid4().hex
         now = utc_now()
@@ -2173,8 +2235,12 @@ class Database:
                 """
                 INSERT INTO novel_characters(
                     id, project_id, position, name, role, traits, background,
-                    character_arc, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    character_arc, external_goal, internal_need,
+                    central_conflict, hidden_fact, speech_style, initial_state,
+                    created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     character_id,
@@ -2185,6 +2251,12 @@ class Database:
                     traits,
                     background,
                     character_arc,
+                    external_goal,
+                    internal_need,
+                    central_conflict,
+                    secret,
+                    speech_style,
+                    initial_state,
                     now,
                     now,
                 ),
@@ -2204,6 +2276,83 @@ class Database:
             )
             connection.commit()
         return character_id
+
+    def update_novel_character(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        character_id: str,
+        name: str,
+        role: str,
+        traits: str,
+        background: str,
+        character_arc: str,
+        external_goal: str = "",
+        internal_need: str = "",
+        central_conflict: str = "",
+        secret: str = "",
+        speech_style: str = "",
+        initial_state: str = "",
+    ) -> bool:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE novel_characters
+                SET name=?, role=?, traits=?, background=?,
+                    character_arc=?, external_goal=?, internal_need=?,
+                    central_conflict=?, hidden_fact=?, speech_style=?,
+                    initial_state=?, updated_at=?
+                WHERE id=? AND project_id=? AND EXISTS(
+                    SELECT 1 FROM novel_projects project
+                    WHERE project.id=novel_characters.project_id
+                      AND project.user_id=?
+                )
+                """,
+                (
+                    name,
+                    role,
+                    traits,
+                    background,
+                    character_arc,
+                    external_goal,
+                    internal_need,
+                    central_conflict,
+                    secret,
+                    speech_style,
+                    initial_state,
+                    now,
+                    character_id,
+                    project_id,
+                    user_id,
+                ),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    """
+                    UPDATE memory_identities
+                    SET linked_record_id=NULL, updated_at=?
+                    WHERE project_id=? AND linked_record_id=?
+                    """,
+                    (now, project_id, character_id),
+                )
+                ensure_memory_identity(
+                    connection,
+                    project_id=project_id,
+                    identity_type="character",
+                    canonical_text=name,
+                    created_at=now,
+                    source="project",
+                    linked_record_id=character_id,
+                )
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, project_id),
+                )
+            connection.commit()
+        return cursor.rowcount == 1
 
     def delete_novel_character(
         self, user_id: int, project_id: str, character_id: str
@@ -2231,6 +2380,326 @@ class Database:
                 connection.execute(
                     "UPDATE novel_projects SET updated_at=? WHERE id=?",
                     (utc_now(), project_id),
+                )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def list_world_entries(
+        self, user_id: int, project_id: str
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT entry.*
+                FROM novel_world_entries entry
+                JOIN novel_projects project ON project.id=entry.project_id
+                WHERE entry.project_id=? AND project.user_id=?
+                ORDER BY entry.position, entry.created_at, entry.id
+                """,
+                (project_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_world_entry(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        entry_type: str,
+        name: str,
+        description: str,
+        constraints: str,
+    ) -> str:
+        if entry_type not in WORLD_ENTRY_TYPES:
+            raise ValueError("请选择有效的世界资料类型")
+        entry_id = uuid.uuid4().hex
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            owner = connection.execute(
+                "SELECT 1 FROM novel_projects WHERE id=? AND user_id=?",
+                (project_id, user_id),
+            ).fetchone()
+            if not owner:
+                connection.rollback()
+                raise ValueError("作品不存在")
+            position = connection.execute(
+                """
+                SELECT COALESCE(MAX(position), 0) + 1 AS next_position
+                FROM novel_world_entries WHERE project_id=?
+                """,
+                (project_id,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO novel_world_entries(
+                    id, project_id, position, entry_type, name,
+                    description, constraints, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    project_id,
+                    int(position["next_position"]),
+                    entry_type,
+                    name,
+                    description,
+                    constraints,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                (now, project_id),
+            )
+            connection.commit()
+        return entry_id
+
+    def update_world_entry(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        entry_id: str,
+        entry_type: str,
+        name: str,
+        description: str,
+        constraints: str,
+    ) -> bool:
+        if entry_type not in WORLD_ENTRY_TYPES:
+            raise ValueError("请选择有效的世界资料类型")
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE novel_world_entries
+                SET entry_type=?, name=?, description=?, constraints=?,
+                    updated_at=?
+                WHERE id=? AND project_id=? AND EXISTS(
+                    SELECT 1 FROM novel_projects project
+                    WHERE project.id=novel_world_entries.project_id
+                      AND project.user_id=?
+                )
+                """,
+                (
+                    entry_type,
+                    name,
+                    description,
+                    constraints,
+                    now,
+                    entry_id,
+                    project_id,
+                    user_id,
+                ),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, project_id),
+                )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def delete_world_entry(
+        self, user_id: int, project_id: str, entry_id: str
+    ) -> bool:
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM novel_world_entries
+                WHERE id=? AND project_id=? AND EXISTS(
+                    SELECT 1 FROM novel_projects project
+                    WHERE project.id=novel_world_entries.project_id
+                      AND project.user_id=?
+                )
+                """,
+                (entry_id, project_id, user_id),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, project_id),
+                )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def list_character_relationships(
+        self, user_id: int, project_id: str
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT relation.*, first.name AS character_a_name,
+                       second.name AS character_b_name
+                FROM novel_character_relationships relation
+                JOIN novel_projects project
+                  ON project.id=relation.project_id
+                JOIN novel_characters first
+                  ON first.id=relation.character_a_id
+                JOIN novel_characters second
+                  ON second.id=relation.character_b_id
+                WHERE relation.project_id=? AND project.user_id=?
+                ORDER BY relation.position, relation.created_at, relation.id
+                """,
+                (project_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_character_relationship(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        character_a_id: str,
+        character_b_id: str,
+        relationship: str,
+        tension: str,
+        change_direction: str,
+    ) -> str:
+        first_id, second_id = sorted(
+            (character_a_id, character_b_id)
+        )
+        if not first_id or first_id == second_id:
+            raise ValueError("请选择两个不同的人物")
+        relation_id = uuid.uuid4().hex
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            characters = connection.execute(
+                """
+                SELECT id FROM novel_characters
+                WHERE project_id=? AND id IN (?, ?)
+                  AND EXISTS(
+                    SELECT 1 FROM novel_projects project
+                    WHERE project.id=novel_characters.project_id
+                      AND project.user_id=?
+                  )
+                """,
+                (project_id, first_id, second_id, user_id),
+            ).fetchall()
+            if len(characters) != 2:
+                connection.rollback()
+                raise ValueError("人物关系引用了不存在的人物")
+            position = connection.execute(
+                """
+                SELECT COALESCE(MAX(position), 0) + 1 AS next_position
+                FROM novel_character_relationships WHERE project_id=?
+                """,
+                (project_id,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO novel_character_relationships(
+                    id, project_id, position,
+                    character_a_id, character_b_id,
+                    relationship, tension, change_direction,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    relation_id,
+                    project_id,
+                    int(position["next_position"]),
+                    first_id,
+                    second_id,
+                    relationship,
+                    tension,
+                    change_direction,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                (now, project_id),
+            )
+            connection.commit()
+        return relation_id
+
+    def update_character_relationship(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        relationship_id: str,
+        character_a_id: str,
+        character_b_id: str,
+        relationship: str,
+        tension: str,
+        change_direction: str,
+    ) -> bool:
+        first_id, second_id = sorted(
+            (character_a_id, character_b_id)
+        )
+        if not first_id or first_id == second_id:
+            raise ValueError("请选择两个不同的人物")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            characters = connection.execute(
+                """
+                SELECT id FROM novel_characters
+                WHERE project_id=? AND id IN (?, ?)
+                  AND EXISTS(
+                    SELECT 1 FROM novel_projects project
+                    WHERE project.id=novel_characters.project_id
+                      AND project.user_id=?
+                  )
+                """,
+                (project_id, first_id, second_id, user_id),
+            ).fetchall()
+            if len(characters) != 2:
+                connection.rollback()
+                raise ValueError("人物关系引用了不存在的人物")
+            cursor = connection.execute(
+                """
+                UPDATE novel_character_relationships
+                SET character_a_id=?, character_b_id=?,
+                    relationship=?, tension=?, change_direction=?,
+                    updated_at=?
+                WHERE id=? AND project_id=?
+                """,
+                (
+                    first_id,
+                    second_id,
+                    relationship,
+                    tension,
+                    change_direction,
+                    now,
+                    relationship_id,
+                    project_id,
+                ),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, project_id),
+                )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def delete_character_relationship(
+        self, user_id: int, project_id: str, relationship_id: str
+    ) -> bool:
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM novel_character_relationships
+                WHERE id=? AND project_id=? AND EXISTS(
+                    SELECT 1 FROM novel_projects project
+                    WHERE project.id=novel_character_relationships.project_id
+                      AND project.user_id=?
+                )
+                """,
+                (relationship_id, project_id, user_id),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, project_id),
                 )
             connection.commit()
         return cursor.rowcount == 1

@@ -577,7 +577,7 @@ def test_v15_migrates_v14_database_and_preserves_existing_data(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 33
+                ).fetchone()[0] == 34
         assert migrated.execute(
             "SELECT COUNT(*) FROM story_plan_suggestions"
         ).fetchone()[0] == 0
@@ -750,4 +750,4 @@ def test_story_planner_web_flow_applies_only_unconfirmed_drafts(
 
         workspace_after = client.get(response.headers["location"])
         assert "已保存" in workspace_after.text
-        assert "全书蓝图尚未确认" in workspace_after.text
+        assert "待确认" in workspace_after.text

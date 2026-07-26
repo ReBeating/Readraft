@@ -65,9 +65,10 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
         style_guide="克制、具体",
         point_of_view="第三人称限知",
         target_chapter_chars=3000,
+        theme="记忆是否能成为证据",
         story_promise="每个时间证据都能被核对",
     )
-    database.add_novel_character(
+    first_character_id = database.add_novel_character(
         user_id=user_id,
         project_id=project_id,
         name="林岚",
@@ -75,6 +76,34 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
         traits="谨慎、敏锐",
         background="经营一家老钟表店",
         character_arc="从回避旧约到主动核对真相",
+        external_goal="查明船票日期异常",
+        secret="曾经改过修理簿上的日期",
+    )
+    second_character_id = database.add_novel_character(
+        user_id=user_id,
+        project_id=project_id,
+        name="周屿",
+        role="灯塔管理员",
+        traits="沉默、固执",
+        background="保管旧码头航行记录",
+        character_arc="从隐瞒见证到公开记录",
+    )
+    database.add_character_relationship(
+        user_id=user_id,
+        project_id=project_id,
+        character_a_id=first_character_id,
+        character_b_id=second_character_id,
+        relationship="互相怀疑的旧识",
+        tension="两人掌握的日期彼此矛盾",
+        change_direction="从互相验证到共同作证",
+    )
+    database.add_world_entry(
+        user_id=user_id,
+        project_id=project_id,
+        entry_type="location",
+        name="纸灯塔",
+        description="旧码头唯一仍在运作的灯塔。",
+        constraints="只在退潮后的半小时开放。",
     )
     chapter_id = "portable-chapter"
     chapter_root = (
@@ -221,6 +250,8 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
     assert "works" in manifest["tables"]
     assert "work_versions" in manifest["tables"]
     assert "work_archive_entries" in manifest["tables"]
+    assert "novel_world_entries" in manifest["tables"]
+    assert "novel_character_relationships" in manifest["tables"]
     assert "documents" in manifest["tables"]
     assert "api_credentials" not in manifest["tables"]
     assert b"CREDENTIAL-MUST-NOT-BE-EXPORTED" not in archive.read_bytes()
@@ -247,6 +278,12 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
     assert imported_tag["label"] == "一稿"
     assert imported_tag["base_version"]["ref_name"] == "main"
     assert imported_tag["creative_snapshot"]["project"]["title"] == "纸灯塔"
+    assert imported_tag["creative_snapshot"]["project"]["theme"] == (
+        "记忆是否能成为证据"
+    )
+    assert imported_tag["creative_snapshot"]["world_entries"][0]["name"] == (
+        "纸灯塔"
+    )
 
     entries = database.list_work_archive_entries(
         user_id,
@@ -270,6 +307,15 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
         str(imported_work["main_version"]["project_id"]),
     )
     assert len(imported_chapters) == 1
+    imported_project_id = str(
+        imported_work["main_version"]["project_id"]
+    )
+    assert database.list_world_entries(
+        user_id, imported_project_id
+    )[0]["name"] == "纸灯塔"
+    assert database.list_character_relationships(
+        user_id, imported_project_id
+    )[0]["relationship"] == "互相怀疑的旧识"
     imported_content_path = Path(
         str(imported_chapters[0]["content_path"])
     )
@@ -430,3 +476,41 @@ def test_work_archive_waits_for_active_ai_task(tmp_path: Path):
             destination=tmp_path / "busy-work.zip",
             max_uncompressed_bytes=20 * 1024 * 1024,
         )
+
+
+def test_uncategorized_analysis_must_be_classified_before_adoption(
+    tmp_path: Path,
+):
+    settings = make_settings(tmp_path)
+    database, user_id, project_id, _chapter_id = create_project(settings)
+    work_id, version_id = database.ensure_project_work(
+        user_id=user_id,
+        project_id=project_id,
+    )
+    note_id = database.add_work_archive_entry(
+        user_id=user_id,
+        work_id=work_id,
+        entry_type="analysis_note",
+        title="暂未归类",
+        content="这条观察还不知道会约束哪一部分创作。",
+        category="uncategorized",
+        content_version_id=version_id,
+    )
+
+    with pytest.raises(ValueError, match="有效的创作设定分类"):
+        database.adopt_work_archive_entry(
+            user_id=user_id,
+            work_id=work_id,
+            entry_id=note_id,
+            category="uncategorized",
+        )
+
+    note = next(
+        item
+        for item in database.list_work_archive_entries(
+            user_id, work_id, version_id
+        )
+        if item["id"] == note_id
+    )
+    assert note["entry_type"] == "analysis_note"
+    assert note["adopted_setting_id"] is None

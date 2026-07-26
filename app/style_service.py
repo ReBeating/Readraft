@@ -54,6 +54,9 @@ class StyleService:
         result["banned_expressions"] = _json_list(
             result.pop("banned_expressions_json")
         )
+        result["style_examples"] = _json_list(
+            result.pop("style_examples_json", "[]")
+        )
         return result
 
     def update_voice_profile(
@@ -61,6 +64,9 @@ class StyleService:
         *,
         user_id: int,
         project_id: str,
+        narrative_tense: str = "",
+        narrative_distance: str = "",
+        tone: str = "",
         narration_rules: str,
         sentence_rhythm: str,
         dialogue_voice: str,
@@ -69,6 +75,7 @@ class StyleService:
         allowed_omissions: str,
         preferred_patterns: list[str],
         banned_expressions: list[str],
+        style_examples: Optional[list[str]] = None,
         author_notes: str,
         confirm: bool,
     ) -> bool:
@@ -77,11 +84,12 @@ class StyleService:
             cursor = connection.execute(
                 """
                 UPDATE novel_voice_profiles
-                SET narration_rules=?, sentence_rhythm=?, dialogue_voice=?,
+                SET narrative_tense=?, narrative_distance=?, tone=?,
+                    narration_rules=?, sentence_rhythm=?, dialogue_voice=?,
                     sensory_palette=?, metaphor_policy=?,
                     allowed_omissions=?, preferred_patterns_json=?,
-                    banned_expressions_json=?, author_notes=?, status=?,
-                    confirmed_at=?, updated_at=?
+                    banned_expressions_json=?, style_examples_json=?,
+                    author_notes=?, status=?, confirmed_at=?, updated_at=?
                 WHERE project_id=? AND EXISTS(
                     SELECT 1 FROM novel_projects p
                     WHERE p.id=novel_voice_profiles.project_id
@@ -89,6 +97,9 @@ class StyleService:
                 )
                 """,
                 (
+                    narrative_tense,
+                    narrative_distance,
+                    tone,
                     narration_rules,
                     sentence_rhythm,
                     dialogue_voice,
@@ -97,6 +108,7 @@ class StyleService:
                     allowed_omissions,
                     json.dumps(preferred_patterns, ensure_ascii=False),
                     json.dumps(banned_expressions, ensure_ascii=False),
+                    json.dumps(style_examples or [], ensure_ascii=False),
                     author_notes,
                     "confirmed" if confirm else "draft",
                     now if confirm else None,

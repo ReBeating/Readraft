@@ -37,6 +37,7 @@ class AssistantSettingsPatch(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=120)
     genre: Optional[str] = Field(default=None, min_length=1, max_length=80)
     premise: Optional[str] = Field(default=None, min_length=2, max_length=4000)
+    theme: Optional[str] = Field(default=None, min_length=1, max_length=2000)
     story_promise: Optional[str] = Field(
         default=None, min_length=2, max_length=4000
     )
@@ -55,18 +56,9 @@ class AssistantSettingsPatch(BaseModel):
     style_guide: Optional[str] = Field(
         default=None, min_length=2, max_length=10_000
     )
-    ai_instructions: Optional[str] = Field(
-        default=None, min_length=2, max_length=10_000
-    )
     point_of_view: Optional[
         Literal["第三人称限知", "第一人称", "第三人称全知", "多视角"]
     ] = None
-    target_chapter_chars: Optional[int] = Field(
-        default=None, ge=2000, le=12_000
-    )
-    planning_horizon: Optional[int] = Field(
-        default=None, ge=3, le=50
-    )
 
     @model_validator(mode="after")
     def ensure_not_empty(self) -> "AssistantSettingsPatch":

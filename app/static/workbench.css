@@ -1863,6 +1863,113 @@ body.studio-surface .studio-settings-form textarea:focus {
   border-top: 1px solid var(--studio-line);
 }
 
+.studio-material-overview {
+  padding: 18px;
+  border: 1px solid var(--studio-line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--studio-input), transparent 18%);
+}
+
+.studio-material-list {
+  display: grid;
+  gap: 10px;
+}
+
+.studio-material-card,
+.studio-material-add {
+  overflow: hidden;
+  border: 1px solid var(--studio-line);
+  border-radius: 14px;
+  background: var(--studio-input);
+}
+
+.studio-material-card > summary,
+.studio-material-add > summary {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  color: var(--studio-ink);
+  cursor: pointer;
+  list-style: none;
+}
+
+.studio-material-card > summary::-webkit-details-marker,
+.studio-material-add > summary::-webkit-details-marker {
+  display: none;
+}
+
+.studio-material-card > summary > span:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.studio-material-card > summary small,
+.studio-material-card > summary > span:last-child,
+.studio-material-subheading p {
+  color: var(--studio-muted);
+  font-size: 11px;
+}
+
+.studio-material-card > summary strong {
+  font-size: 15px;
+}
+
+.studio-material-card[open] > summary,
+.studio-material-add[open] > summary {
+  border-bottom: 1px solid var(--studio-line);
+}
+
+.studio-material-card > .studio-settings-form,
+.studio-material-add > .studio-settings-form {
+  padding: 18px 16px;
+}
+
+.studio-material-add > summary {
+  justify-content: flex-start;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.studio-material-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.studio-material-delete {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 16px 14px;
+}
+
+.studio-material-subheading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--studio-line);
+}
+
+.studio-material-subheading h3,
+.studio-material-subheading p {
+  margin: 0;
+}
+
+.studio-material-subheading h3 {
+  margin-bottom: 4px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.studio-material-subheading > span {
+  color: var(--studio-muted);
+  font-size: 12px;
+}
+
 /* Chat */
 .studio-chat-scroll {
   flex: 1 1 auto;

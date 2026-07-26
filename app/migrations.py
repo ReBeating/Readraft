@@ -3430,6 +3430,104 @@ def _repository_versions_v33(
     connection.execute("ALTER TABLE works DROP COLUMN last_mode")
 
 
+def _five_material_sections_v34(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _add_column(
+        connection,
+        "novel_projects",
+        "theme",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    for name, definition in (
+        ("external_goal", "TEXT NOT NULL DEFAULT ''"),
+        ("internal_need", "TEXT NOT NULL DEFAULT ''"),
+        ("central_conflict", "TEXT NOT NULL DEFAULT ''"),
+        ("hidden_fact", "TEXT NOT NULL DEFAULT ''"),
+        ("speech_style", "TEXT NOT NULL DEFAULT ''"),
+        ("initial_state", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        _add_column(connection, "novel_characters", name, definition)
+    for name, definition in (
+        ("narrative_tense", "TEXT NOT NULL DEFAULT ''"),
+        ("narrative_distance", "TEXT NOT NULL DEFAULT ''"),
+        ("tone", "TEXT NOT NULL DEFAULT ''"),
+        ("style_examples_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ):
+        _add_column(connection, "novel_voice_profiles", name, definition)
+
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS novel_world_entries (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL
+                    REFERENCES novel_projects(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                entry_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                constraints TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, position),
+                UNIQUE(project_id, entry_type, name)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_world_entries_project_type
+            ON novel_world_entries(project_id, entry_type, position)
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS novel_character_relationships (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL
+                    REFERENCES novel_projects(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                character_a_id TEXT NOT NULL
+                    REFERENCES novel_characters(id) ON DELETE CASCADE,
+                character_b_id TEXT NOT NULL
+                    REFERENCES novel_characters(id) ON DELETE CASCADE,
+                relationship TEXT NOT NULL DEFAULT '',
+                tension TEXT NOT NULL DEFAULT '',
+                change_direction TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, position)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_character_relationships_project
+            ON novel_character_relationships(project_id, position)
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_character_relationships_pair
+            ON novel_character_relationships(
+                project_id,
+                min(character_a_id, character_b_id),
+                max(character_a_id, character_b_id)
+            )
+            """,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE work_archive_entries
+        SET category=CASE
+            WHEN entry_type='creative_rule' THEN 'core'
+            ELSE 'uncategorized'
+        END
+        WHERE category='general'
+        """
+    )
+    connection.execute(
+        "UPDATE novel_projects SET ai_instructions=''"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3555,6 +3653,11 @@ MIGRATIONS = (
         33,
         "repository_versions_v33",
         _repository_versions_v33,
+    ),
+    Migration(
+        34,
+        "five_material_sections_v34",
+        _five_material_sections_v34,
     ),
 )
 

@@ -784,6 +784,10 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                         "version": 33,
                                         "name": "repository_versions_v33",
                                     },
+                                    {
+                                        "version": 34,
+                                        "name": "five_material_sections_v34",
+                                    },
                                 ]
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1

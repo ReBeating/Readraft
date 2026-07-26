@@ -653,5 +653,6 @@ def test_voice_learning_web_workflow_requires_rights_and_author_confirmation(
         )
         workspace = client.get(apply_response.headers["location"])
         assert "已保存" in workspace.text
-        assert "作品声纹" in workspace.text
+        assert "叙事与文风" in workspace.text
+        assert "动作先于解释" in workspace.text
         assert "已确认" in workspace.text

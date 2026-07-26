@@ -52,7 +52,7 @@
             <label>
               <span>分析分类</span>
               <select name="category">
-                {% for category_key, category_label in archive_categories %}
+                {% for category_key, category_label in analysis_categories %}
                   <option value="{{ category_key }}">{{ category_label }}</option>
                 {% endfor %}
               </select>
@@ -94,7 +94,7 @@
                       {% if entry.entry_type == 'source_fact' %}原文事实
                       {% elif entry.entry_type == 'material' %}创作素材
                       {% else %}分析笔记{% endif %}
-                      {% for category_key, category_label in archive_categories %}
+                      {% for category_key, category_label in analysis_categories %}
                         {% if category_key == entry.category %} · {{ category_label }}{% endif %}
                       {% endfor %}
                     </small>

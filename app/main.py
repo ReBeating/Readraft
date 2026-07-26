@@ -144,13 +144,11 @@ POV_OPTIONS = (
     "多视角",
 )
 WORKBENCH_SETTING_TABS = (
-    ("core", "作品核心"),
-    ("world", "世界规则"),
-    ("characters", "人物关系"),
-    ("structure", "故事结构"),
-    ("style", "文风约束"),
-    ("parameters", "创作参数"),
-    ("additional", "补充设定"),
+    ("core", "作品概览"),
+    ("world", "世界"),
+    ("characters", "人物"),
+    ("structure", "剧情与结构"),
+    ("style", "叙事与文风"),
 )
 WORKBENCH_SETTING_TAB_KEYS = frozenset(
     key for key, _label in WORKBENCH_SETTING_TABS
@@ -164,15 +162,25 @@ WORK_ARCHIVE_TAB_KEYS = frozenset(
     key for key, _label in WORK_ARCHIVE_TABS
 )
 WORK_ARCHIVE_CATEGORIES = (
-    ("core", "作品核心"),
-    ("world", "世界规则"),
-    ("character", "人物关系"),
-    ("structure", "剧情结构"),
-    ("style", "文风表达"),
-    ("general", "其他"),
+    ("core", "作品概览"),
+    ("world", "世界"),
+    ("character", "人物"),
+    ("structure", "剧情与结构"),
+    ("style", "叙事与文风"),
+)
+WORK_ANALYSIS_CATEGORIES = (
+    ("uncategorized", "未分类"),
+    *WORK_ARCHIVE_CATEGORIES,
 )
 WORK_ARCHIVE_CATEGORY_KEYS = frozenset(
     key for key, _label in WORK_ARCHIVE_CATEGORIES
+)
+WORLD_ENTRY_TYPE_OPTIONS = (
+    ("background", "背景"),
+    ("rule", "规则与边界"),
+    ("faction", "组织与势力"),
+    ("location", "地点"),
+    ("element", "物品、能力或术语"),
 )
 EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "diction",
@@ -2403,7 +2411,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         work_id: str,
         entry_type: str = Form("analysis_note"),
-        category: str = Form("general"),
+        category: str = Form("uncategorized"),
         content_version_id: str = Form(""),
         title: str = Form(""),
         content: str = Form(...),
@@ -2940,6 +2948,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
 
         setting_characters: list[dict[str, Any]] = []
+        setting_world_entries: list[dict[str, Any]] = []
+        setting_relationships: list[dict[str, Any]] = []
+        setting_volumes: list[dict[str, Any]] = []
         setting_story_blueprint = None
         setting_story_arcs: list[dict[str, Any]] = []
         setting_voice_profile = None
@@ -2950,6 +2961,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id, project_id
             )
         if effective_view == "archive" and active_archive_tab == "creative":
+            setting_world_entries = database.list_world_entries(
+                user_id, project_id
+            )
+            setting_relationships = (
+                database.list_character_relationships(user_id, project_id)
+            )
+            setting_volumes = planning_service.list_volumes(
+                user_id=user_id, project_id=project_id
+            )
             setting_story_blueprint = story_planning_service.get_blueprint(
                 user_id=user_id, project_id=project_id
             )
@@ -2998,9 +3018,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 archive_tabs=WORK_ARCHIVE_TABS,
                 active_archive_tab=active_archive_tab,
                 archive_categories=WORK_ARCHIVE_CATEGORIES,
+                analysis_categories=WORK_ANALYSIS_CATEGORIES,
                 setting_tabs=WORKBENCH_SETTING_TABS,
                 active_settings_tab=active_settings_tab,
                 setting_characters=setting_characters,
+                setting_world_entries=setting_world_entries,
+                setting_relationships=setting_relationships,
+                setting_volumes=setting_volumes,
                 setting_story_blueprint=setting_story_blueprint,
                 setting_story_arcs=setting_story_arcs,
                 setting_voice_profile=setting_voice_profile,
@@ -3023,6 +3047,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     available_chat_models, active_conversation
                 ),
                 pov_options=POV_OPTIONS,
+                world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
+                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
                 setting_field_labels=SETTING_FIELD_LABELS,
                 onboarding=onboarding,
                 error=error,
@@ -3358,13 +3384,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         title: str = Form(...),
         genre: str = Form(""),
         premise: str = Form(...),
+        theme: str = Form(""),
         story_promise: str = Form(""),
         target_audience: str = Form(""),
         core_appeal: str = Form(""),
         ending_constraint: str = Form(""),
         world_setting: str = Form(""),
         style_guide: str = Form(""),
-        ai_instructions: str = Form(""),
         point_of_view: str = Form("第三人称限知"),
         target_chapter_chars: int = Form(3000),
         planning_horizon: int = Form(20),
@@ -3394,10 +3420,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             clean_style = _clean_field(
                 style_guide, "文风要求", max_length=10_000
             )
-            clean_ai_instructions = _clean_field(
-                ai_instructions,
-                "本书 AI 协作补充指令",
-                max_length=10_000,
+            clean_theme = _clean_field(
+                theme, "主题", max_length=2000
             )
             clean_promise = _clean_field(
                 story_promise, "作品承诺", max_length=4000
@@ -3444,12 +3468,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 style_guide=clean_style,
                 point_of_view=point_of_view,
                 target_chapter_chars=target_chapter_chars,
+                theme=clean_theme,
                 story_promise=clean_promise,
                 target_audience=clean_audience,
                 core_appeal=clean_appeal,
                 ending_constraint=clean_ending,
                 planning_horizon=planning_horizon,
-                ai_instructions=clean_ai_instructions,
+                ai_instructions="",
             )
         except Exception:
             shutil.rmtree(project_dir, ignore_errors=True)
@@ -4678,16 +4703,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         title: str = Form(""),
         genre: str = Form(""),
         premise: str = Form(""),
+        theme: str = Form(""),
         story_promise: str = Form(""),
         target_audience: str = Form(""),
         core_appeal: str = Form(""),
         ending_constraint: str = Form(""),
         world_setting: str = Form(""),
         style_guide: str = Form(""),
-        ai_instructions: str = Form(""),
         point_of_view: str = Form("第三人称限知"),
-        target_chapter_chars: int = Form(3000),
-        planning_horizon: int = Form(20),
         settings_tab: str = Form("core"),
         return_to: str = Form(""),
         csrf: str = Form(...),
@@ -4713,62 +4736,84 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         )
         try:
-            clean_title = _clean_field(
-                title, "书名", max_length=120
+            current = database.get_novel_project(
+                int(user["id"]), project_id
             )
-            clean_genre = _clean_field(
-                genre, "题材", max_length=80
-            )
-            clean_premise = _clean_field(
-                premise,
-                "故事梗概",
-                max_length=4000,
-            )
-            clean_world = _clean_field(
-                world_setting, "世界设定", max_length=20_000
-            )
-            clean_style = _clean_field(
-                style_guide, "文风要求", max_length=10_000
-            )
-            clean_ai_instructions = _clean_field(
-                ai_instructions,
-                "本书 AI 协作补充指令",
-                max_length=10_000,
-            )
-            clean_promise = _clean_field(
-                story_promise, "作品承诺", max_length=4000
-            )
-            clean_audience = _clean_field(
-                target_audience, "目标读者", max_length=1000
-            )
-            clean_appeal = _clean_field(
-                core_appeal, "核心吸引力", max_length=4000
-            )
-            clean_ending = _clean_field(
-                ending_constraint, "结局约束", max_length=4000
-            )
-            if point_of_view not in POV_OPTIONS:
-                raise ValueError("请选择有效的叙事视角")
-            if not 2_000 <= target_chapter_chars <= 12_000:
-                raise ValueError("单章目标字数必须在 2000–12000 之间")
-            if not 3 <= planning_horizon <= 50:
-                raise ValueError("滚动规划窗口必须在 3–50 章之间")
+            if not current:
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+            values = {
+                "title": str(current.get("title") or ""),
+                "genre": str(current.get("genre") or ""),
+                "premise": str(current.get("premise") or ""),
+                "theme": str(current.get("theme") or ""),
+                "story_promise": str(current.get("story_promise") or ""),
+                "target_audience": str(
+                    current.get("target_audience") or ""
+                ),
+                "core_appeal": str(current.get("core_appeal") or ""),
+                "ending_constraint": str(
+                    current.get("ending_constraint") or ""
+                ),
+                "world_setting": str(current.get("world_setting") or ""),
+                "style_guide": str(current.get("style_guide") or ""),
+                "point_of_view": str(
+                    current.get("point_of_view") or "第三人称限知"
+                ),
+            }
+            if clean_settings_tab == "core":
+                values.update(
+                    title=_clean_field(title, "书名", max_length=120),
+                    genre=_clean_field(genre, "题材", max_length=80),
+                    premise=_clean_field(
+                        premise, "一句话故事", max_length=4000
+                    ),
+                    theme=_clean_field(theme, "主题", max_length=2000),
+                    story_promise=_clean_field(
+                        story_promise, "读者体验", max_length=4000
+                    ),
+                    target_audience=_clean_field(
+                        target_audience, "目标读者", max_length=1000
+                    ),
+                    core_appeal=_clean_field(
+                        core_appeal, "核心吸引力", max_length=4000
+                    ),
+                )
+            elif clean_settings_tab == "world":
+                values["world_setting"] = _clean_field(
+                    world_setting, "世界概述", max_length=20_000
+                )
+            elif clean_settings_tab == "structure":
+                values["ending_constraint"] = _clean_field(
+                    ending_constraint, "结局约束", max_length=4000
+                )
+            elif clean_settings_tab == "style":
+                if point_of_view not in POV_OPTIONS:
+                    raise ValueError("请选择有效的叙事视角")
+                values["point_of_view"] = point_of_view
+                values["style_guide"] = _clean_field(
+                    style_guide, "叙事风格规范", max_length=10_000
+                )
             updated = database.update_novel_project(
                 user_id=int(user["id"]),
                 project_id=project_id,
-                title=clean_title,
-                genre=clean_genre,
-                premise=clean_premise,
-                world_setting=clean_world,
-                style_guide=clean_style,
-                point_of_view=point_of_view,
-                target_chapter_chars=target_chapter_chars,
-                story_promise=clean_promise,
-                target_audience=clean_audience,
-                core_appeal=clean_appeal,
-                ending_constraint=clean_ending,
-                planning_horizon=planning_horizon,
-                ai_instructions=clean_ai_instructions,
+                title=values["title"],
+                genre=values["genre"],
+                premise=values["premise"],
+                theme=values["theme"],
+                world_setting=values["world_setting"],
+                style_guide=values["style_guide"],
+                point_of_view=values["point_of_view"],
+                target_chapter_chars=int(
+                    current.get("target_chapter_chars") or 3000
+                ),
+                story_promise=values["story_promise"],
+                target_audience=values["target_audience"],
+                core_appeal=values["core_appeal"],
+                ending_constraint=values["ending_constraint"],
+                planning_horizon=int(
+                    current.get("planning_horizon") or 20
+                ),
+                ai_instructions="",
             )
             if not updated:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
@@ -5976,6 +6021,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     async def update_novel_voice_profile(
         request: Request,
         project_id: str,
+        point_of_view: str = Form("第三人称限知"),
+        style_guide: str = Form(""),
+        narrative_tense: str = Form(""),
+        narrative_distance: str = Form(""),
+        tone: str = Form(""),
         narration_rules: str = Form(""),
         sentence_rhythm: str = Form(""),
         dialogue_voice: str = Form(""),
@@ -5984,6 +6034,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         allowed_omissions: str = Form(""),
         preferred_patterns: str = Form(""),
         banned_expressions: str = Form(""),
+        style_examples: str = Form(""),
         author_notes: str = Form(""),
         action: str = Form("save_draft"),
         csrf: str = Form(...),
@@ -5995,7 +6046,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             if action not in {"save_draft", "confirm"}:
                 raise ValueError("不支持的声纹操作")
+            if point_of_view not in POV_OPTIONS:
+                raise ValueError("请选择有效的叙事视角")
             fields = {
+                "narrative_tense": _clean_field(
+                    narrative_tense, "叙事时态", max_length=200
+                ),
+                "narrative_distance": _clean_field(
+                    narrative_distance, "叙事距离", max_length=1000
+                ),
+                "tone": _clean_field(tone, "整体基调", max_length=1000),
                 "narration_rules": _clean_field(
                     narration_rules, "叙述规则", max_length=6000
                 ),
@@ -6020,6 +6080,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "banned_expressions": _split_lines(
                     banned_expressions, limit=100
                 ),
+                "style_examples": _split_lines(
+                    style_examples, limit=30
+                ),
                 "author_notes": _clean_field(
                     author_notes, "作者补充", max_length=6000
                 ),
@@ -6042,6 +6105,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not updated:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
+            project = database.get_novel_project(
+                int(user["id"]), project_id
+            )
+            if not project:
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+            database.update_novel_project(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                title=str(project.get("title") or ""),
+                genre=str(project.get("genre") or ""),
+                premise=str(project.get("premise") or ""),
+                theme=str(project.get("theme") or ""),
+                world_setting=str(project.get("world_setting") or ""),
+                style_guide=_clean_field(
+                    style_guide, "叙事风格规范", max_length=10_000
+                ),
+                point_of_view=point_of_view,
+                target_chapter_chars=int(
+                    project.get("target_chapter_chars") or 3000
+                ),
+                story_promise=str(project.get("story_promise") or ""),
+                target_audience=str(
+                    project.get("target_audience") or ""
+                ),
+                core_appeal=str(project.get("core_appeal") or ""),
+                ending_constraint=str(
+                    project.get("ending_constraint") or ""
+                ),
+                planning_horizon=int(
+                    project.get("planning_horizon") or 20
+                ),
+                ai_instructions="",
+            )
         except ValueError as exc:
             return RedirectResponse(
                 _workbench_path(
@@ -6172,6 +6268,274 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
+    @application.post("/novels/{project_id}/world-entries")
+    async def add_world_entry(
+        request: Request,
+        project_id: str,
+        entry_type: str = Form("background"),
+        name: str = Form(...),
+        description: str = Form(""),
+        constraints: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            database.add_world_entry(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                entry_type=entry_type,
+                name=_clean_field(
+                    name, "资料名称", max_length=120, required=True
+                ),
+                description=_clean_field(
+                    description, "资料内容", max_length=6000
+                ),
+                constraints=_clean_field(
+                    constraints, "规则与边界", max_length=4000
+                ),
+            )
+        except Exception as exc:
+            duplicate = "UNIQUE constraint failed" in str(exc)
+            if not isinstance(exc, ValueError) and not duplicate:
+                logger.exception("failed to add world entry")
+            message = (
+                "同类世界资料中已经有这个名称"
+                if duplicate
+                else str(exc) if isinstance(exc, ValueError)
+                else "添加世界资料失败"
+            )
+            return RedirectResponse(
+                _workbench_path(
+                    project_id, settings_tab="world", error=message
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="world", saved="true"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/novels/{project_id}/world-entries/{entry_id}/edit"
+    )
+    async def edit_world_entry(
+        request: Request,
+        project_id: str,
+        entry_id: str,
+        entry_type: str = Form("background"),
+        name: str = Form(...),
+        description: str = Form(""),
+        constraints: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            updated = database.update_world_entry(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                entry_id=entry_id,
+                entry_type=entry_type,
+                name=_clean_field(
+                    name, "资料名称", max_length=120, required=True
+                ),
+                description=_clean_field(
+                    description, "资料内容", max_length=6000
+                ),
+                constraints=_clean_field(
+                    constraints, "规则与边界", max_length=4000
+                ),
+            )
+            if not updated:
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+        except Exception as exc:
+            duplicate = "UNIQUE constraint failed" in str(exc)
+            message = (
+                "同类世界资料中已经有这个名称"
+                if duplicate
+                else str(exc) if isinstance(exc, ValueError)
+                else "保存世界资料失败"
+            )
+            return RedirectResponse(
+                _workbench_path(
+                    project_id, settings_tab="world", error=message
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="world", saved="true"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/novels/{project_id}/world-entries/{entry_id}/delete"
+    )
+    async def remove_world_entry(
+        request: Request,
+        project_id: str,
+        entry_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        removed = database.delete_world_entry(
+            int(user["id"]), project_id, entry_id
+        )
+        if not removed:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="world", saved="true"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post("/novels/{project_id}/relationships")
+    async def add_character_relationship(
+        request: Request,
+        project_id: str,
+        character_a_id: str = Form(...),
+        character_b_id: str = Form(...),
+        relationship: str = Form(""),
+        tension: str = Form(""),
+        change_direction: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            database.add_character_relationship(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                character_a_id=character_a_id,
+                character_b_id=character_b_id,
+                relationship=_clean_field(
+                    relationship, "人物关系", max_length=3000
+                ),
+                tension=_clean_field(
+                    tension, "关系张力", max_length=3000
+                ),
+                change_direction=_clean_field(
+                    change_direction, "变化方向", max_length=3000
+                ),
+            )
+        except Exception as exc:
+            duplicate = "UNIQUE constraint failed" in str(exc)
+            message = (
+                "这两个人物之间已经有一张关系卡"
+                if duplicate
+                else str(exc) if isinstance(exc, ValueError)
+                else "添加人物关系失败"
+            )
+            return RedirectResponse(
+                _workbench_path(
+                    project_id, settings_tab="characters", error=message
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="characters", saved="true"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/novels/{project_id}/relationships/{relationship_id}/edit"
+    )
+    async def edit_character_relationship(
+        request: Request,
+        project_id: str,
+        relationship_id: str,
+        character_a_id: str = Form(...),
+        character_b_id: str = Form(...),
+        relationship: str = Form(""),
+        tension: str = Form(""),
+        change_direction: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            updated = database.update_character_relationship(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                relationship_id=relationship_id,
+                character_a_id=character_a_id,
+                character_b_id=character_b_id,
+                relationship=_clean_field(
+                    relationship, "人物关系", max_length=3000
+                ),
+                tension=_clean_field(
+                    tension, "关系张力", max_length=3000
+                ),
+                change_direction=_clean_field(
+                    change_direction, "变化方向", max_length=3000
+                ),
+            )
+            if not updated:
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+        except Exception as exc:
+            duplicate = "UNIQUE constraint failed" in str(exc)
+            message = (
+                "这两个人物之间已经有一张关系卡"
+                if duplicate
+                else str(exc) if isinstance(exc, ValueError)
+                else "保存人物关系失败"
+            )
+            return RedirectResponse(
+                _workbench_path(
+                    project_id, settings_tab="characters", error=message
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="characters", saved="true"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/novels/{project_id}/relationships/{relationship_id}/delete"
+    )
+    async def remove_character_relationship(
+        request: Request,
+        project_id: str,
+        relationship_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        removed = database.delete_character_relationship(
+            int(user["id"]), project_id, relationship_id
+        )
+        if not removed:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="characters", saved="true"
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
     @application.post("/novels/{project_id}/characters")
     async def add_novel_character(
         request: Request,
@@ -6180,6 +6544,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         role: str = Form(""),
         traits: str = Form(""),
         background: str = Form(""),
+        external_goal: str = Form(""),
+        internal_need: str = Form(""),
+        central_conflict: str = Form(""),
+        secret: str = Form(""),
+        speech_style: str = Form(""),
+        initial_state: str = Form(""),
         character_arc: str = Form(""),
         csrf: str = Form(...),
     ):
@@ -6199,6 +6569,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 background=_clean_field(background, "人物背景", max_length=4000),
                 character_arc=_clean_field(
                     character_arc, "人物弧光", max_length=2000
+                ),
+                external_goal=_clean_field(
+                    external_goal, "外在目标", max_length=2000
+                ),
+                internal_need=_clean_field(
+                    internal_need, "内在需求", max_length=2000
+                ),
+                central_conflict=_clean_field(
+                    central_conflict, "人物矛盾", max_length=2000
+                ),
+                secret=_clean_field(
+                    secret, "秘密", max_length=2000
+                ),
+                speech_style=_clean_field(
+                    speech_style, "说话方式", max_length=2000
+                ),
+                initial_state=_clean_field(
+                    initial_state, "初始状态", max_length=2000
                 ),
             )
         except ValueError as exc:
@@ -6229,6 +6617,90 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 project_id,
                 settings_tab="characters",
                 saved="true",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/novels/{project_id}/characters/{character_id}/edit"
+    )
+    async def edit_novel_character(
+        request: Request,
+        project_id: str,
+        character_id: str,
+        name: str = Form(...),
+        role: str = Form(""),
+        traits: str = Form(""),
+        background: str = Form(""),
+        external_goal: str = Form(""),
+        internal_need: str = Form(""),
+        central_conflict: str = Form(""),
+        secret: str = Form(""),
+        speech_style: str = Form(""),
+        initial_state: str = Form(""),
+        character_arc: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        try:
+            updated = database.update_novel_character(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                character_id=character_id,
+                name=_clean_field(
+                    name, "人物名", max_length=60, required=True
+                ),
+                role=_clean_field(role, "人物定位", max_length=300),
+                traits=_clean_field(traits, "性格特征", max_length=1000),
+                background=_clean_field(
+                    background, "人物背景", max_length=4000
+                ),
+                external_goal=_clean_field(
+                    external_goal, "外在目标", max_length=2000
+                ),
+                internal_need=_clean_field(
+                    internal_need, "内在需求", max_length=2000
+                ),
+                central_conflict=_clean_field(
+                    central_conflict, "人物矛盾", max_length=2000
+                ),
+                secret=_clean_field(secret, "秘密", max_length=2000),
+                speech_style=_clean_field(
+                    speech_style, "说话方式", max_length=2000
+                ),
+                initial_state=_clean_field(
+                    initial_state, "初始状态", max_length=2000
+                ),
+                character_arc=_clean_field(
+                    character_arc, "人物弧光", max_length=2000
+                ),
+            )
+            if not updated:
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+        except Exception as exc:
+            duplicate = "UNIQUE constraint failed" in str(exc)
+            if not isinstance(exc, ValueError) and not duplicate:
+                logger.exception("failed to update novel character")
+            message = (
+                "该人物名已经存在"
+                if duplicate
+                else str(exc) if isinstance(exc, ValueError)
+                else "保存人物失败"
+            )
+            return RedirectResponse(
+                _workbench_path(
+                    project_id,
+                    settings_tab="characters",
+                    error=message,
+                ),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _workbench_path(
+                project_id, settings_tab="characters", saved="true"
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -10243,6 +10715,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 archive_tabs=WORK_ARCHIVE_TABS,
                 active_archive_tab=active_archive_tab,
                 archive_categories=WORK_ARCHIVE_CATEGORIES,
+                analysis_categories=WORK_ANALYSIS_CATEGORIES,
                 setting_tabs=WORKBENCH_SETTING_TABS,
                 active_settings_tab=active_settings_tab,
                 archive_project=archive_project,
@@ -10272,6 +10745,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     available_chat_models, active_conversation
                 ),
                 pov_options=POV_OPTIONS,
+                world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
+                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
                 error=error,
                 sent=sent,
             ),

@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-18">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-19">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -330,7 +330,7 @@
                         {% for key, value in message.response.settings_patch.items() %}
                           <div>
                             <dt>{{ setting_field_labels.get(key, key) }}</dt>
-                            <dd>{% if key == 'target_chapter_chars' %}约 {{ value }} 字{% elif key == 'planning_horizon' %}未来 {{ value }} 章{% else %}{{ value }}{% endif %}</dd>
+                            <dd>{{ value }}</dd>
                           </div>
                         {% endfor %}
                       </dl>

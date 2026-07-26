@@ -1,73 +1,171 @@
-<section class="studio-archive-section studio-version-snapshot">
+<section class="studio-version-snapshot">
   <div class="studio-archive-section-heading">
     <div>
-      <h2>{{ current_version.label }}的作品资料</h2>
-      <p>这些资料与正文一起固定在当前 Tag 中，不能修改。</p>
+      <h2>{{ current_version.label }} 的作品资料</h2>
+      <p>这些资料与正文一起固定在当前 Tag 中，只能查看。</p>
     </div>
     <span>只读</span>
   </div>
 
   {% if creative_snapshot and creative_snapshot.project %}
-    <div class="studio-snapshot-grid">
-      <article>
-        <small>作品核心</small>
-        <h3>{{ creative_snapshot.project.title or work.title }}</h3>
-        <p>{{ creative_snapshot.project.premise or '未记录故事前提。' }}</p>
-        <dl>
-          <div><dt>类型</dt><dd>{{ creative_snapshot.project.genre or '未设置' }}</dd></div>
-          <div><dt>视角</dt><dd>{{ creative_snapshot.project.point_of_view or '未设置' }}</dd></div>
-          <div><dt>故事承诺</dt><dd>{{ creative_snapshot.project.story_promise or '未设置' }}</dd></div>
-          <div><dt>目标读者</dt><dd>{{ creative_snapshot.project.target_audience or '未设置' }}</dd></div>
-        </dl>
-      </article>
-      <article>
-        <small>世界与文风</small>
-        <h3>约束快照</h3>
-        <p>{{ creative_snapshot.project.world_setting or '未记录世界规则。' }}</p>
-        <p>{{ creative_snapshot.project.style_guide or '未记录文风规则。' }}</p>
-      </article>
-    </div>
+    <nav class="studio-settings-tabs" role="tablist" aria-label="作品资料分类">
+      {% for tab_key, tab_label in setting_tabs %}
+        <button
+          id="settings-tab-{{ tab_key }}"
+          type="button"
+          role="tab"
+          aria-controls="settings-panel-{{ tab_key }}"
+          aria-selected="{{ 'true' if active_settings_tab == tab_key else 'false' }}"
+          tabindex="{{ '0' if active_settings_tab == tab_key else '-1' }}"
+          data-settings-tab="{{ tab_key }}"
+        >{{ tab_label }}</button>
+      {% endfor %}
+    </nav>
 
-    {% if creative_snapshot.characters %}
-      <section class="studio-snapshot-block">
-        <h3>人物</h3>
+    <section class="studio-settings-panel" id="settings-panel-core" role="tabpanel" aria-labelledby="settings-tab-core" data-settings-panel="core" {% if active_settings_tab != 'core' %}hidden{% endif %}>
+      <header><h2>作品概览</h2><p>作品在创建这个 Tag 时已经确认的整体方向。</p></header>
+      <div class="studio-snapshot-grid">
+        <article>
+          <small>书名</small>
+          <h3>{{ creative_snapshot.project.title or work.title }}</h3>
+          <p>{{ creative_snapshot.project.premise or '未记录一句话故事。' }}</p>
+        </article>
+        <article>
+          <small>题材与标签</small>
+          <h3>{{ creative_snapshot.project.genre or '未设置' }}</h3>
+          <p><b>主题：</b>{{ creative_snapshot.project.theme or '未设置' }}</p>
+        </article>
+        <article><small>核心吸引力</small><p>{{ creative_snapshot.project.core_appeal or '未设置' }}</p></article>
+        <article><small>读者体验</small><p>{{ creative_snapshot.project.story_promise or '未设置' }}</p></article>
+        <article><small>目标读者</small><p>{{ creative_snapshot.project.target_audience or '未设置' }}</p></article>
+      </div>
+      <div class="studio-snapshot-list">
+        {% for rule in creative_snapshot.confirmed_rules or [] %}
+          {% if rule.category == 'core' %}<article>{% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}<p>{{ rule.content }}</p></article>{% endif %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="studio-settings-panel" id="settings-panel-world" role="tabpanel" aria-labelledby="settings-tab-world" data-settings-panel="world" {% if active_settings_tab != 'world' %}hidden{% endif %}>
+      <header><h2>世界</h2><p>整体背景和结构化世界资料。</p></header>
+      <div class="studio-snapshot-block"><h3>世界概述</h3><p>{{ creative_snapshot.project.world_setting or '未记录世界概述。' }}</p></div>
+      {% if creative_snapshot.world_entries %}
+        <div class="studio-snapshot-list">
+          {% for entry in creative_snapshot.world_entries %}
+            <article>
+              <small>{% for type_key, type_label in world_entry_type_options %}{% if type_key == entry.entry_type %}{{ type_label }}{% endif %}{% endfor %}</small>
+              <strong>{{ entry.name }}</strong>
+              <p>{{ entry.description or '未记录说明。' }}</p>
+              {% if entry.constraints %}<p><b>规则与边界：</b>{{ entry.constraints }}</p>{% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      {% endif %}
+      <div class="studio-snapshot-list">
+        {% for rule in creative_snapshot.confirmed_rules or [] %}
+          {% if rule.category == 'world' %}<article>{% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}<p>{{ rule.content }}</p></article>{% endif %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="studio-settings-panel" id="settings-panel-characters" role="tabpanel" aria-labelledby="settings-tab-characters" data-settings-panel="characters" {% if active_settings_tab != 'characters' %}hidden{% endif %}>
+      <header><h2>人物</h2><p>人物自身资料和人物之间的关系。</p></header>
+      {% if creative_snapshot.characters %}
         <div class="studio-snapshot-list">
           {% for character in creative_snapshot.characters %}
             <article>
+              <small>{{ character.role or '人物' }}</small>
               <strong>{{ character.name }}</strong>
-              <small>{{ character.role or '未设置角色定位' }}</small>
-              <p>{{ character.traits or character.background or '未记录人物资料。' }}</p>
+              {% if character.external_goal %}<p><b>外在目标：</b>{{ character.external_goal }}</p>{% endif %}
+              {% if character.internal_need %}<p><b>内在需求：</b>{{ character.internal_need }}</p>{% endif %}
+              {% if character.central_conflict %}<p><b>核心矛盾：</b>{{ character.central_conflict }}</p>{% endif %}
+              {% if character.hidden_fact %}<p><b>秘密：</b>{{ character.hidden_fact }}</p>{% endif %}
+              {% if character.traits %}<p><b>性格：</b>{{ character.traits }}</p>{% endif %}
+              {% if character.background %}<p><b>背景：</b>{{ character.background }}</p>{% endif %}
+              {% if character.character_arc %}<p><b>人物弧光：</b>{{ character.character_arc }}</p>{% endif %}
             </article>
           {% endfor %}
         </div>
-      </section>
-    {% endif %}
-
-    {% if creative_snapshot.story_blueprint %}
-      <section class="studio-snapshot-block">
-        <h3>故事结构</h3>
-        <p>{{ creative_snapshot.story_blueprint.core_question or creative_snapshot.story_blueprint.protagonist_goal or '已保存结构快照。' }}</p>
-      </section>
-    {% endif %}
-
-    {% if creative_snapshot.confirmed_rules %}
-      <section class="studio-snapshot-block">
-        <h3>已确认规则</h3>
+      {% else %}
+        <div class="studio-settings-empty"><strong>这个版本没有人物卡</strong></div>
+      {% endif %}
+      {% if creative_snapshot.character_relationships %}
+        <div class="studio-material-subheading"><div><h3>人物关系</h3></div><span>{{ creative_snapshot.character_relationships|length }}</span></div>
         <div class="studio-snapshot-list">
-          {% for rule in creative_snapshot.confirmed_rules %}
+          {% for relation in creative_snapshot.character_relationships %}
             <article>
-              <small>{{ rule.category }}</small>
-              {% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}
-              <p>{{ rule.content }}</p>
+              <strong>{{ relation.character_a }} × {{ relation.character_b }}</strong>
+              <p>{{ relation.relationship or '未记录当前关系。' }}</p>
+              {% if relation.tension %}<p><b>张力：</b>{{ relation.tension }}</p>{% endif %}
+              {% if relation.change_direction %}<p><b>变化方向：</b>{{ relation.change_direction }}</p>{% endif %}
             </article>
           {% endfor %}
         </div>
-      </section>
-    {% endif %}
+      {% endif %}
+      <div class="studio-snapshot-list">
+        {% for rule in creative_snapshot.confirmed_rules or [] %}
+          {% if rule.category == 'character' %}<article>{% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}<p>{{ rule.content }}</p></article>{% endif %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="studio-settings-panel" id="settings-panel-structure" role="tabpanel" aria-labelledby="settings-tab-structure" data-settings-panel="structure" {% if active_settings_tab != 'structure' %}hidden{% endif %}>
+      <header><h2>剧情与结构</h2><p>全书蓝图、剧情线和分卷阶段。</p></header>
+      {% if creative_snapshot.project.ending_constraint %}<div class="studio-snapshot-block"><h3>结局约束</h3><p>{{ creative_snapshot.project.ending_constraint }}</p></div>{% endif %}
+      {% if creative_snapshot.story_blueprint %}
+        <div class="studio-snapshot-grid">
+          <article><small>核心悬问</small><p>{{ creative_snapshot.story_blueprint.central_question or '未设置' }}</p></article>
+          <article><small>主角长期目标</small><p>{{ creative_snapshot.story_blueprint.protagonist_goal or '未设置' }}</p></article>
+          <article><small>核心冲突</small><p>{{ creative_snapshot.story_blueprint.core_conflict or '未设置' }}</p></article>
+          <article><small>终局状态</small><p>{{ creative_snapshot.story_blueprint.ending_state or '未设置' }}</p></article>
+        </div>
+      {% endif %}
+      {% if creative_snapshot.plot_arcs %}
+        <div class="studio-material-subheading"><div><h3>剧情线</h3></div><span>{{ creative_snapshot.plot_arcs|length }}</span></div>
+        <div class="studio-snapshot-list">{% for arc in creative_snapshot.plot_arcs %}<article><small>{{ arc.arc_type }}</small><strong>{{ arc.title }}</strong><p>{{ arc.dramatic_question or arc.promise or '未记录说明。' }}</p>{% if arc.target_payoff %}<p><b>目标回报：</b>{{ arc.target_payoff }}</p>{% endif %}</article>{% endfor %}</div>
+      {% endif %}
+      {% if creative_snapshot.volumes %}
+        <div class="studio-material-subheading"><div><h3>分卷与阶段</h3></div><span>{{ creative_snapshot.volumes|length }}</span></div>
+        <div class="studio-snapshot-list">{% for volume in creative_snapshot.volumes %}<article><small>第 {{ volume.position }} 卷</small><strong>{{ volume.title }}</strong><p>{{ volume.goal or volume.major_conflict or '未记录说明。' }}</p>{% if volume.payoff %}<p><b>阶段回报：</b>{{ volume.payoff }}</p>{% endif %}</article>{% endfor %}</div>
+      {% endif %}
+      <div class="studio-snapshot-list">
+        {% for rule in creative_snapshot.confirmed_rules or [] %}
+          {% if rule.category == 'structure' %}<article>{% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}<p>{{ rule.content }}</p></article>{% endif %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="studio-settings-panel" id="settings-panel-style" role="tabpanel" aria-labelledby="settings-tab-style" data-settings-panel="style" {% if active_settings_tab != 'style' %}hidden{% endif %}>
+      <header><h2>叙事与文风</h2><p>这个版本固定采用的叙事选择与表达规则。</p></header>
+      <div class="studio-snapshot-grid">
+        <article><small>叙事视角</small><h3>{{ creative_snapshot.project.point_of_view or '未设置' }}</h3><p>{{ creative_snapshot.project.style_guide or '未记录总体风格。' }}</p></article>
+        {% if creative_snapshot.voice %}
+          <article><small>时态与距离</small><h3>{{ creative_snapshot.voice.narrative_tense or '未设置时态' }}</h3><p>{{ creative_snapshot.voice.narrative_distance or '未设置叙事距离' }}</p></article>
+          <article><small>整体基调</small><p>{{ creative_snapshot.voice.tone or '未设置' }}</p></article>
+          <article><small>句段与节奏</small><p>{{ creative_snapshot.voice.sentence_rhythm or '未设置' }}</p></article>
+          <article><small>对白方式</small><p>{{ creative_snapshot.voice.dialogue_voice or '未设置' }}</p></article>
+          <article><small>感官与意象</small><p>{{ creative_snapshot.voice.sensory_palette or '未设置' }}</p></article>
+          <article><small>比喻策略</small><p>{{ creative_snapshot.voice.metaphor_policy or '未设置' }}</p></article>
+          <article><small>允许的省略与留白</small><p>{{ creative_snapshot.voice.allowed_omissions or '未设置' }}</p></article>
+        {% endif %}
+      </div>
+      {% if creative_snapshot.voice and (creative_snapshot.voice.preferred_patterns or creative_snapshot.voice.banned_expressions or creative_snapshot.voice.style_examples) %}
+        <div class="studio-snapshot-list">
+          {% if creative_snapshot.voice.preferred_patterns %}<article><strong>偏好表达</strong><p>{{ creative_snapshot.voice.preferred_patterns|join('；') }}</p></article>{% endif %}
+          {% if creative_snapshot.voice.banned_expressions %}<article><strong>禁用表达</strong><p>{{ creative_snapshot.voice.banned_expressions|join('；') }}</p></article>{% endif %}
+          {% if creative_snapshot.voice.style_examples %}<article><strong>作者文风示例</strong><p>{{ creative_snapshot.voice.style_examples|join(' / ') }}</p></article>{% endif %}
+        </div>
+      {% endif %}
+      <div class="studio-snapshot-list">
+        {% for rule in creative_snapshot.confirmed_rules or [] %}
+          {% if rule.category == 'style' %}<article>{% if rule.title %}<strong>{{ rule.title }}</strong>{% endif %}<p>{{ rule.content }}</p></article>{% endif %}
+        {% endfor %}
+      </div>
+    </section>
   {% else %}
     <div class="studio-settings-empty">
       <strong>这个版本没有作品资料快照</strong>
-      <p>原始导入只固定正文；从 main 创建的 Tag 会同时保存当时的作品资料。</p>
+      <p>原始导入只固定正文；从 main 创建的新 Tag 会同时保存五项作品资料。</p>
     </div>
   {% endif %}
 </section>
