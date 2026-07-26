@@ -817,7 +817,7 @@ def test_agent_loop_calls_domain_tools_and_auto_commits_working_copy(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == version_id
+    assert chapter["canonical_version_id"] == chapter["working_version_id"]
     assert chapter["working_version_id"] != version_id
     working = database.get_chapter_version(
         user_id,
@@ -1655,7 +1655,7 @@ def test_writer_auto_commits_working_copy_and_can_revert(
     )
     auto_version_id = str(chapter["working_version_id"])
     assert auto_version_id != version_id
-    assert chapter["canonical_version_id"] == version_id
+    assert chapter["canonical_version_id"] == auto_version_id
     auto_content = Path(chapter["content_path"]).read_text(
         encoding="utf-8"
     )
@@ -1673,7 +1673,7 @@ def test_writer_auto_commits_working_copy_and_can_revert(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == version_id
+    assert chapter["canonical_version_id"] == reverted["version_id"]
     assert chapter["working_version_id"] == reverted["version_id"]
     assert Path(chapter["content_path"]).read_text(
         encoding="utf-8"
@@ -1752,7 +1752,7 @@ def test_editor_auto_commits_validated_selection(tmp_path: Path):
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == version_id
+    assert chapter["canonical_version_id"] == message["applied_version_id"]
     changed = Path(chapter["content_path"]).read_text(encoding="utf-8")
     assert changed != content
     assert "动作停在答案之前" in changed
@@ -1990,13 +1990,13 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             rendered = client.get(conversation_url).text
             if (
                 "局部修订提交" in rendered
-                and "已自动提交到工作稿" in rendered
+                and "已自动保存为当前版本" in rendered
             ):
                 break
             time.sleep(0.03)
         assert "回答依据" in rendered
         assert "局部修订提交" in rendered
-        assert "已自动提交到工作稿" in rendered
+        assert "已自动保存为当前版本" in rendered
         assert 'aria-label="历史对话"' in rendered
         assert (
             f'action="/novels/{project_id}/assistant/conversations/'
@@ -2030,7 +2030,7 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             f"&conversation_id={conversation_id}"
         )
         assert workbench.status_code == 200
-        assert "已自动提交到工作稿" in workbench.text
+        assert "已自动保存为当前版本" in workbench.text
         user = application.state.database.get_user_by_username(
             "网页对话作者"
         )
@@ -2044,7 +2044,7 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             str(chapter["working_version_id"]),
         )
         assert candidate["source"] == "assistant_chat"
-        assert candidate["status"] == "candidate"
+        assert candidate["status"] == "canonical"
 
         spare_conversation_id = (
             application.state.assistant_chat_service.create_conversation(
@@ -2087,7 +2087,7 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             chapter_id,
             str(candidate["id"]),
         )
-        assert still_present["status"] == "candidate"
+        assert still_present["status"] == "canonical"
 
 
 def test_edit_and_regenerate_create_branches_without_mutating_history(

@@ -192,6 +192,7 @@ class StyleService:
                 """
                 SELECT id FROM generation_jobs
                 WHERE user_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 ORDER BY created_at LIMIT 1
                 """,
                 (user_id,),
@@ -990,10 +991,6 @@ class StyleService:
     ) -> Optional[dict[str, str]]:
         now = utc_now()
         version_id = uuid.uuid4().hex
-        quality_status = (
-            "block" if effective_char_count < 2000 else "pending"
-        )
-        hard_issue_count = 1 if effective_char_count < 2000 else 0
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             candidate = connection.execute(
@@ -1014,6 +1011,7 @@ class StyleService:
                 """
                 SELECT 1 FROM generation_jobs
                 WHERE chapter_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 LIMIT 1
                 """,
                 (candidate["chapter_id"],),
@@ -1030,7 +1028,8 @@ class StyleService:
                     effective_char_count, hard_issue_count, style_status,
                     style_issue_count
                 ) VALUES (?, ?, 'targeted_rewrite', ?, ?, ?, ?, 'candidate',
-                          'targeted_rewrite', ?, ?, 'ai', ?, ?, ?, 'pending', 0)
+                          'targeted_rewrite', ?, ?, 'ai', 'pass', ?, 0,
+                          'pending', 0)
                 """,
                 (
                     version_id,
@@ -1044,9 +1043,7 @@ class StyleService:
                         f"定点修改 {candidate['issue_type']}："
                         f"{candidate['rewrite_direction']}"
                     )[:1000],
-                    quality_status,
                     effective_char_count,
-                    hard_issue_count,
                 ),
             )
             connection.execute(

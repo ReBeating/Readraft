@@ -51,7 +51,6 @@ class CanonImpactService:
                        old.created_at AS old_version_created_at,
                        proposed.char_count AS proposed_char_count,
                        proposed.created_at AS proposed_version_created_at,
-                       proposed.quality_status AS proposed_quality_status,
                        proposed.content_hash AS proposed_content_hash,
                        proposed.content_path AS proposed_content_path,
                        ch.content_path AS working_content_path
@@ -99,7 +98,7 @@ class CanonImpactService:
             target = connection.execute(
                 """
                 SELECT ch.position, ch.title, ch.canonical_version_id,
-                       v.quality_status, v.char_count,
+                       v.char_count,
                        old.char_count AS old_char_count
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
@@ -126,15 +125,6 @@ class CanonImpactService:
             if old_version_id == proposed_version_id:
                 connection.rollback()
                 raise ValueError("这个版本已经是当前正史")
-            if (
-                _text(target["quality_status"]) != "pass"
-                and len(clean_override) < 8
-            ):
-                connection.rollback()
-                raise ValueError(
-                    "硬审计尚未通过；如仍要替换正史，请填写至少 8 个字符的"
-                    "作者覆盖原因"
-                )
             existing = connection.execute(
                 """
                 SELECT id FROM canon_impact_reports
@@ -221,8 +211,8 @@ class CanonImpactService:
                         "evidence": evidence,
                         "risk_level": "high",
                         "recommended_action": (
-                            "重新执行硬审计并核对该章 Story Memory；"
-                            "确认不受影响后才能清除待复查标记。"
+                            "检查这一章是否依赖被替换版本中的事实；"
+                            "确认不受影响后再清除待复查标记。"
                         ),
                         "decision": "recheck",
                     }

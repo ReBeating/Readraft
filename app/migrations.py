@@ -3528,6 +3528,24 @@ def _five_material_sections_v34(
     )
 
 
+def _background_memory_jobs_v35(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _execute_statements(
+        connection,
+        (
+            "DROP INDEX IF EXISTS idx_generation_one_active_chapter",
+            """
+            CREATE UNIQUE INDEX idx_generation_one_active_chapter
+            ON generation_jobs(chapter_id)
+            WHERE status IN ('queued', 'running')
+              AND operation <> 'extract_story_delta'
+            """,
+        ),
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3658,6 +3676,11 @@ MIGRATIONS = (
         34,
         "five_material_sections_v34",
         _five_material_sections_v34,
+    ),
+    Migration(
+        35,
+        "background_memory_jobs_v35",
+        _background_memory_jobs_v35,
     ),
 )
 

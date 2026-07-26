@@ -20,7 +20,7 @@ def _json(value: Any) -> str:
 
 
 class MemoryService:
-    """Owns the author-reviewed Story Delta -> canonical memory boundary."""
+    """Projects extracted chapter changes into canonical story memory."""
 
     def __init__(self, database: Database):
         self.database = database

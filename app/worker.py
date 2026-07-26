@@ -62,12 +62,6 @@ from .preference_extraction import (
     locate_edit_preference_evidence,
 )
 from .preference_service import PreferenceService
-from .quality_audit import (
-    BaseQualityAuditor,
-    DeepSeekQualityAuditor,
-    effective_char_count,
-    finalize_hard_audit,
-)
 from .reader_planner import (
     BaseReaderPlanner,
     DeepSeekReaderPlanner,
@@ -114,7 +108,6 @@ class AnalysisWorker:
         credential_cipher: CredentialCipher,
         memory_extractor: BaseMemoryExtractor | None = None,
         chapter_planner: BaseChapterPlanner | None = None,
-        quality_auditor: BaseQualityAuditor | None = None,
         style_editor: BaseStyleEditor | None = None,
         reader_planner: BaseReaderPlanner | None = None,
         voice_profile_extractor: BaseVoiceProfileExtractor | None = None,
@@ -137,7 +130,6 @@ class AnalysisWorker:
         self.memory_extractor = memory_extractor
         self.memory_service = MemoryService(database)
         self.chapter_planner = chapter_planner
-        self.quality_auditor = quality_auditor
         self.style_editor = style_editor
         self.reader_planner = reader_planner
         self.voice_profile_extractor = voice_profile_extractor
@@ -504,6 +496,8 @@ class AnalysisWorker:
                     "discarded stale assistant chat result id=%s",
                     message_id,
                 )
+            else:
+                await self._queue_assistant_memory(item, message_id)
         except AnalyzerError as exc:
             logger.warning(
                 "assistant chat failed id=%s: %s", message_id, exc
@@ -527,6 +521,42 @@ class AnalysisWorker:
                 message_id,
                 claim_token,
                 str(exc),
+            )
+
+    async def _queue_assistant_memory(
+        self, item: dict, message_id: str
+    ) -> None:
+        if not item.get("project_id") or not item.get("novel_chapter_id"):
+            return
+        try:
+            message = await asyncio.to_thread(
+                self.assistant_chat_service.get_message,
+                user_id=int(item["user_id"]),
+                message_id=message_id,
+            )
+            auto_commit = dict(
+                ((message or {}).get("response") or {}).get(
+                    "auto_commit"
+                )
+                or {}
+            )
+            version_id = str(auto_commit.get("version_id") or "")
+            if auto_commit.get("status") != "applied" or not version_id:
+                return
+            await asyncio.to_thread(
+                self.database.create_memory_extraction_job,
+                user_id=int(item["user_id"]),
+                project_id=str(item["project_id"]),
+                chapter_id=str(item["novel_chapter_id"]),
+                version_id=version_id,
+                provider=str(item["provider"]),
+                model=str(item["model"]),
+                credential_source=str(item["credential_source"]),
+            )
+        except Exception:
+            logger.exception(
+                "failed to queue background memory for assistant message id=%s",
+                message_id,
             )
 
     async def _process(self, item: dict) -> None:
@@ -946,9 +976,6 @@ class AnalysisWorker:
             if str(item["operation"]) == "propose_reader_branches":
                 await self._process_reader_planning(item)
                 return
-            if str(item["operation"]) == "audit_chapter":
-                await self._process_quality_audit(item)
-                return
             if str(item["operation"]) == "audit_ai_style":
                 await self._process_style_audit(item)
                 return
@@ -960,9 +987,6 @@ class AnalysisWorker:
                 "rewrite_scene",
             }:
                 await self._process_scene_generation(item)
-                return
-            if str(item["operation"]) == "audit_scene":
-                await self._process_scene_audit(item)
                 return
             context = await asyncio.to_thread(
                 self.database.get_writing_context,
@@ -1031,83 +1055,13 @@ class AnalysisWorker:
             else:
                 final_content = response.content.strip()
 
-            expansion_attempted = False
-            expansion_error = ""
-            if effective_char_count(final_content) < 2000:
-                expansion_attempted = True
-                expansion_item = {
-                    **item,
-                    "operation": "expand_to_minimum",
-                    "instruction": (
-                        "正文低于 2000 个有效字符。只补齐任务卡中尚未充分展开的"
-                        "场景、冲突过程和状态变化；禁止重复总结、同义改写灌水"
-                        "或新增任务卡之外的重大事实。输出补齐后的完整正文。"
-                    ),
-                }
-                try:
-                    expansion = await self._write(
-                        item=expansion_item,
-                        context=context,
-                        current_content=final_content,
-                        previous_content=previous_content,
-                    )
-                    total_input_tokens += expansion.input_tokens
-                    total_output_tokens += expansion.output_tokens
-                    final_content = expansion.content.strip()
-                    if expansion.truncated:
-                        warnings.append("定向补写达到 token 上限")
-                except AnalyzerError as exc:
-                    total_input_tokens += exc.input_tokens
-                    total_output_tokens += exc.output_tokens
-                    expansion_error = str(exc)
-                    warnings.append(
-                        "一次定向补写未完成，已保留原候选稿"
-                    )
-
-            audit_input_tokens = 0
-            audit_output_tokens = 0
-            audit_error = ""
-            audit_response = None
-            try:
-                audit_response = await self._audit_quality(
-                    item=item,
-                    context=context,
-                    chapter_text=final_content,
-                )
-                audit_input_tokens = audit_response.input_tokens
-                audit_output_tokens = audit_response.output_tokens
-                total_input_tokens += audit_input_tokens
-                total_output_tokens += audit_output_tokens
-            except AnalyzerError as exc:
-                audit_input_tokens = exc.input_tokens
-                audit_output_tokens = exc.output_tokens
-                total_input_tokens += audit_input_tokens
-                total_output_tokens += audit_output_tokens
-                audit_error = str(exc)
-                warnings.append(
-                    "硬审计暂未完成；候选稿已保留，但需要重试或作者明确覆盖"
-                )
-            report = finalize_hard_audit(
-                analysis=(
-                    audit_response.result if audit_response else None
-                ),
-                chapter_text=final_content,
-                expansion_attempted=expansion_attempted,
-                expansion_error=expansion_error,
-                audit_error=audit_error,
-            )
-            if report.verdict == "block":
-                warnings.append(
-                    f"硬审计发现 {report.hard_issue_count} 个阻断问题"
-                )
-
             version_path = await asyncio.to_thread(
                 self._persist_generated_content,
                 content_path,
                 job_id,
                 final_content,
             )
-            accepted = await asyncio.to_thread(
+            version_id = await asyncio.to_thread(
                 self.database.complete_generation,
                 job_id=job_id,
                 claim_token=claim_token,
@@ -1119,22 +1073,41 @@ class AnalysisWorker:
                     final_content.encode("utf-8")
                 ).hexdigest(),
                 warning="；".join(warnings),
-                quality_report=report.model_dump(mode="json"),
-                quality_provider=(
-                    audit_response.provider
-                    if audit_response
-                    else str(item["provider"])
-                ),
-                quality_model=(
-                    audit_response.model
-                    if audit_response
-                    else str(item["model"])
-                ),
-                quality_input_tokens=audit_input_tokens,
-                quality_output_tokens=audit_output_tokens,
             )
-            if not accepted:
+            if not version_id:
                 logger.warning("discarded stale generation result id=%s", job_id)
+                return
+            promoted = await asyncio.to_thread(
+                self.database.accept_chapter_version,
+                user_id=int(item["user_id"]),
+                project_id=str(item["project_id"]),
+                chapter_id=str(item["chapter_id"]),
+                version_id=version_id,
+            )
+            if not promoted:
+                logger.warning(
+                    "generated version was not promoted id=%s version=%s",
+                    job_id,
+                    version_id,
+                )
+                return
+            try:
+                await asyncio.to_thread(
+                    self.database.create_memory_extraction_job,
+                    user_id=int(item["user_id"]),
+                    project_id=str(item["project_id"]),
+                    chapter_id=str(item["chapter_id"]),
+                    version_id=version_id,
+                    provider=str(item["provider"]),
+                    model=str(item["model"]),
+                    credential_source=str(item["credential_source"]),
+                )
+            except Exception:
+                logger.exception(
+                    "background memory extraction was not queued "
+                    "chapter=%s",
+                    item["chapter_id"],
+                )
         except AnalyzerError as exc:
             logger.warning("writing task failed id=%s: %s", job_id, exc)
             await asyncio.to_thread(
@@ -1241,52 +1214,6 @@ class AnalysisWorker:
         if response.truncated:
             warnings.append("本次场景写作输出达到 token 上限")
 
-        audit_input_tokens = 0
-        audit_output_tokens = 0
-        audit_response = None
-        audit_error = ""
-        scene_contract = {
-            **dict(context.get("task_card") or {}),
-            "must_happen": [],
-            "scenes": [dict(state["focused_scene"])],
-        }
-        audit_context = {
-            **context,
-            "audit_scope": "scene",
-            "task_card": scene_contract,
-        }
-        try:
-            audit_response = await self._audit_quality(
-                item=item,
-                context=audit_context,
-                chapter_text=final_content,
-            )
-            audit_input_tokens = audit_response.input_tokens
-            audit_output_tokens = audit_response.output_tokens
-            total_input_tokens += audit_input_tokens
-            total_output_tokens += audit_output_tokens
-        except AnalyzerError as exc:
-            audit_input_tokens = exc.input_tokens
-            audit_output_tokens = exc.output_tokens
-            total_input_tokens += audit_input_tokens
-            total_output_tokens += audit_output_tokens
-            audit_error = str(exc)
-            warnings.append(
-                "场景检查暂未完成；草稿已保留，但组装前需要重试或作者覆盖"
-            )
-        report = finalize_hard_audit(
-            analysis=(
-                audit_response.result if audit_response else None
-            ),
-            chapter_text=final_content,
-            expansion_attempted=False,
-            audit_error=audit_error,
-            minimum_effective_chars=int(state["minimum_chars"]),
-        )
-        if report.verdict == "block":
-            warnings.append(
-                f"场景检查发现 {report.hard_issue_count} 个阻断问题"
-            )
         version_path = await asyncio.to_thread(
             self._persist_generated_scene,
             Path(str(state["chapter_content_path"])),
@@ -1300,125 +1227,12 @@ class AnalysisWorker:
             claim_token=str(item["claim_token"]),
             version_path=version_path,
             content=final_content,
-            report=report.model_dump(mode="json"),
-            provider=(
-                audit_response.provider
-                if audit_response
-                else str(item["provider"])
-            ),
-            model=(
-                audit_response.model
-                if audit_response
-                else str(item["model"])
-            ),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
-            audit_input_tokens=audit_input_tokens,
-            audit_output_tokens=audit_output_tokens,
             warning="；".join(warnings),
         )
         if not version_id:
             logger.warning("discarded stale scene generation id=%s", job_id)
-
-    async def _process_scene_audit(self, item: dict) -> None:
-        job_id = str(item["id"])
-        scene_version_id = str(item["subject_id"] or "")
-        if not scene_version_id:
-            raise AnalyzerError("场景检查任务没有指定版本")
-        state = await asyncio.to_thread(
-            self.scene_service.get_audit_state,
-            user_id=int(item["user_id"]),
-            project_id=str(item["project_id"]),
-            chapter_id=str(item["chapter_id"]),
-            scene_version_id=scene_version_id,
-        )
-        scene_beat_id = str(state["focused_scene"]["id"])
-        context = await asyncio.to_thread(
-            self.database.get_writing_context,
-            int(item["user_id"]),
-            str(item["chapter_id"]),
-            scene_beat_id,
-        )
-        if not context or not context.get("task_card"):
-            raise AnalyzerError("章节任务卡尚未确认")
-        context = {
-            **context,
-            "canonical_memory": compile_canonical_memory(
-                context.get("canonical_memory") or {}
-            ),
-            "active_techniques": compile_active_techniques(
-                [], usage="write"
-            ),
-            "focused_scene": state["focused_scene"],
-            "scene_sequence": state["scene_sequence"],
-            "previous_scene": state["previous_scene"],
-            "next_scene": state["next_scene"],
-            "previous_scene_content": state["previous_scene_content"],
-            "scene_target_chars": state["target_chars"],
-            "scene_minimum_chars": state["minimum_chars"],
-        }
-        current_content = await asyncio.to_thread(
-            self._read_optional_text,
-            Path(str(state["scene_version_path"])),
-        )
-        scene_contract = {
-            **dict(context.get("task_card") or {}),
-            "must_happen": [],
-            "scenes": [dict(state["focused_scene"])],
-        }
-        audit_context = {
-            **context,
-            "audit_scope": "scene",
-            "task_card": scene_contract,
-        }
-        context_recorded = await asyncio.to_thread(
-            self.database.record_generation_context_snapshot,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            snapshot={
-                **build_scene_context_snapshot(
-                    context=context,
-                    operation="audit_scene",
-                    instruction="",
-                    current_scene_content=current_content,
-                    previous_scene_content=state[
-                        "previous_scene_content"
-                    ],
-                    previous_chapter_content="",
-                ),
-                "scene_version_id": scene_version_id,
-                "candidate_content_hash": hashlib.sha256(
-                    current_content.encode("utf-8")
-                ).hexdigest(),
-            },
-        )
-        if not context_recorded:
-            raise AnalyzerError(
-                "场景检查任务已失效，未向 DeepSeek 发送正文"
-            )
-        response = await self._audit_quality(
-            item=item,
-            context=audit_context,
-            chapter_text=current_content,
-        )
-        report = finalize_hard_audit(
-            analysis=response.result,
-            chapter_text=current_content,
-            expansion_attempted=False,
-            minimum_effective_chars=int(state["minimum_chars"]),
-        )
-        accepted = await asyncio.to_thread(
-            self.scene_service.complete_audit,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            report=report.model_dump(mode="json"),
-            provider=response.provider,
-            model=response.model,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-        )
-        if not accepted:
-            logger.warning("discarded stale scene audit id=%s", job_id)
 
     async def _process_memory_extraction(self, item: dict) -> None:
         job_id = str(item["id"])
@@ -1457,12 +1271,20 @@ class AnalysisWorker:
             version_id=version_id,
             payload=response.result,
         )
+        projected = await asyncio.to_thread(
+            self.memory_service.accept_delta,
+            user_id=int(item["user_id"]),
+            delta_id=delta_id,
+        )
+        if not projected:
+            raise AnalyzerError("故事记忆自动写入失败")
         accepted = await asyncio.to_thread(
             self.database.complete_memory_extraction,
             job_id=job_id,
             claim_token=str(item["claim_token"]),
             result={
                 "delta_id": delta_id,
+                "projected": True,
                 "story_delta": response.result.model_dump(mode="json"),
             },
             input_tokens=response.input_tokens,
@@ -1756,81 +1578,6 @@ class AnalysisWorker:
             logger.warning(
                 "discarded stale reader planning result id=%s", job_id
             )
-
-    async def _process_quality_audit(self, item: dict) -> None:
-        job_id = str(item["id"])
-        version_id = str(item["version_id"] or "")
-        version = await asyncio.to_thread(
-            self.database.get_chapter_version,
-            int(item["user_id"]),
-            str(item["project_id"]),
-            str(item["chapter_id"]),
-            version_id,
-        )
-        if not version:
-            raise AnalyzerError("要审计的正文版本不存在")
-        context = await asyncio.to_thread(
-            self.database.get_writing_context,
-            int(item["user_id"]),
-            str(item["chapter_id"]),
-        )
-        if not context:
-            raise AnalyzerError("写作项目或章节不存在")
-        context = {
-            **context,
-            "canonical_memory": compile_canonical_memory(
-                context.get("canonical_memory") or {}
-            ),
-        }
-        chapter_text = await asyncio.to_thread(
-            self._read_optional_text, Path(str(version["content_path"]))
-        )
-        context_recorded = await asyncio.to_thread(
-            self.database.record_generation_context_snapshot,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            snapshot={
-                "schema_version": 1,
-                "operation": "audit_chapter",
-                "version_id": version_id,
-                "chapter": dict(context["chapter"]),
-                "task_card": dict(context.get("task_card") or {}),
-                "characters": list(context.get("characters") or []),
-                "confirmed_story_plan": compile_story_plan_context(
-                    context, usage="audit"
-                ),
-                "canonical_memory": context["canonical_memory"],
-                "candidate_content_hash": hashlib.sha256(
-                    chapter_text.encode("utf-8")
-                ).hexdigest(),
-            },
-        )
-        if not context_recorded:
-            raise AnalyzerError(
-                "硬审计任务已失效，未向 DeepSeek 发送正文"
-            )
-        response = await self._audit_quality(
-            item=item,
-            context=context,
-            chapter_text=chapter_text,
-        )
-        report = finalize_hard_audit(
-            analysis=response.result,
-            chapter_text=chapter_text,
-            expansion_attempted=False,
-        )
-        accepted = await asyncio.to_thread(
-            self.database.complete_quality_audit,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            report=report.model_dump(mode="json"),
-            provider=response.provider,
-            model=response.model,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-        )
-        if not accepted:
-            logger.warning("discarded stale quality audit result id=%s", job_id)
 
     async def _process_style_audit(self, item: dict) -> None:
         job_id = str(item["id"])
@@ -2407,41 +2154,6 @@ class AnalysisWorker:
             if close_planner:
                 await planner.close()
 
-    async def _audit_quality(
-        self,
-        *,
-        item: dict,
-        context: dict,
-        chapter_text: str,
-    ):
-        user_id = int(item["user_id"])
-        provider_user_id = stable_provider_user_id(
-            user_id, self.provider_user_secret
-        )
-        auditor = self.quality_auditor
-        close_auditor = False
-        if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(
-                item, "deep"
-            )
-            auditor = DeepSeekQualityAuditor(personal_settings)
-            close_auditor = True
-        elif self.quality_auditor is None or (
-            str(item["provider"]) != self.quality_auditor.provider
-        ):
-            raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
-            )
-        try:
-            return await auditor.audit(
-                context=context,
-                chapter_text=chapter_text,
-                provider_user_id=provider_user_id,
-            )
-        finally:
-            if close_auditor:
-                await auditor.close()
-
     async def _audit_style(
         self,
         *,
@@ -2674,7 +2386,6 @@ class AnalysisWorker:
             self.writer,
             self.memory_extractor,
             self.chapter_planner,
-            self.quality_auditor,
             self.style_editor,
             self.reader_planner,
             self.story_planner,

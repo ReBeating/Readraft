@@ -21,15 +21,13 @@
   </section>
 
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-  {% if saved %}<div class="alert success">正文已保存为候选版本；确认后才会进入正史与故事记忆。</div>{% endif %}
-  {% if canonical %}<div class="alert success">正文版本已确认为正史。</div>{% endif %}
-  {% if memory_saved %}<div class="alert success">Story Delta 已确认，正史故事记忆已更新。</div>{% endif %}
-  {% if scene_assembled %}<div class="alert success">已按任务卡顺序组装场景，形成新的章节候选稿。它还需要通过整章硬审计，才可以成为正史。</div>{% endif %}
-  {% if assistant_rewrite %}<div class="alert success">AI 对话中的定点改写已保存为新的候选版本；原引用版本与正史均保留不变。</div>{% endif %}
+  {% if saved %}<div class="alert success">正文已保存并成为当前版本；旧版本仍保留在历史中。</div>{% endif %}
+  {% if canonical %}<div class="alert success">已切换当前正文版本。</div>{% endif %}
+  {% if assistant_rewrite %}<div class="alert success">AI 对话中的定点改写已成为当前版本；原引用版本仍保留在历史中。</div>{% endif %}
   {% if chapter.working_version_id and chapter.working_version_id != chapter.canonical_version_id %}
-    <div class="alert warning">编辑器当前显示候选稿，正史尚未切换。后续章节只应读取作者确认后的版本。</div>
+    <div class="alert warning">这里有一个旧流程留下的未采用版本，可以在版本历史中将它设为当前正文。</div>
   {% elif not chapter.canonical_version_id and content %}
-    <div class="alert warning">本章已有正文，但还没有正史版本。</div>
+    <div class="alert warning">本章已有正文，但还没有当前版本。再次保存即可完成迁移。</div>
   {% endif %}
   {% if not task_card or task_card.status != 'confirmed' %}
     <div class="alert warning">章节任务卡尚未确认。请先确定本章职责、状态变化与至少两个场景节拍，再让 Writer 生成正文。</div>
@@ -88,7 +86,7 @@
           <input name="change_summary" maxlength="1000" placeholder="例如：删去情绪总结，让动作承担反应；之后可用来辅助归纳偏好。">
         </label>
         <div class="editor-footer">
-          <small>保存只创建候选版本，不会自动污染正史。</small>
+          <small>保存会创建新版本并更新当前正文；旧版本不会被删除。</small>
           <button class="button primary" type="submit" {% if chapter.latest_job_status in ['queued','running'] %}disabled{% endif %}>保存正文</button>
         </div>
       </form>
@@ -119,7 +117,7 @@
             </label>
             <button class="button primary full" type="submit">发送到创作对话</button>
           </form>
-          <small id="chapter-chat-version-note">引用绑定当前候选版本 {{ working_version.id[:8] }}；编辑后请先保存再重新引用。</small>
+          <small id="chapter-chat-version-note">引用绑定当前版本 {{ working_version.id[:8] }}；编辑后请先保存再重新引用。</small>
         {% else %}
           <p class="muted">先保存当前正文，系统才能把引用绑定到不可变版本。</p>
           <a class="button full" href="/novels/{{ chapter.project_id }}/assistant?chapter_id={{ chapter.id }}">进行不带引用的讨论</a>
@@ -151,7 +149,7 @@
         <button class="button primary full" type="submit" {% if chapter.latest_job_status in ['queued','running'] or not task_card or task_card.status != 'confirmed' %}disabled{% endif %}>
           {% if chapter.latest_job_status in ['queued','running'] %}AI 正在写作…{% elif not task_card or task_card.status != 'confirmed' %}先确认任务卡{% else %}开始生成{% endif %}
         </button>
-        <small>生成结果会保存为新版本；重写和润色不会删除旧版本。</small>
+        <small>生成完成后会成为当前版本；重写和润色不会删除旧版本。</small>
       </form>
 
       <section class="card active-techniques-card">
@@ -196,9 +194,9 @@
           <a class="button {% if working_version.style_status in ['pending','issues'] %}primary{% endif %} full" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ working_version.id }}/style">
             {% if working_version.style_status == 'pending' %}开始 AI 味审校{% else %}查看 / 重新审校{% endif %}
           </a>
-          <small>选择问题后才会生成两个定点改写候选；接受后仍是新候选版本，并需重新通过硬审计。</small>
+          <small>只有你选择并接受的改写才会更新当前正文，原版本仍会保留。</small>
         {% else %}
-          <p>先保存或生成一个正文候选版本。</p>
+          <p>先保存或生成一个正文版本。</p>
         {% endif %}
       </section>
 
@@ -212,13 +210,9 @@
                 <span>{{ version.kind|writing_operation_label }}</span>
                 <strong>{{ version.char_count|human_size }}</strong>
                 <small>
-                  {% if version.id == chapter.canonical_version_id %}<b class="version-state canonical">正史</b>
-                  {% elif version.id == chapter.working_version_id %}<b class="version-state candidate">当前候选</b>
+                  {% if version.id == chapter.canonical_version_id %}<b class="version-state canonical">当前版本</b>
+                  {% elif version.id == chapter.working_version_id %}<b class="version-state candidate">未采用</b>
                   {% else %}<b class="version-state archived">历史版本</b>{% endif %}
-                  {% if version.quality_status == 'pass' %}<b class="quality-state pass">硬审计通过</b>
-                  {% elif version.quality_status == 'block' %}<b class="quality-state block">硬门禁阻断</b>
-                  {% elif version.quality_status == 'overridden' %}<b class="quality-state overridden">作者覆盖</b>
-                  {% else %}<b class="quality-state pending">待硬审计</b>{% endif %}
                   {% if version.style_status == 'pass' %}<b class="style-state pass">声纹通过</b>
                   {% elif version.style_status == 'issues' %}<b class="style-state issues">{{ version.style_issue_count }} 个 AI 味问题</b>
                   {% elif version.style_status == 'reviewed' %}<b class="style-state reviewed">已逐项处理</b>
@@ -226,18 +220,12 @@
                   {{ version.created_at }}
                 </small>
                 {% if version.id != chapter.canonical_version_id %}
-                  {% if version.quality_status == 'pass' %}
-                    <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/accept">
-                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                      <button class="button small" type="submit" {% if chapter.latest_job_status in ['queued','running'] %}disabled{% endif %}>
-                        {% if chapter.canonical_version_id %}恢复并设为正史{% else %}接受为正史{% endif %}
-                      </button>
-                    </form>
-                  {% else %}
-                    <a class="button small" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/quality">处理硬门禁</a>
-                  {% endif %}
-                {% elif version.latest_quality_audit_id %}
-                  <a class="button small" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/quality">查看硬审计</a>
+                  <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/accept">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <button class="button small" type="submit" {% if chapter.latest_job_status in ['queued','running'] %}disabled{% endif %}>
+                      {% if chapter.canonical_version_id %}恢复为当前版本{% else %}设为当前版本{% endif %}
+                    </button>
+                  </form>
                 {% endif %}
                 {% if voice_profile and voice_profile.status == 'confirmed' %}
                   <a class="button small" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/style">
@@ -261,36 +249,6 @@
         {% endif %}
       </section>
 
-      <section class="card versions-card memory-card">
-        <span class="section-kicker">STORY MEMORY</span>
-        <h2>本章故事记忆</h2>
-        {% if deltas %}
-          <ol>
-            {% for delta in deltas[:5] %}
-              <li>
-                <span>
-                  {% if delta.status in ['proposed', 'author_edited'] %}待作者审核
-                  {% elif delta.status == 'projected' %}已写入正史
-                  {% elif delta.status == 'rejected' %}已拒绝
-                  {% elif delta.status == 'superseded' %}已失效
-                  {% else %}{{ delta.status }}{% endif %}
-                </span>
-                <strong>{{ delta.payload.chapter_summary|truncate(34) }}</strong>
-                <small>{{ delta.updated_at }}</small>
-                {% if delta.status in ['proposed', 'author_edited', 'projected'] %}
-                  <a class="button small" href="/story-deltas/{{ delta.id }}">
-                    {% if delta.status == 'projected' %}查看记忆{% else %}审核 Story Delta{% endif %}
-                  </a>
-                {% endif %}
-              </li>
-            {% endfor %}
-          </ol>
-        {% elif chapter.canonical_version_id %}
-          <p>正史确认后，Observer 会提出可审核的状态变化；尚未生成或已被拒绝。</p>
-        {% else %}
-          <p>先接受一个正文版本为正史，再提取人物、事件、知情、剧情线与伏笔变化。</p>
-        {% endif %}
-      </section>
     </aside>
   </section>
 {% endblock %}

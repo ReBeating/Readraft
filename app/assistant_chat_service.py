@@ -29,7 +29,7 @@ from .assistant_chat_schema import (
 )
 from .context_compiler import build_writing_context_snapshot
 from .db import Database, utc_after, utc_now
-from .quality_audit import effective_char_count
+from .text_metrics import effective_char_count
 from .story_planning_service import StoryPlanningService
 
 
@@ -1662,6 +1662,14 @@ class AssistantChatService:
                 )
             else:
                 return
+            promoted = self.database.accept_chapter_version(
+                user_id=user_id,
+                project_id=str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                version_id=str(result["version_id"]),
+            )
+            if not promoted:
+                raise ValueError("对话写作结果没有成为当前版本")
         except (OSError, UnicodeError, ValueError) as exc:
             self._record_auto_commit(
                 assistant_message_id=assistant_message_id,
@@ -1886,8 +1894,6 @@ class AssistantChatService:
         _atomic_write(version_path, new_content, token)
         count = len(new_content)
         effective_count = effective_char_count(new_content)
-        quality_status = "block" if effective_count < 2000 else "pending"
-        hard_issue_count = 1 if effective_count < 2000 else 0
         now = utc_now()
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1895,6 +1901,7 @@ class AssistantChatService:
                 """
                 SELECT 1 FROM generation_jobs
                 WHERE chapter_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 LIMIT 1
                 """,
                 (row["novel_chapter_id"],),
@@ -1932,7 +1939,7 @@ class AssistantChatService:
                     quality_status, effective_char_count, hard_issue_count
                 ) VALUES (
                     ?, ?, 'assistant_rewrite', ?, ?, ?, ?, 'candidate',
-                    'assistant_chat', ?, ?, 'assistant', ?, ?, ?
+                    'assistant_chat', ?, ?, 'assistant', 'pass', ?, 0
                 )
                 """,
                 (
@@ -1944,9 +1951,7 @@ class AssistantChatService:
                     row["version_id"],
                     _sha256(new_content),
                     str(rewrite.get("rationale") or "")[:1000],
-                    quality_status,
                     effective_count,
-                    hard_issue_count,
                 ),
             )
             connection.execute(
@@ -2292,8 +2297,6 @@ class AssistantChatService:
         _atomic_write(version_path, new_content, token)
         count = len(new_content)
         effective_count = effective_char_count(new_content)
-        quality_status = "block" if effective_count < 2000 else "pending"
-        hard_issue_count = 1 if effective_count < 2000 else 0
         now = utc_now()
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -2301,6 +2304,7 @@ class AssistantChatService:
                 """
                 SELECT 1 FROM generation_jobs
                 WHERE chapter_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 LIMIT 1
                 """,
                 (row["novel_chapter_id"],),
@@ -2346,7 +2350,7 @@ class AssistantChatService:
                     quality_status, effective_char_count, hard_issue_count
                 ) VALUES (
                     ?, ?, 'assistant_draft', ?, ?, ?, ?, 'candidate',
-                    'assistant_chat', ?, ?, 'assistant', ?, ?, ?
+                    'assistant_chat', ?, ?, 'assistant', 'pass', ?, 0
                 )
                 """,
                 (
@@ -2358,9 +2362,7 @@ class AssistantChatService:
                     row["working_version_id"],
                     _sha256(new_content),
                     draft.rationale[:1000],
-                    quality_status,
                     effective_count,
-                    hard_issue_count,
                 ),
             )
             connection.execute(
@@ -2458,9 +2460,7 @@ class AssistantChatService:
                 raise ValueError("这条回复不是自动提交，无法在这里撤回")
             applied_version_id = str(row["applied_version_id"])
             if str(row["working_version_id"] or "") != applied_version_id:
-                raise ValueError("后面已有新的工作稿，请从版本历史恢复")
-            if str(row["canonical_version_id"] or "") == applied_version_id:
-                raise ValueError("该版本已经进入正史，请使用正史替换流程")
+                raise ValueError("后面已有新的正文版本，请从版本历史恢复")
             parent_version_id = str(row["parent_version_id"] or "")
             parent = None
             if parent_version_id:
@@ -2495,8 +2495,8 @@ class AssistantChatService:
         _atomic_write(version_path, restored_content, token)
         count = len(restored_content)
         effective_count = effective_char_count(restored_content)
-        quality_status = "block" if effective_count < 2000 else "pending"
-        hard_issue_count = 1 if effective_count < 2000 else 0
+        quality_status = "pass"
+        hard_issue_count = 0
         now = utc_now()
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -2536,10 +2536,7 @@ class AssistantChatService:
                 }
             if str(latest["working_version_id"] or "") != applied_version_id:
                 connection.rollback()
-                raise ValueError("后面已有新的工作稿，请从版本历史恢复")
-            if str(latest["canonical_version_id"] or "") == applied_version_id:
-                connection.rollback()
-                raise ValueError("该版本已经进入正史，请使用正史替换流程")
+                raise ValueError("后面已有新的正文版本，请从版本历史恢复")
             _atomic_write(chapter_content_path, restored_content, token)
             connection.execute(
                 """
@@ -2602,6 +2599,14 @@ class AssistantChatService:
                 (now, row["project_id"]),
             )
             connection.commit()
+        promoted = self.database.accept_chapter_version(
+            user_id=user_id,
+            project_id=str(row["project_id"]),
+            chapter_id=str(row["novel_chapter_id"]),
+            version_id=version_id,
+        )
+        if not promoted:
+            raise ValueError("撤回版本没有成为当前正文")
         return {
             "project_id": str(row["project_id"]),
             "chapter_id": str(row["novel_chapter_id"]),

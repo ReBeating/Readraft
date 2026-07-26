@@ -240,7 +240,8 @@ CREATE INDEX IF NOT EXISTS idx_generation_queue
     ON generation_jobs(status, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_one_active_chapter
     ON generation_jobs(chapter_id)
-    WHERE status IN ('queued', 'running');
+    WHERE status IN ('queued', 'running')
+      AND operation <> 'extract_story_delta';
 CREATE INDEX IF NOT EXISTS idx_chapters_document_position
     ON chapters(document_id, position);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created
@@ -263,6 +264,7 @@ def has_active_user_ai_task(
         ) OR EXISTS(
             SELECT 1 FROM generation_jobs
             WHERE user_id=? AND status IN ('queued', 'running')
+              AND operation<>'extract_story_delta'
         ) OR EXISTS(
             SELECT 1 FROM story_plan_suggestions
             WHERE user_id=? AND status IN ('queued', 'running')
@@ -305,6 +307,7 @@ def has_active_project_ai_task(
         WHERE EXISTS(
             SELECT 1 FROM generation_jobs
             WHERE project_id=? AND status IN ('queued', 'running')
+              AND operation<>'extract_story_delta'
         ) OR EXISTS(
             SELECT 1 FROM story_plan_suggestions
             WHERE project_id=? AND status IN ('queued', 'running')
@@ -2718,9 +2721,11 @@ class Database:
                             AND sb.beat_status='active') AS scene_count,
                     (SELECT j.id FROM generation_jobs j
                         WHERE j.chapter_id=ch.id
+                            AND j.operation<>'extract_story_delta'
                         ORDER BY j.created_at DESC LIMIT 1) AS latest_job_id,
                     (SELECT j.status FROM generation_jobs j
                         WHERE j.chapter_id=ch.id
+                            AND j.operation<>'extract_story_delta'
                         ORDER BY j.created_at DESC LIMIT 1) AS latest_job_status
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
@@ -2817,9 +2822,11 @@ class Database:
                             AND sb.beat_status='active') AS scene_count,
                        (SELECT j.id FROM generation_jobs j
                             WHERE j.chapter_id=ch.id
+                                AND j.operation<>'extract_story_delta'
                             ORDER BY j.created_at DESC LIMIT 1) AS latest_job_id,
                        (SELECT j.status FROM generation_jobs j
                             WHERE j.chapter_id=ch.id
+                                AND j.operation<>'extract_story_delta'
                             ORDER BY j.created_at DESC LIMIT 1) AS latest_job_status
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
@@ -2889,8 +2896,6 @@ class Database:
             if effective_char_count is not None
             else int(char_count)
         )
-        quality_status = "block" if effective_count < 2000 else "pending"
-        hard_issue_count = 1 if effective_count < 2000 else 0
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             chapter = connection.execute(
@@ -2908,6 +2913,7 @@ class Database:
                 """
                 SELECT 1 FROM generation_jobs
                 WHERE chapter_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 LIMIT 1
                 """,
                 (chapter_id,),
@@ -2923,7 +2929,7 @@ class Database:
                     change_summary, created_by, quality_status,
                     effective_char_count, hard_issue_count
                 ) VALUES (?, ?, 'manual', ?, ?, ?, ?, 'candidate', 'manual',
-                          ?, ?, 'author', ?, ?, ?)
+                          ?, ?, 'author', 'pass', ?, 0)
                 """,
                 (
                     version_id,
@@ -2934,9 +2940,7 @@ class Database:
                     chapter["working_version_id"],
                     content_hash,
                     change_summary[:1000],
-                    quality_status,
                     effective_count,
-                    hard_issue_count,
                 ),
             )
             connection.execute(
@@ -2966,13 +2970,7 @@ class Database:
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT v.*,
-                       (
-                           SELECT qa.id FROM chapter_quality_audits qa
-                           WHERE qa.version_id=v.id
-                           ORDER BY qa.created_at DESC, qa.rowid DESC
-                           LIMIT 1
-                       ) AS latest_quality_audit_id
+                SELECT v.*
                 FROM novel_chapter_versions v
                 JOIN novel_chapters ch ON ch.id=v.chapter_id
                 JOIN novel_projects p ON p.id=ch.project_id
@@ -2996,13 +2994,7 @@ class Database:
                 """
                 SELECT v.*, ch.canonical_version_id, ch.working_version_id,
                        ch.position, ch.title AS chapter_title,
-                       p.title AS project_title,
-                       (
-                           SELECT qa.id FROM chapter_quality_audits qa
-                           WHERE qa.version_id=v.id
-                           ORDER BY qa.created_at DESC, qa.rowid DESC
-                           LIMIT 1
-                       ) AS latest_quality_audit_id
+                       p.title AS project_title
                 FROM novel_chapter_versions v
                 JOIN novel_chapters ch ON ch.id=v.chapter_id
                 JOIN novel_projects p ON p.id=ch.project_id
@@ -3012,34 +3004,6 @@ class Database:
                 (version_id, chapter_id, project_id, user_id),
             ).fetchone()
         return dict(row) if row else None
-
-    def get_latest_quality_audit(
-        self,
-        *,
-        user_id: int,
-        project_id: str,
-        chapter_id: str,
-        version_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT qa.*
-                FROM chapter_quality_audits qa
-                JOIN novel_chapter_versions v ON v.id=qa.version_id
-                JOIN novel_chapters ch ON ch.id=v.chapter_id
-                JOIN novel_projects p ON p.id=ch.project_id
-                WHERE qa.version_id=? AND ch.id=? AND p.id=? AND p.user_id=?
-                ORDER BY qa.created_at DESC, qa.rowid DESC
-                LIMIT 1
-                """,
-                (version_id, chapter_id, project_id, user_id),
-            ).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["report"] = _load_json(result.get("result_json"), {})
-        return result
 
     def accept_chapter_version(
         self,
@@ -3057,6 +3021,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT v.id, v.content_path, v.char_count, v.quality_status,
+                       v.job_id,
                        ch.canonical_version_id, ch.position,
                        p.canonical_branch_id
                 FROM novel_chapter_versions v
@@ -3083,6 +3048,7 @@ class Database:
                 """
                 SELECT 1 FROM generation_jobs
                 WHERE chapter_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 LIMIT 1
                 """,
                 (chapter_id,),
@@ -3091,31 +3057,6 @@ class Database:
                 connection.rollback()
                 raise ValueError(
                     "AI 正在处理本章，请等待任务完成后再切换正史版本"
-                )
-            quality_status = str(row["quality_status"] or "pending")
-            clean_override = override_reason.strip()
-            if (
-                row["canonical_version_id"] != version_id
-                and quality_status != "pass"
-                and len(clean_override) < 8
-            ):
-                connection.rollback()
-                raise ValueError(
-                    "硬审计尚未通过；如仍要设为正史，请填写至少 8 个字符的"
-                    "作者覆盖原因"
-                )
-            if (
-                row["canonical_version_id"] != version_id
-                and quality_status != "pass"
-            ):
-                connection.execute(
-                    """
-                    UPDATE novel_chapter_versions
-                    SET quality_status='overridden', quality_override_reason=?,
-                        quality_overridden_at=?
-                    WHERE id=?
-                    """,
-                    (clean_override[:1000], now, version_id),
                 )
             old_canonical = row["canonical_version_id"]
             changed = old_canonical != version_id
@@ -3132,7 +3073,9 @@ class Database:
                 connection.execute(
                     """
                     UPDATE novel_chapter_versions
-                    SET status='canonical'
+                    SET status='canonical', quality_status='pass',
+                        hard_issue_count=0, quality_override_reason='',
+                        quality_overridden_at=NULL
                     WHERE id=?
                     """,
                     (version_id,),
@@ -3202,6 +3145,30 @@ class Database:
                 "UPDATE novel_projects SET updated_at=? WHERE id=?",
                 (now, project_id),
             )
+            if row["job_id"]:
+                generation = connection.execute(
+                    "SELECT result_json FROM generation_jobs WHERE id=?",
+                    (row["job_id"],),
+                ).fetchone()
+                if generation:
+                    try:
+                        result_payload = json.loads(
+                            str(generation["result_json"] or "{}")
+                        )
+                    except json.JSONDecodeError:
+                        result_payload = {}
+                    result_payload["canonical"] = True
+                    connection.execute(
+                        """
+                        UPDATE generation_jobs
+                        SET result_json=?
+                        WHERE id=?
+                        """,
+                        (
+                            json.dumps(result_payload, ensure_ascii=False),
+                            row["job_id"],
+                        ),
+                    )
             if changed:
                 replay_canonical_state(
                     connection,
@@ -3234,6 +3201,7 @@ class Database:
                 JOIN novel_projects p ON p.id=ch.project_id
                 WHERE j.chapter_id=? AND ch.project_id=? AND p.user_id=?
                     AND j.status IN ('queued', 'running')
+                    AND j.operation<>'extract_story_delta'
                 LIMIT 1
                 """,
                 (chapter_id, project_id, user_id),
@@ -3882,7 +3850,6 @@ class Database:
             "polish",
             "generate_scene",
             "rewrite_scene",
-            "audit_scene",
         }:
             raise ValueError("不支持的写作操作")
         if credential_source not in {"default", "personal"}:
@@ -3934,33 +3901,6 @@ class Database:
                 ):
                     connection.rollback()
                     raise ValueError("这个场景还没有草稿，请先生成")
-            elif operation == "audit_scene":
-                if not subject_id:
-                    connection.rollback()
-                    raise ValueError("没有指定场景版本")
-                scene_version = connection.execute(
-                    """
-                    SELECT sv.id, sb.current_version_id, cp.status
-                    FROM novel_scene_versions sv
-                    JOIN novel_scene_beats sb ON sb.id=sv.scene_beat_id
-                    JOIN novel_chapter_plans cp ON cp.id=sb.plan_id
-                    WHERE sv.id=? AND cp.chapter_id=?
-                        AND sb.beat_status='active'
-                    """,
-                    (subject_id, chapter_id),
-                ).fetchone()
-                if not scene_version:
-                    connection.rollback()
-                    raise ValueError("场景版本不存在")
-                if (
-                    str(scene_version["current_version_id"] or "")
-                    != subject_id
-                ):
-                    connection.rollback()
-                    raise ValueError("只能检查当前场景版本")
-                if str(scene_version["status"]) != "confirmed":
-                    connection.rollback()
-                    raise ValueError("章节任务卡尚未确认")
             elif subject_id:
                 connection.rollback()
                 raise ValueError("整章写作任务不能指定场景")
@@ -3982,6 +3922,7 @@ class Database:
                 SELECT id, chapter_id, operation, subject_id
                 FROM generation_jobs
                 WHERE user_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 ORDER BY created_at LIMIT 1
                 """,
                 (user_id,),
@@ -4065,23 +4006,31 @@ class Database:
                     raise ValueError(
                         "所选模型服务 API Key 或凭据不存在，请重新配置"
                     )
+            existing_job = connection.execute(
+                """
+                SELECT id FROM generation_jobs
+                WHERE user_id=? AND chapter_id=? AND version_id=?
+                    AND operation='extract_story_delta'
+                    AND status IN ('queued', 'running')
+                ORDER BY created_at LIMIT 1
+                """,
+                (user_id, chapter_id, version_id),
+            ).fetchone()
+            if existing_job:
+                connection.rollback()
+                return str(existing_job["id"])
             active = connection.execute(
                 """
                 SELECT id, chapter_id, operation, version_id
                 FROM generation_jobs
                 WHERE user_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 ORDER BY created_at LIMIT 1
                 """,
                 (user_id,),
             ).fetchone()
             if active:
                 connection.rollback()
-                if (
-                    str(active["chapter_id"]) == chapter_id
-                    and str(active["operation"]) == "extract_story_delta"
-                    and str(active["version_id"]) == version_id
-                ):
-                    return str(active["id"])
                 raise ValueError(
                     "你已有一个写作任务正在排队或运行，请等待其完成"
                 )
@@ -4180,6 +4129,7 @@ class Database:
                 SELECT id, chapter_id, operation
                 FROM generation_jobs
                 WHERE user_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 ORDER BY created_at LIMIT 1
                 """,
                 (user_id,),
@@ -4292,6 +4242,7 @@ class Database:
                 SELECT id, operation, subject_id
                 FROM generation_jobs
                 WHERE user_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 ORDER BY created_at LIMIT 1
                 """,
                 (user_id,),
@@ -4343,101 +4294,6 @@ class Database:
                 WHERE id=?
                 """,
                 (now, request_id),
-            )
-            connection.commit()
-        return job_id
-
-    def create_quality_audit_job(
-        self,
-        *,
-        user_id: int,
-        project_id: str,
-        chapter_id: str,
-        version_id: str,
-        provider: str,
-        model: str,
-        credential_source: str,
-    ) -> str:
-        if credential_source not in {"default", "personal"}:
-            raise ValueError("不支持的 API 凭据来源")
-        job_id = uuid.uuid4().hex
-        now = utc_now()
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            version = connection.execute(
-                """
-                SELECT v.id, ch.title, ch.position
-                FROM novel_chapter_versions v
-                JOIN novel_chapters ch ON ch.id=v.chapter_id
-                JOIN novel_projects p ON p.id=ch.project_id
-                WHERE v.id=? AND ch.id=? AND p.id=? AND p.user_id=?
-                """,
-                (version_id, chapter_id, project_id, user_id),
-            ).fetchone()
-            if not version:
-                connection.rollback()
-                raise ValueError("正文版本不存在")
-            if credential_source == "personal":
-                credential = connection.execute(
-                    """
-                    SELECT 1 FROM api_credentials
-                    WHERE user_id=? AND provider=?
-                    """,
-                    (user_id, provider),
-                ).fetchone()
-                if not credential:
-                    connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
-            active = connection.execute(
-                """
-                SELECT id, chapter_id, operation, version_id
-                FROM generation_jobs
-                WHERE user_id=? AND status IN ('queued', 'running')
-                ORDER BY created_at LIMIT 1
-                """,
-                (user_id,),
-            ).fetchone()
-            if active:
-                connection.rollback()
-                if (
-                    str(active["chapter_id"]) == chapter_id
-                    and str(active["operation"]) == "audit_chapter"
-                    and str(active["version_id"] or "") == version_id
-                ):
-                    return str(active["id"])
-                raise ValueError(
-                    "你已有一个写作任务正在排队或运行，请等待其完成"
-                )
-            snapshot = {
-                "project_id": project_id,
-                "chapter_id": chapter_id,
-                "version_id": version_id,
-                "chapter_title": str(version["title"]),
-                "chapter_position": int(version["position"]),
-            }
-            connection.execute(
-                """
-                INSERT INTO generation_jobs(
-                    id, project_id, chapter_id, user_id, operation,
-                    instruction, provider, model, credential_source,
-                    status, created_at, version_id, context_snapshot_json
-                ) VALUES (?, ?, ?, ?, 'audit_chapter', '', ?, ?, ?,
-                          'queued', ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    project_id,
-                    chapter_id,
-                    user_id,
-                    provider,
-                    model,
-                    credential_source,
-                    now,
-                    version_id,
-                    json.dumps(snapshot, ensure_ascii=False),
-                ),
             )
             connection.commit()
         return job_id
@@ -4521,6 +4377,7 @@ class Database:
                 SELECT id, operation, version_id, subject_id
                 FROM generation_jobs
                 WHERE user_id=? AND status IN ('queued', 'running')
+                    AND operation<>'extract_story_delta'
                 ORDER BY created_at LIMIT 1
                 """,
                 (user_id,),
@@ -4596,7 +4453,9 @@ class Database:
                 FROM generation_jobs j
                 JOIN novel_chapters ch ON ch.id=j.chapter_id
                 WHERE j.status='queued'
-                ORDER BY j.created_at
+                ORDER BY
+                    CASE WHEN j.operation='extract_story_delta' THEN 1 ELSE 0 END,
+                    j.created_at
                 LIMIT 1
                 """
             ).fetchone()
@@ -4660,27 +4519,9 @@ class Database:
         output_tokens: int,
         warning: str = "",
         content_hash: str = "",
-        quality_report: Optional[Mapping[str, Any]] = None,
-        quality_provider: str = "local",
-        quality_model: str = "deterministic-v1",
-        quality_input_tokens: int = 0,
-        quality_output_tokens: int = 0,
-    ) -> bool:
+    ) -> Optional[str]:
         now = utc_now()
         version_id = uuid.uuid4().hex
-        audit_id = uuid.uuid4().hex if quality_report else None
-        report = dict(quality_report or {})
-        quality_status = str(report.get("verdict") or "pending")
-        if quality_status not in {"pass", "block", "pending"}:
-            raise ValueError("不支持的正文质量状态")
-        effective_count = int(
-            report.get("effective_char_count") or result_char_count
-        )
-        findings = report.get("findings") or []
-        hard_issue_count = sum(
-            isinstance(item, Mapping) and item.get("severity") == "hard"
-            for item in findings
-        )
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             job = connection.execute(
@@ -4695,7 +4536,7 @@ class Database:
             ).fetchone()
             if not job:
                 connection.rollback()
-                return False
+                return None
             connection.execute(
                 """
                 INSERT INTO novel_chapter_versions(
@@ -4704,7 +4545,7 @@ class Database:
                     source, content_hash, created_by, quality_status,
                     effective_char_count, hard_issue_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'candidate', 'generated',
-                          ?, 'ai', ?, ?, ?)
+                          ?, 'ai', 'pass', ?, 0)
                 """,
                 (
                     version_id,
@@ -4716,38 +4557,9 @@ class Database:
                     now,
                     job["working_version_id"],
                     content_hash,
-                    quality_status,
-                    effective_count,
-                    hard_issue_count,
+                    result_char_count,
                 ),
             )
-            if quality_report and audit_id:
-                connection.execute(
-                    """
-                    INSERT INTO chapter_quality_audits(
-                        id, project_id, chapter_id, version_id, verdict,
-                        effective_char_count, minimum_char_count,
-                        expansion_attempted, provider, model, result_json,
-                        input_tokens, output_tokens, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        audit_id,
-                        job["project_id"],
-                        job["chapter_id"],
-                        version_id,
-                        quality_status,
-                        effective_count,
-                        int(report.get("minimum_effective_chars") or 2000),
-                        int(bool(report.get("expansion_attempted"))),
-                        quality_provider,
-                        quality_model,
-                        json.dumps(report, ensure_ascii=False),
-                        quality_input_tokens,
-                        quality_output_tokens,
-                        now,
-                    ),
-                )
             connection.execute(
                 """
                 UPDATE generation_jobs
@@ -4767,8 +4579,7 @@ class Database:
                     json.dumps(
                         {
                             "version_id": version_id,
-                            "quality_audit_id": audit_id,
-                            "quality": report or None,
+                            "canonical": False,
                         },
                         ensure_ascii=False,
                     ),
@@ -4789,7 +4600,7 @@ class Database:
                 (now, job["project_id"]),
             )
             connection.commit()
-        return True
+        return version_id
 
     def complete_memory_extraction(
         self,
@@ -4856,120 +4667,6 @@ class Database:
             )
             connection.commit()
         return cursor.rowcount == 1
-
-    def complete_quality_audit(
-        self,
-        *,
-        job_id: str,
-        claim_token: str,
-        report: Mapping[str, Any],
-        provider: str,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-    ) -> bool:
-        now = utc_now()
-        audit_id = uuid.uuid4().hex
-        verdict = str(report.get("verdict") or "")
-        if verdict not in {"pass", "block", "pending"}:
-            raise ValueError("不支持的正文质量状态")
-        effective_count = int(report.get("effective_char_count") or 0)
-        findings = report.get("findings") or []
-        hard_issue_count = sum(
-            isinstance(item, Mapping) and item.get("severity") == "hard"
-            for item in findings
-        )
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            job = connection.execute(
-                """
-                SELECT id, project_id, chapter_id, version_id
-                FROM generation_jobs
-                WHERE id=? AND status='running' AND claim_token=?
-                    AND operation='audit_chapter'
-                """,
-                (job_id, claim_token),
-            ).fetchone()
-            if not job or not job["version_id"]:
-                connection.rollback()
-                return False
-            version = connection.execute(
-                """
-                SELECT id FROM novel_chapter_versions
-                WHERE id=? AND chapter_id=?
-                """,
-                (job["version_id"], job["chapter_id"]),
-            ).fetchone()
-            if not version:
-                connection.rollback()
-                return False
-            connection.execute(
-                """
-                INSERT INTO chapter_quality_audits(
-                    id, project_id, chapter_id, version_id, verdict,
-                    effective_char_count, minimum_char_count,
-                    expansion_attempted, provider, model, result_json,
-                    input_tokens, output_tokens, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    audit_id,
-                    job["project_id"],
-                    job["chapter_id"],
-                    job["version_id"],
-                    verdict,
-                    effective_count,
-                    int(report.get("minimum_effective_chars") or 2000),
-                    int(bool(report.get("expansion_attempted"))),
-                    provider,
-                    model,
-                    json.dumps(dict(report), ensure_ascii=False),
-                    input_tokens,
-                    output_tokens,
-                    now,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE novel_chapter_versions
-                SET quality_status=?, effective_char_count=?,
-                    hard_issue_count=?, quality_override_reason='',
-                    quality_overridden_at=NULL
-                WHERE id=?
-                """,
-                (
-                    verdict,
-                    effective_count,
-                    hard_issue_count,
-                    job["version_id"],
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE generation_jobs
-                SET status='completed', result_json=?, input_tokens=?,
-                    output_tokens=?, result_char_count=?, error=NULL,
-                    finished_at=?, claim_token=NULL, lease_expires_at=NULL
-                WHERE id=?
-                """,
-                (
-                    json.dumps(
-                        {
-                            "quality_audit_id": audit_id,
-                            "version_id": str(job["version_id"]),
-                            "quality": dict(report),
-                        },
-                        ensure_ascii=False,
-                    ),
-                    input_tokens,
-                    output_tokens,
-                    effective_count,
-                    now,
-                    job_id,
-                ),
-            )
-            connection.commit()
-        return True
 
     def complete_style_job(
         self,

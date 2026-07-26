@@ -6,7 +6,7 @@
       <a class="back-link" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}">← 返回章节编辑器</a>
       <span class="eyebrow">SCENE WORKBENCH · CHAPTER {{ "%03d"|format(chapter.position) }}</span>
       <h1>{{ chapter.title or '未命名章节' }} · 场景工作台</h1>
-      <p>逐场景生成、编辑和检查；只有全部场景通过后，才能按任务卡顺序组装成章节候选稿。</p>
+      <p>逐场景生成和编辑；所有场景都有正文后，就能按任务卡顺序组装为当前章节。</p>
     </div>
     <div class="scene-progress-badge">
       <strong>{{ workbench.ready_count }} / {{ workbench.scene_count }}</strong>
@@ -15,11 +15,10 @@
   </section>
 
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-  {% if saved %}<div class="alert success">场景已保存为新版本。手动修改后的版本需要重新执行场景检查。</div>{% endif %}
-  {% if overridden %}<div class="alert warning">你已记录覆盖理由；当前场景可以参与组装，但完整章节仍必须经过整章硬审计。</div>{% endif %}
-  {% if restored %}<div class="alert success">历史场景已恢复为新的当前版本，需要重新执行场景检查。</div>{% endif %}
+  {% if saved %}<div class="alert success">场景已保存为新版本。</div>{% endif %}
+  {% if restored %}<div class="alert success">历史场景已恢复为新的当前版本。</div>{% endif %}
   {% if workbench.active_job %}
-    <div class="alert warning">你有一个 AI 任务正在运行。完成前不能保存、重写、检查或组装其他场景。</div>
+    <div class="alert warning">你有一个 AI 任务正在运行。完成前不能保存、重写或组装其他场景。</div>
   {% endif %}
   {% if workbench.plan_status != 'confirmed' %}
     <div class="alert warning">章节任务卡尚未确认，场景工作台暂时只读。<a href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/task-card">返回确认任务卡</a></div>
@@ -30,17 +29,14 @@
 
   <section class="card scene-assembly-bar">
     <div>
-      <span class="section-kicker">SAFE ASSEMBLY</span>
-      <h2>组装为章节候选</h2>
-      <p>
-        组装不会修改正史。系统会记录每个场景版本，生成新的整章候选；
-        之后仍需运行整章 Hard Auditor，核对跨场景连续性、全部必做项和 2000 字硬下限。
-      </p>
+      <span class="section-kicker">ASSEMBLY</span>
+      <h2>组装为当前章节</h2>
+      <p>系统会保留每个场景和整章的历史版本；组装完成后直接更新当前正文。</p>
     </div>
     <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/scenes/assemble">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
       <button class="button primary" type="submit" {% if not workbench.all_ready or workbench.active_job %}disabled{% endif %}>
-        {% if workbench.all_ready %}按顺序组装 {{ workbench.scene_count }} 个场景{% else %}还有 {{ workbench.scene_count - workbench.ready_count }} 个场景未通过{% endif %}
+        {% if workbench.all_ready %}按顺序组装 {{ workbench.scene_count }} 个场景{% else %}还有 {{ workbench.scene_count - workbench.ready_count }} 个场景未完成{% endif %}
       </button>
     </form>
   </section>
@@ -54,15 +50,7 @@
             <h2>{{ scene.goal }}</h2>
             <p>{{ scene.location or '地点待补充' }} · {{ scene.pov_character or chapter.point_of_view }}</p>
           </div>
-          <div class="scene-card-statuses">
-            <span class="status {{ scene.draft_status }}">{{ scene.draft_status|scene_draft_status_label }}</span>
-            {% if scene.current_version_id %}
-              {% if scene.quality_status == 'pass' %}<span class="quality-state pass">场景检查通过</span>
-              {% elif scene.quality_status == 'block' %}<span class="quality-state block">{{ scene.version_hard_issue_count }} 个阻断问题</span>
-              {% elif scene.quality_status == 'overridden' %}<span class="quality-state overridden">作者覆盖</span>
-              {% else %}<span class="quality-state pending">待场景检查</span>{% endif %}
-            {% endif %}
-          </div>
+          <span class="status {{ scene.draft_status }}">{{ scene.draft_status|scene_draft_status_label }}</span>
         </header>
 
         <div class="scene-contract-grid">
@@ -91,7 +79,7 @@
             <input type="hidden" name="csrf" value="{{ csrf_token }}">
             <div class="scene-editor-toolbar">
               <strong>场景正文</strong>
-              <span data-scene-count="{{ scene.id }}">{{ scene.content|length }} 字 · 目标约 {{ scene.target_chars }} · 检查下限 {{ scene.minimum_chars }}</span>
+              <span data-scene-count="{{ scene.id }}">{{ scene.content|length }} 字 · 目标约 {{ scene.target_chars }}</span>
             </div>
             <textarea name="content" maxlength="60000" data-scene-editor="{{ scene.id }}" placeholder="只写这个场景：让人物为目标采取行动、遭遇阻力，并在结尾发生可观察的状态变化。">{{ scene.content }}</textarea>
             <label class="editor-change-summary">
@@ -136,62 +124,13 @@
         </div>
 
         {% if scene.current_version_id %}
-          <section class="scene-audit-panel quality-{{ scene.quality_status }}">
-            <div class="scene-audit-summary">
-              <div>
-                <span class="section-kicker">SCENE AUDITOR</span>
-                <h3>
-                  {% if scene.quality_status == 'pass' %}可以参与组装
-                  {% elif scene.quality_status == 'overridden' %}作者已覆盖场景检查
-                  {% elif scene.quality_status == 'block' %}暂不能参与组装
-                  {% else %}等待组装前检查{% endif %}
-                </h3>
-                <p>
-                  {% if scene.audit %}{{ scene.audit.report.summary }}
-                  {% else %}检查当前场景是否落实目标、阻力、行动、信息控制和状态变化，并核对正史、知情与视角边界。{% endif %}
-                </p>
-              </div>
-              {% if scene.quality_status in ['pending','block'] and not scene.is_stale %}
-                <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/scenes/{{ scene.id }}/versions/{{ scene.current_version_id }}/audit">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                  <button class="button primary" type="submit" {% if workbench.active_job %}disabled{% endif %}>{% if scene.audit %}重新检查{% else %}运行场景检查{% endif %}</button>
-                </form>
-              {% endif %}
-            </div>
-
-            {% if scene.audit and scene.audit.report.findings %}
-              <ol class="scene-findings">
-                {% for finding in scene.audit.report.findings %}
-                  <li>
-                    <span class="quality-state {{ 'block' if finding.severity == 'hard' else 'pending' }}">{{ '阻断' if finding.severity == 'hard' else '复核' }}</span>
-                    <strong>{{ finding.description }}</strong>
-                    {% if finding.evidence %}<blockquote>{{ finding.evidence }}</blockquote>{% endif %}
-                    <p>{{ finding.repair_instruction }}</p>
-                  </li>
-                {% endfor %}
-              </ol>
-            {% endif %}
-
-            {% if scene.quality_status in ['pending','block'] and not scene.is_stale %}
-              <details class="scene-override">
-                <summary>我确认保留，记录理由并允许组装</summary>
-                <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/scenes/{{ scene.id }}/versions/{{ scene.current_version_id }}/override">
-                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                  <label><span>覆盖理由</span><textarea name="reason" rows="3" maxlength="2000" minlength="10" required placeholder="说明为什么这个问题在当前叙事中可接受；整章硬审计仍会再次核对。"></textarea></label>
-                  <button class="button" type="submit" {% if workbench.active_job %}disabled{% endif %}>记录覆盖理由</button>
-                </form>
-              </details>
-            {% elif scene.quality_status == 'overridden' and scene.quality_override_reason %}
-              <p class="scene-override-note"><b>作者覆盖理由：</b>{{ scene.quality_override_reason }}</p>
-            {% endif %}
-            {% if scene.version_created_by == 'author' and scene.version_source == 'manual' and scene.version_parent_version_id %}
-              <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/scenes/{{ scene.id }}/versions/{{ scene.current_version_id }}/learn-edit-preferences" class="scene-preference-learning">
-                <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                <button class="button" type="submit" {% if workbench.active_job %}disabled{% endif %}>从这次手工改稿学习偏好</button>
-                <small>只提取待审核建议，不会自动改变 Writer。</small>
-              </form>
-            {% endif %}
-          </section>
+          {% if scene.version_created_by == 'author' and scene.version_source == 'manual' and scene.version_parent_version_id %}
+            <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/scenes/{{ scene.id }}/versions/{{ scene.current_version_id }}/learn-edit-preferences" class="scene-preference-learning">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <button class="button" type="submit" {% if workbench.active_job %}disabled{% endif %}>从这次手工改稿学习偏好</button>
+              <small>只提取偏好建议，不会自动改变 Writer。</small>
+            </form>
+          {% endif %}
 
           {% if scene.versions|length > 1 %}
             <details class="scene-history">
@@ -201,7 +140,7 @@
                   {% if version.id != scene.current_version_id %}
                     <li>
                       <span>{{ version.kind|writing_operation_label }}</span>
-                      <small>{{ version.char_count|human_size }} · {{ version.quality_status }} · {{ version.created_at }}</small>
+                      <small>{{ version.char_count|human_size }} · {{ version.created_at }}</small>
                       <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/scenes/{{ scene.id }}/versions/{{ version.id }}/restore">
                         <input type="hidden" name="csrf" value="{{ csrf_token }}">
                         <button class="button small" type="submit" {% if workbench.active_job %}disabled{% endif %}>恢复为新的当前版本</button>

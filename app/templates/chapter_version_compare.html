@@ -64,7 +64,7 @@
       {% endif %}
       <p class="muted">
         左侧红色为基准版本中被删除的文字，右侧绿色为目标版本中新增的文字。
-        比较本身不会切换当前候选或正史。
+        比较本身不会切换当前正文。
       </p>
     </section>
 
@@ -78,7 +78,7 @@
             </div>
             <span>
               {% if base_version.id == chapter.canonical_version_id %}正史
-              {% elif base_version.id == chapter.working_version_id %}当前候选
+              {% elif base_version.id == chapter.working_version_id %}未采用版本
               {% else %}历史版本{% endif %}
             </span>
           </div>
@@ -93,7 +93,7 @@
             </div>
             <span>
               {% if target_version.id == chapter.canonical_version_id %}正史
-              {% elif target_version.id == chapter.working_version_id %}当前候选
+              {% elif target_version.id == chapter.working_version_id %}未采用版本
               {% else %}历史版本{% endif %}
             </span>
           </div>

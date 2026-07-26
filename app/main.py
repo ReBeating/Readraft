@@ -65,7 +65,6 @@ from .memory_identity import (
     IDENTITY_TYPES,
     MemoryIdentityService,
 )
-from .memory_schema import StoryDelta
 from .memory_service import MemoryService
 from .model_catalog import ModelCatalogError, fetch_models
 from .model_provider import (
@@ -84,7 +83,7 @@ from .preference_service import (
     PreferenceService,
 )
 from .process_lock import ProcessLock
-from .quality_audit import build_quality_auditor, effective_char_count
+from .text_metrics import effective_char_count
 from .reader_planner import build_reader_planner
 from .reader_service import ReaderDecisionService
 from .security import (
@@ -498,14 +497,12 @@ def _writing_operation_label(value: str) -> str:
         "extract_story_delta": "提取故事记忆",
         "plan_chapter": "规划章节任务卡",
         "plan_scene_beats": "只拆分场景节拍",
-        "audit_chapter": "执行正文硬审计",
         "audit_ai_style": "定位 AI 味问题",
         "rewrite_style_issue": "定点改写",
         "targeted_rewrite": "定点改写候选",
         "propose_reader_branches": "评估读者意见",
         "generate_scene": "生成场景",
         "rewrite_scene": "重写场景",
-        "audit_scene": "检查场景",
         "scene_assembly": "场景组装",
     }.get(value, value)
 
@@ -1034,7 +1031,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         planning_service=planning_service,
         scene_service=scene_service,
         memory_service=memory_service,
-        style_service=style_service,
     )
     continuity_service = ContinuityService(database)
     identity_service = MemoryIdentityService(database)
@@ -1256,51 +1252,44 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return str(group["models"][0]["value"])
         return ""
 
-    async def after_canon_acceptance(
+    def queue_background_memory(
         request: Request,
         *,
         user_id: int,
         project_id: str,
         chapter_id: str,
         version_id: str,
-    ) -> Response:
-        deltas = memory_service.list_chapter_deltas(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        active_delta = next(
-            (
-                item
-                for item in deltas
-                if str(item["version_id"]) == version_id
-                and str(item["status"])
-                in {"proposed", "author_edited", "projected"}
-            ),
-            None,
-        )
-        if active_delta:
-            if str(active_delta["status"]) in {"proposed", "author_edited"}:
-                return RedirectResponse(
-                    f"/story-deltas/{active_delta['id']}",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}?canonical=true",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        profile = api_profile(user_id)
-        if not profile:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                "?canonical=true&error="
-                + quote(
-                    "正文已成为正史；配置模型服务后可提取故事记忆"
-                ),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
+    ) -> None:
         try:
-            job_id = database.create_memory_extraction_job(
+            deltas = memory_service.list_chapter_deltas(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+            )
+            active_delta = next(
+                (
+                    item
+                    for item in deltas
+                    if str(item["version_id"]) == version_id
+                    and str(item["status"])
+                    in {"proposed", "author_edited", "projected"}
+                ),
+                None,
+            )
+            if active_delta:
+                if str(active_delta["status"]) in {
+                    "proposed",
+                    "author_edited",
+                }:
+                    memory_service.accept_delta(
+                        user_id=user_id,
+                        delta_id=str(active_delta["id"]),
+                    )
+                return
+            profile = api_profile(user_id)
+            if not profile:
+                return
+            database.create_memory_extraction_job(
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
@@ -1309,16 +1298,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model=profile["model"],
                 credential_source=profile["credential_source"],
             )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?canonical=true&error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
+            request.app.state.worker.wake()
+        except Exception:
+            logger.exception(
+                "background story memory was not queued chapter=%s",
+                chapter_id,
             )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -1347,7 +1332,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 writer = build_default_writer(reasoning_settings)
                 memory_extractor = build_memory_extractor(fast_settings)
                 chapter_planner = build_chapter_planner(deep_settings)
-                quality_auditor = build_quality_auditor(deep_settings)
                 style_editor = build_style_editor(reasoning_settings)
                 reader_planner = build_reader_planner(reasoning_settings)
                 story_planner = build_story_planner(deep_settings)
@@ -1374,7 +1358,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 writer = None
                 memory_extractor = None
                 chapter_planner = None
-                quality_auditor = None
                 style_editor = None
                 reader_planner = None
                 story_planner = None
@@ -1393,7 +1376,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 credential_cipher,
                 memory_extractor=memory_extractor,
                 chapter_planner=chapter_planner,
-                quality_auditor=quality_auditor,
                 style_editor=style_editor,
                 reader_planner=reader_planner,
                 story_planner=story_planner,
@@ -1409,7 +1391,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             application.state.writer = writer
             application.state.memory_extractor = memory_extractor
             application.state.chapter_planner = chapter_planner
-            application.state.quality_auditor = quality_auditor
             application.state.style_editor = style_editor
             application.state.reader_planner = reader_planner
             application.state.story_planner = story_planner
@@ -6801,8 +6782,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         error: Optional[str] = None,
         saved: bool = False,
         canonical: bool = False,
-        memory_saved: bool = False,
-        scene_assembled: bool = False,
         assistant_rewrite: bool = False,
     ):
         user = _current_user(request)
@@ -6820,11 +6799,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         content = _read_optional_text(Path(str(chapter["content_path"])))
         versions = database.list_chapter_versions(
             int(user["id"]), project_id, chapter_id
-        )
-        deltas = memory_service.list_chapter_deltas(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
         )
         task_card = planning_service.get_task_card(
             user_id=int(user["id"]),
@@ -6883,7 +6857,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 chapter=chapter,
                 content=content,
                 versions=versions,
-                deltas=deltas,
                 task_card=task_card,
                 voice_profile=voice_profile,
                 working_version=working_version,
@@ -6897,8 +6870,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 error=error,
                 saved=saved,
                 canonical=canonical,
-                memory_saved=memory_saved,
-                scene_assembled=scene_assembled,
                 assistant_rewrite=assistant_rewrite,
             ),
         )
@@ -7005,13 +6976,28 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             _atomic_write_text(version_path, content, token)
             _atomic_write_text(chapter_content_path, content, token)
             try:
-                scene_service.record_assembly(
+                version_id = scene_service.record_assembly(
                     user_id=user_id,
                     project_id=project_id,
                     chapter_id=chapter_id,
                     version_path=version_path,
                     content=content,
                     scene_versions=assembly["scene_versions"],
+                )
+                accepted = database.accept_chapter_version(
+                    user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    version_id=version_id,
+                )
+                if not accepted:
+                    raise ValueError("组装正文没有成为当前版本")
+                queue_background_memory(
+                    request,
+                    user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    version_id=version_id,
                 )
             except Exception:
                 _atomic_write_text(
@@ -7033,7 +7019,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         return RedirectResponse(
             f"/novels/{project_id}/chapters/{chapter_id}"
-            "?scene_assembled=true",
+            "?saved=true",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -7179,93 +7165,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request.app.state.worker.wake()
         return RedirectResponse(
             f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/versions/{scene_version_id}/audit"
-    )
-    async def audit_scene_draft(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        scene_version_id: str,
-        csrf: str = Form(...),
-    ):
-        del scene_beat_id
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        profile = api_profile(int(user["id"]))
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("执行场景检查前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_generation_job(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                operation="audit_scene",
-                instruction="",
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-                subject_id=scene_version_id,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/versions/{scene_version_id}/override"
-    )
-    async def override_scene_audit(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        scene_version_id: str,
-        reason: str = Form(...),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            changed = scene_service.override_audit(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                scene_beat_id=scene_beat_id,
-                scene_version_id=scene_version_id,
-                reason=reason,
-            )
-            if not changed:
-                raise ValueError("场景版本已变化或不需要覆盖")
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-            f"?overridden=true#scene-{scene_beat_id}",
-            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post(
@@ -7934,110 +7833,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @application.get(
         "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/quality",
-        response_class=HTMLResponse,
-    )
-    async def chapter_version_quality_page(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        version_id: str,
-        error: Optional[str] = None,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        user_id = int(user["id"])
-        chapter = database.get_novel_chapter(
-            user_id, project_id, chapter_id
-        )
-        version = database.get_chapter_version(
-            user_id, project_id, chapter_id, version_id
-        )
-        if not chapter or not version:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        audit = database.get_latest_quality_audit(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-            version_id=version_id,
-        )
-        chapter_workflow = workflow_service.get_state(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        return render_template(
-            "chapter_quality.html",
-            _template_context(
-                request,
-                user=user,
-                chapter=chapter,
-                version=version,
-                audit=audit,
-                report=(audit or {}).get("report") or {},
-                chapter_workflow=chapter_workflow,
-                error=error,
-            ),
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/quality"
-    )
-    async def run_chapter_version_quality_audit(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        version_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        user_id = int(user["id"])
-        version = database.get_chapter_version(
-            user_id, project_id, chapter_id, version_id
-        )
-        if not version:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        profile = api_profile(user_id)
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("执行正文硬审计前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_quality_audit_job(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-                version_id=version_id,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"/versions/{version_id}/quality"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}"
         "/versions/{version_id}/style",
         response_class=HTMLResponse,
     )
@@ -8353,6 +8148,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not result:
                 raise ValueError("改写候选已处理或失效")
+            accepted = database.accept_chapter_version(
+                user_id=user_id,
+                project_id=str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                version_id=str(result["version_id"]),
+            )
+            if not accepted:
+                raise ValueError("改写结果没有成为当前版本")
+            queue_background_memory(
+                request,
+                user_id=user_id,
+                project_id=str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                version_id=str(result["version_id"]),
+            )
         except ValueError as exc:
             try:
                 _atomic_write_text(
@@ -8568,12 +8378,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "canon changed but impact report was not marked applied id=%s",
                 report_id,
             )
-        return await after_canon_acceptance(
+        queue_background_memory(
             request,
             user_id=int(user["id"]),
             project_id=str(report["project_id"]),
             chapter_id=str(report["chapter_id"]),
             version_id=str(report["proposed_version_id"]),
+        )
+        return RedirectResponse(
+            f"/novels/{report['project_id']}/chapters/"
+            f"{report['chapter_id']}?canonical=true",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/canon-impact-reports/{report_id}/cancel")
@@ -8706,72 +8521,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
 
-        return await after_canon_acceptance(
+        queue_background_memory(
             request,
             user_id=user_id,
             project_id=project_id,
             chapter_id=chapter_id,
             version_id=version_id,
         )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/extract-memory"
-    )
-    async def extract_canonical_chapter_memory(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        version_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        user_id = int(user["id"])
-        chapter = database.get_novel_chapter(
-            user_id, project_id, chapter_id
-        )
-        version = database.get_chapter_version(
-            user_id, project_id, chapter_id, version_id
-        )
-        if not chapter or not version:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if str(chapter.get("canonical_version_id") or "") != version_id:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                "?error="
-                + quote("只能从当前正史版本提取故事记忆")
-                + "#chapter-workflow",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        profile = api_profile(user_id)
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("提取故事记忆前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_memory_extraction_job(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-                version_id=version_id,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote(str(exc))}#chapter-workflow",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
         return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
+            f"/novels/{project_id}/chapters/{chapter_id}?canonical=true",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/novels/{project_id}/chapters/{chapter_id}/save")
@@ -8845,6 +8604,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not version_id:
                 raise ValueError("章节不存在")
+            accepted = database.accept_chapter_version(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                chapter_id=chapter_id,
+                version_id=version_id,
+            )
+            if not accepted:
+                raise ValueError("正文版本没有成为当前版本")
+            if content.strip():
+                queue_background_memory(
+                    request,
+                    user_id=int(user["id"]),
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    version_id=version_id,
+                )
         except ValueError as exc:
             return save_error_redirect(str(exc))
         except Exception:
@@ -8957,22 +8732,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        memory_delta_id = None
         memory_retrieval = None
-        if (
-            str(job["operation"]) == "extract_story_delta"
-            and str(job["status"]) == "completed"
-            and job.get("result_json")
-        ):
-            try:
-                memory_delta_id = json.loads(
-                    str(job["result_json"])
-                ).get("delta_id")
-            except (AttributeError, TypeError, ValueError):
-                logger.warning(
-                    "memory extraction job has invalid result_json id=%s",
-                    job_id,
-                )
         if job.get("context_snapshot_json"):
             try:
                 snapshot = json.loads(str(job["context_snapshot_json"]))
@@ -9019,7 +8779,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 job=job,
-                memory_delta_id=memory_delta_id,
                 memory_retrieval=memory_retrieval,
             ),
         )
@@ -9057,14 +8816,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ):
                 redirect_url = f"/reader-requests/{job['subject_id']}"
             elif (
-                str(job["operation"]) == "audit_chapter"
-                and job.get("version_id")
-            ):
-                redirect_url = (
-                    f"/novels/{job['project_id']}/chapters/"
-                    f"{job['chapter_id']}/versions/{job['version_id']}/quality"
-                )
-            elif (
                 str(job["operation"]) == "audit_ai_style"
                 and job.get("version_id")
             ):
@@ -9080,24 +8831,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             elif str(job["operation"]) in {
                 "generate_scene",
                 "rewrite_scene",
-                "audit_scene",
             }:
                 redirect_url = (
                     f"/novels/{job['project_id']}/chapters/"
                     f"{job['chapter_id']}/scenes"
                 )
-            elif (
-                str(job["operation"]) == "extract_story_delta"
-                and job.get("result_json")
-            ):
-                try:
-                    delta_id = json.loads(str(job["result_json"])).get(
-                        "delta_id"
-                    )
-                    if delta_id:
-                        redirect_url = f"/story-deltas/{delta_id}"
-                except (AttributeError, TypeError, ValueError):
-                    pass
             if not redirect_url:
                 redirect_url = (
                     f"/novels/{job['project_id']}/chapters/"
@@ -9110,145 +8848,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "redirect_url": redirect_url,
             "error": job["error"] if job["status"] == "failed" else None,
         }
-
-    @application.get(
-        "/story-deltas/{delta_id}", response_class=HTMLResponse
-    )
-    async def story_delta_review(
-        request: Request,
-        delta_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        delta = memory_service.get_delta(
-            user_id=int(user["id"]), delta_id=delta_id
-        )
-        if not delta:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        return render_template(
-            "story_delta.html",
-            _template_context(
-                request,
-                user=user,
-                delta=delta,
-                payload_json=json.dumps(
-                    delta["payload"], ensure_ascii=False, indent=2
-                ),
-                error=error,
-                saved=saved,
-            ),
-        )
-
-    @application.post("/story-deltas/{delta_id}/save")
-    async def save_story_delta(
-        request: Request,
-        delta_id: str,
-        payload_json: str = Form(...),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        if len(payload_json) > 200_000:
-            return RedirectResponse(
-                f"/story-deltas/{delta_id}?error="
-                + quote("Story Delta 不能超过 200000 个字符"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            payload = json.loads(payload_json)
-            delta = StoryDelta.model_validate(payload)
-        except (TypeError, ValueError) as exc:
-            return RedirectResponse(
-                f"/story-deltas/{delta_id}?error="
-                + quote(f"结构校验失败：{str(exc)[:800]}"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        updated = memory_service.update_proposal(
-            user_id=int(user["id"]),
-            delta_id=delta_id,
-            payload=delta,
-        )
-        if not updated:
-            return RedirectResponse(
-                f"/story-deltas/{delta_id}?error="
-                + quote("这份提案已确认、拒绝或不存在，不能继续编辑"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/story-deltas/{delta_id}?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/story-deltas/{delta_id}/accept")
-    async def accept_story_delta(
-        request: Request,
-        delta_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        delta = memory_service.get_delta(
-            user_id=int(user["id"]), delta_id=delta_id
-        )
-        if not delta:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        try:
-            projected = memory_service.accept_delta(
-                user_id=int(user["id"]), delta_id=delta_id
-            )
-            if not projected:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/story-deltas/{delta_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{delta['project_id']}/chapters/"
-            f"{delta['chapter_id']}?memory_saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/story-deltas/{delta_id}/reject")
-    async def reject_story_delta(
-        request: Request,
-        delta_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        delta = memory_service.get_delta(
-            user_id=int(user["id"]), delta_id=delta_id
-        )
-        if not delta:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        rejected = memory_service.reject_delta(
-            user_id=int(user["id"]), delta_id=delta_id
-        )
-        if not rejected:
-            return RedirectResponse(
-                f"/story-deltas/{delta_id}?error="
-                + quote("这份提案已不能拒绝"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{delta['project_id']}/chapters/"
-            f"{delta['chapter_id']}?canonical=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
 
     @application.get("/works/{work_id}/export.novelai.zip")
     async def export_complete_work_archive(
@@ -10147,6 +9746,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=int(user["id"]),
                 assistant_message_id=message_id,
             )
+            accepted = database.accept_chapter_version(
+                user_id=int(user["id"]),
+                project_id=str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                version_id=str(result["version_id"]),
+            )
+            if not accepted:
+                raise ValueError("改写结果没有成为当前版本")
+            queue_background_memory(
+                request,
+                user_id=int(user["id"]),
+                project_id=str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                version_id=str(result["version_id"]),
+            )
         except ValueError as exc:
             message = assistant_chat_service.get_message(
                 user_id=int(user["id"]), message_id=message_id
@@ -10394,6 +10008,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"&error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
+        queue_background_memory(
+            request,
+            user_id=user_id,
+            project_id=str(result["project_id"]),
+            chapter_id=str(result["chapter_id"]),
+            version_id=str(result["version_id"]),
+        )
         return RedirectResponse(
             f"/novels/{result['project_id']}/workbench"
             f"?chapter_id={result['chapter_id']}"

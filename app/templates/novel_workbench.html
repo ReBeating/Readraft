@@ -401,9 +401,9 @@
                           {% if auto_commit.get('status') == 'reverted' %}
                             已撤回
                           {% elif auto_commit.get('status') == 'applied' and message.applied_version_id %}
-                            已自动提交到工作稿
+                            已自动保存为当前版本
                           {% elif message.applied_version_id %}
-                            已提交到工作稿
+                            已保存为当前版本
                           {% elif auto_commit.get('status') == 'failed' %}
                             自动提交失败
                           {% else %}
@@ -424,7 +424,7 @@
                         <form method="post" action="/assistant/messages/{{ message.id }}/save-draft" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
-                          <button class="studio-button primary" type="submit">提交到工作稿</button>
+                          <button class="studio-button primary" type="submit">保存为当前版本</button>
                         </form>
                       {% endif %}
                     </section>
@@ -437,9 +437,9 @@
                           {% if auto_commit.get('status') == 'reverted' %}
                             已撤回
                           {% elif auto_commit.get('status') == 'applied' and message.applied_version_id %}
-                            已自动提交到工作稿
+                            已自动保存为当前版本
                           {% elif message.applied_version_id %}
-                            已提交到工作稿
+                            已保存为当前版本
                           {% elif auto_commit.get('status') == 'failed' %}
                             自动提交失败
                           {% else %}
@@ -461,7 +461,7 @@
                         <form method="post" action="/assistant/messages/{{ message.id }}/save-rewrite" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
-                          <button class="studio-button primary" type="submit">提交到工作稿</button>
+                          <button class="studio-button primary" type="submit">保存为当前版本</button>
                         </form>
                       {% endif %}
                     </section>

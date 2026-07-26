@@ -1236,7 +1236,7 @@ def test_removed_continuity_page_is_not_routed(tmp_path: Path):
         assert client.get("/novels/not-owned/continuity").status_code == 404
 
 
-def test_story_delta_page_renders_plot_update_text(tmp_path: Path):
+def test_story_delta_review_page_is_removed(tmp_path: Path):
     application = create_app(_settings(tmp_path))
     with TestClient(application) as client:
         database = application.state.database
@@ -1305,9 +1305,12 @@ def test_story_delta_page_renders_plot_update_text(tmp_path: Path):
         )
 
         delta_page = client.get(f"/story-deltas/{delta_id}")
-        expected_update = "本章对失踪之谜执行 opened。"
-        assert expected_update in delta_page.text
-        assert "&lt;built-in method update" not in delta_page.text
+        assert delta_page.status_code == 404
+        delta = MemoryService(database).get_delta(
+            user_id=user_id, delta_id=delta_id
+        )
+        assert delta
+        assert delta["status"] == "projected"
 
 
 def test_memory_identity_rule_web_workflow(tmp_path: Path):

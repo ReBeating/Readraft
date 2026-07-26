@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.memory_service import MemoryService
 from app.planning_service import PlanningService
 
 
@@ -1386,8 +1387,8 @@ def test_unified_workbench_uses_five_material_sections(tmp_path):
         assert "第1章 · 未命名章节" in chapter_page.text
         assert "data-chapter-workflow" in chapter_page.text
         assert "章节创作流程" in chapter_page.text
-        assert "确认任务卡" in chapter_page.text
-        assert "形成正文候选" in chapter_page.text
+        assert "规划本章" in chapter_page.text
+        assert "当前正文" in chapter_page.text
         assert (
             f'href="/novels/{project_id}/chapters/{chapter_id}/task-card"'
             in chapter_page.text
@@ -2572,9 +2573,8 @@ def test_full_mock_novel_writing_workflow(tmp_path):
             "query_terms"
         ]
         generation_result = json.loads(stored_job["result_json"])
-        assert generation_result["quality"]["verdict"] == "pass"
-        assert generation_result["quality"]["effective_char_count"] >= 2000
-        assert generation_result["quality"]["expansion_attempted"] is True
+        assert generation_result["canonical"] is True
+        generated_version_id = generation_result["version_id"]
         job_page = client.get(job_url)
         assert "本次相关故事记忆" in job_page.text
         assert "仅检索本作品、当前正史分支" in job_page.text
@@ -2582,67 +2582,21 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         chapter_page = client.get(chapter_url)
         assert "本地演示草稿" in chapter_page.text
         assert "最近版本" in chapter_page.text
-        assert "候选稿" in chapter_page.text
-        assert "硬审计通过" in chapter_page.text
-        version_match = re.search(
-            r'action="([^"]+/versions/([a-f0-9]+)/accept)"',
-            chapter_page.text,
-        )
-        assert version_match
-        generated_version_id = version_match.group(2)
+        assert "当前版本" in chapter_page.text
+        assert "候选稿" not in chapter_page.text
+        assert "硬审计" not in chapter_page.text
         generated_version = application.state.database.get_chapter_version(
             int(user["id"]),
             project_url.rsplit("/", 1)[-1],
             chapter_url.rsplit("/", 1)[-1],
             generated_version_id,
         )
-        generated_path = Path(generated_version["content_path"])
-        generated_crlf = generated_path.read_text(encoding="utf-8").replace(
-            "\n", "\r\n"
-        )
-        generated_path.write_bytes(generated_crlf.encode("utf-8"))
-        with application.state.database.connection() as connection:
-            connection.execute(
-                """
-                UPDATE novel_chapter_versions
-                SET content_hash=?
-                WHERE id=?
-                """,
-                (
-                    hashlib.sha256(
-                        generated_crlf.encode("utf-8")
-                    ).hexdigest(),
-                    generated_version_id,
-                ),
-            )
-            connection.commit()
+        assert generated_version["status"] == "canonical"
         quality_url = (
             f"{chapter_url}/versions/{generated_version_id}/quality"
         )
         quality_page = client.get(quality_url)
-        assert quality_page.status_code == 200
-        assert "硬审计通过" in quality_page.text
-        assert "已使用一次" in quality_page.text
-        response = client.post(
-            quality_url,
-            data={"csrf": csrf_from(quality_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        audit_job_id = response.headers["location"].rsplit("/", 1)[-1]
-        deadline = time.monotonic() + 3
-        audit_payload = {}
-        while time.monotonic() < deadline:
-            audit_payload = client.get(
-                f"/api/writing-jobs/{audit_job_id}"
-            ).json()
-            if audit_payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert audit_payload["status"] == "completed"
-        assert audit_payload["redirect_url"] == quality_url
-        rerun_quality_page = client.get(quality_url)
-        assert "硬审计通过" in rerun_quality_page.text
+        assert quality_page.status_code == 404
 
         style_url = (
             f"{chapter_url}/versions/{generated_version_id}/style"
@@ -2715,100 +2669,47 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         assert response.headers["location"].startswith(chapter_url)
 
         revised_page = client.get(response.headers["location"])
-        assert "定点改写候选" in revised_page.text
-        assert "待硬审计" in revised_page.text
+        assert "正文已保存并成为当前版本" in revised_page.text
+        assert "待硬审计" not in revised_page.text
         chapter_record = application.state.database.get_novel_chapter(
             int(user["id"]),
             project_url.rsplit("/", 1)[-1],
             chapter_url.rsplit("/", 1)[-1],
         )
         revised_version_id = chapter_record["working_version_id"]
-        revised_version = application.state.database.get_chapter_version(
-            int(user["id"]),
-            project_url.rsplit("/", 1)[-1],
-            chapter_url.rsplit("/", 1)[-1],
-            revised_version_id,
-        )
-        revised_path = Path(revised_version["content_path"])
-        revised_crlf = revised_path.read_text(encoding="utf-8").replace(
-            "\n", "\r\n"
-        )
-        revised_path.write_bytes(revised_crlf.encode("utf-8"))
-        with application.state.database.connection() as connection:
-            connection.execute(
-                """
-                UPDATE novel_chapter_versions
-                SET content_hash=?
-                WHERE id=?
-                """,
-                (
-                    hashlib.sha256(
-                        revised_crlf.encode("utf-8")
-                    ).hexdigest(),
-                    revised_version_id,
-                ),
-            )
-            connection.commit()
+        assert chapter_record["canonical_version_id"] == revised_version_id
         revised_quality_url = (
             f"{chapter_url}/versions/{revised_version_id}/quality"
         )
         revised_quality_page = client.get(revised_quality_url)
-        response = client.post(
-            revised_quality_url,
-            data={"csrf": csrf_from(revised_quality_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        revised_audit_job_id = response.headers["location"].rsplit("/", 1)[-1]
-        deadline = time.monotonic() + 3
-        revised_audit_payload = {}
-        while time.monotonic() < deadline:
-            revised_audit_payload = client.get(
-                f"/api/writing-jobs/{revised_audit_job_id}"
-            ).json()
-            if revised_audit_payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert revised_audit_payload["status"] == "completed"
-        revised_page = client.get(chapter_url)
-        assert "硬审计通过" in revised_page.text
-        accept_revised_url = (
-            f"{chapter_url}/versions/{revised_version_id}/accept"
-        )
-        response = client.post(
-            accept_revised_url,
-            data={"csrf": csrf_from(revised_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        memory_job_url = response.headers["location"]
-        assert memory_job_url.startswith("/writing-jobs/")
-        memory_job_id = memory_job_url.rsplit("/", 1)[-1]
+        assert revised_quality_page.status_code == 404
 
         deadline = time.monotonic() + 3
-        memory_payload = {}
         while time.monotonic() < deadline:
-            memory_payload = client.get(
-                f"/api/writing-jobs/{memory_job_id}"
-            ).json()
-            if memory_payload.get("terminal"):
+            deltas = MemoryService(
+                application.state.database
+            ).list_chapter_deltas(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                chapter_id=chapter_id,
+            )
+            projected_delta = next(
+                (
+                    item
+                    for item in deltas
+                    if str(item["version_id"]) == revised_version_id
+                    and str(item["status"]) == "projected"
+                ),
+                None,
+            )
+            if projected_delta:
                 break
             time.sleep(0.03)
-        assert memory_payload["status"] == "completed"
-        assert memory_payload["redirect_url"].startswith("/story-deltas/")
-
-        delta_page = client.get(memory_payload["redirect_url"])
-        assert delta_page.status_code == 200
-        assert "审核本章造成的变化" in delta_page.text
-        assert "不是正史" in delta_page.text
-        response = client.post(
-            f"{memory_payload['redirect_url']}/accept",
-            data={"csrf": csrf_from(delta_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        canonical_page = client.get(response.headers["location"])
-        assert "正史故事记忆已更新" in canonical_page.text
+        else:
+            raise AssertionError("定点改写后的故事记忆没有自动更新")
+        assert client.get(
+            f"/story-deltas/{projected_delta['id']}"
+        ).status_code == 404
 
         export = client.get(f"/novels/{project_id}/export.txt")
         assert export.status_code == 200
@@ -3024,7 +2925,7 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
             },
             follow_redirects=False,
         )
-        assert response.headers["location"].startswith("/writing-jobs/")
+        assert response.headers["location"].endswith("?canonical=true")
         assert (
             application.state.database.get_novel_chapter(
                 user_id, project_id, first_id

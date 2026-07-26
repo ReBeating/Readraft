@@ -242,13 +242,11 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
     planning_service = PlanningService(database)
     scene_service = SceneService(database)
     memory_service = MemoryService(database)
-    style_service = StyleService(database)
     workflow = ChapterWorkflowService(
         database,
         planning_service=planning_service,
         scene_service=scene_service,
         memory_service=memory_service,
-        style_service=style_service,
     )
 
     state = workflow.get_state(
@@ -329,7 +327,7 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
         chapter_id=chapter_id,
     )
     assert state["stage"] == "assembly"
-    assert "组装 2 个已通过场景" == state["primary_action"]["label"]
+    assert "组装 2 个场景" == state["primary_action"]["label"]
     assert state["primary_action"]["method"] == "post"
     assert state["primary_action"]["url"].endswith("/scenes/assemble")
 
@@ -345,48 +343,9 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
         project_id=project_id,
         chapter_id=chapter_id,
     )
-    assert state["stage"] == "hard_audit"
+    assert state["stage"] == "version"
     assert state["working_version_id"] == version_id
-
-    with database.connection() as connection:
-        connection.execute(
-            """
-            UPDATE novel_chapter_versions
-            SET quality_status='pass', hard_issue_count=0
-            WHERE id=?
-            """,
-            (version_id,),
-        )
-        connection.commit()
-    state = workflow.get_state(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-    )
-    assert state["stage"] == "style_profile"
-    assert "确认作品声纹" in state["primary_action"]["label"]
-    confirm_voice(
-        style_service, user_id=user_id, project_id=project_id
-    )
-    state = workflow.get_state(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-    )
-    assert state["stage"] == "style_audit"
-
-    with database.connection() as connection:
-        connection.execute(
-            "UPDATE novel_chapter_versions SET style_status='pass' WHERE id=?",
-            (version_id,),
-        )
-        connection.commit()
-    state = workflow.get_state(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-    )
-    assert state["stage"] == "canon"
+    assert state["primary_action"]["label"] == "设为当前正文"
 
     accepted = database.accept_chapter_version(
         user_id=user_id,
@@ -400,8 +359,10 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
         project_id=project_id,
         chapter_id=chapter_id,
     )
-    assert state["stage"] == "memory_extract"
-    assert state["primary_action"]["method"] == "post"
+    assert state["stage"] == "complete"
+    assert state["steps"][1]["status"] == "complete"
+    assert state["steps"][2]["status"] == "skipped"
+    assert "审核" not in state["explanation"]
 
     delta_id = memory_service.create_proposal(
         user_id=user_id,
@@ -415,8 +376,8 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
         project_id=project_id,
         chapter_id=chapter_id,
     )
-    assert state["stage"] == "memory_review"
-    assert state["canonical_delta_id"] == delta_id
+    assert state["stage"] == "complete"
+    assert state["canonical_delta_id"] == ""
 
     projected = memory_service.accept_delta(
         user_id=user_id, delta_id=delta_id
@@ -428,7 +389,8 @@ def test_chapter_workflow_derives_every_author_gate(tmp_path: Path):
         chapter_id=chapter_id,
     )
     assert state["stage"] == "complete"
-    assert state["completed_count"] == state["step_count"] == 6
+    assert state["canonical_delta_id"] == delta_id
+    assert state["completed_count"] == state["step_count"] == 3
 
 
 def test_empty_project_opens_unified_settings_workbench(tmp_path: Path):
@@ -558,38 +520,66 @@ def test_workflow_ui_and_memory_retry_route(tmp_path: Path):
         page = client.get(chapter_url)
         assert page.status_code == 200
         assert "CHAPTER EXECUTION" in page.text
-        assert "正史已确认，等待建立可检索记忆" in page.text
-        assert "提取 Story Delta" in page.text
+        assert "当前正文已经保存" in page.text
+        assert "Story Delta" not in page.text
         extract_url = (
             f"{chapter_url}/versions/{version_id}/extract-memory"
         )
-        assert f'action="{extract_url}"' in page.text
+        assert extract_url not in page.text
 
         workspace = client.get(
             f"/novels/{project_id}/workbench?chapter_id={chapter_id}"
         )
         assert workspace.status_code == 200
         assert "data-chapter-workflow" in workspace.text
-        assert "正史已确认，等待建立可检索记忆" in workspace.text
+        assert "当前正文已经保存" in workspace.text
 
         response = client.post(
-            extract_url,
-            data={"csrf": csrf_from(page.text)},
+            f"{chapter_url}/save",
+            data={
+                "content": content + "她决定继续调查。",
+                "csrf": csrf_from(page.text),
+            },
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert response.headers["location"].startswith("/writing-jobs/")
-        job_id = response.headers["location"].rsplit("/", 1)[-1]
+        assert response.headers["location"].endswith("?saved=true")
+
+        second_page = client.get(chapter_url)
+        response = client.post(
+            f"{chapter_url}/save",
+            data={
+                "content": content + "她决定继续调查，并记录下邮戳。",
+                "csrf": csrf_from(second_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        latest = database.get_novel_chapter(
+            user_id, project_id, chapter_id
+        )
+        latest_version_id = str(latest["canonical_version_id"])
         deadline = time.monotonic() + 3
-        payload = {}
         while time.monotonic() < deadline:
-            payload = client.get(f"/api/writing-jobs/{job_id}").json()
-            if payload.get("terminal"):
+            deltas = MemoryService(database).list_chapter_deltas(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+            )
+            if any(
+                str(item["version_id"]) == latest_version_id
+                and str(item["status"]) == "projected"
+                for item in deltas
+            ):
                 break
             time.sleep(0.03)
-        assert payload["status"] == "completed"
-        assert payload["redirect_url"].startswith("/story-deltas/")
+        else:
+            raise AssertionError("后台记忆没有自动投影最新正文")
+
+        removed_review = client.get(extract_url)
+        assert removed_review.status_code == 404
 
         page = client.get(chapter_url)
-        assert "最后核对本章造成的故事变化" in page.text
-        assert "审核 Story Delta" in page.text
+        assert "审核 Story Delta" not in page.text
+        assert "后台记忆" in page.text

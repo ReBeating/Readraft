@@ -15,7 +15,6 @@ from app.planning_schema import (
     allocate_scene_requirement_refs,
 )
 from app.planning_service import PlanningService
-from app.quality_audit import MockQualityAuditor
 from app.scene_service import SceneService
 from app.security import hash_password
 from app.worker import AnalysisWorker
@@ -196,7 +195,7 @@ def test_scene_identity_survives_plan_edit_and_draft_becomes_stale(
     assert not after["all_ready"]
 
 
-def test_scene_worker_generates_audits_and_assembles_candidate(
+def test_scene_worker_generates_scenes_and_assembles_version(
     tmp_path: Path,
 ):
     settings = make_settings(tmp_path)
@@ -220,7 +219,6 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
-            quality_auditor=MockQualityAuditor(),
             poll_seconds=0.01,
         )
         await worker._process_generation(claimed)
@@ -260,14 +258,8 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
     )
     assert workbench["ready_count"] == 2
     assert workbench["all_ready"]
-    assert all(
-        scene["quality_status"] == "pass"
-        for scene in workbench["scenes"]
-    )
-    assert all(
-        scene["audit"]["report"]["scene_coverage"]
-        for scene in workbench["scenes"]
-    )
+    assert all(scene["ready"] for scene in workbench["scenes"])
+    assert all("audit" not in scene for scene in workbench["scenes"])
 
     assembly = scene_service.build_assembly(
         user_id=user_id,
@@ -296,7 +288,7 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
         user_id, project_id, chapter_id, version_id
     )
     assert version["source"] == "scene_assembly"
-    assert version["quality_status"] == "pending"
+    assert version["quality_status"] == "pass"
     with database.connection() as connection:
         items = connection.execute(
             """
@@ -316,7 +308,7 @@ def test_scene_worker_generates_audits_and_assembles_candidate(
         ).fetchall()
 
 
-def test_manual_scene_requires_audit_and_author_can_record_override(
+def test_manual_scene_is_ready_without_audit(
     tmp_path: Path,
 ):
     settings = make_settings(tmp_path)
@@ -352,62 +344,15 @@ def test_manual_scene_requires_audit_and_author_can_record_override(
         version_path=manual_path,
         content=content,
     )
-    assert scene_service.get_workbench(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-    )["scenes"][0]["quality_status"] == "pending"
-
-    job_id = database.create_generation_job(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-        operation="audit_scene",
-        instruction="",
-        provider="mock",
-        model="mock-hard-auditor",
-        credential_source="default",
-        subject_id=version_id,
-    )
-    claimed = database.claim_next_generation()
-
-    async def run_audit():
-        worker = AnalysisWorker(
-            database,
-            MockAnalyzer(),
-            MockWriter(),
-            settings.secret_key,
-            settings,
-            CredentialCipher(settings.credential_secret),
-            quality_auditor=MockQualityAuditor(),
-            poll_seconds=0.01,
-        )
-        await worker._process_generation(claimed)
-
-    asyncio.run(run_audit())
     checked = scene_service.get_workbench(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapter_id,
     )["scenes"][0]
-    assert checked["quality_status"] == "block"
-    assert checked["version_hard_issue_count"] == 1
-    assert not checked["ready"]
-    assert scene_service.override_audit(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-        scene_beat_id=scene_id,
-        scene_version_id=version_id,
-        reason="该标记用于作者主动测试门禁，正式组装前会在整章编辑中删除。",
-    )
-    overridden = scene_service.get_workbench(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-    )["scenes"][0]
-    assert overridden["quality_status"] == "overridden"
-    assert overridden["ready"]
+    assert checked["current_version_id"] == version_id
+    assert checked["ready"]
+    assert "quality_status" not in checked
+    assert "audit" not in checked
 
 
 def test_scene_workbench_web_flow(tmp_path: Path):
@@ -526,7 +471,8 @@ def test_scene_workbench_web_flow(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "scene_assembled=true" in response.headers["location"]
+        assert response.headers["location"].endswith("?saved=true")
         chapter_page = client.get(response.headers["location"])
-        assert "形成新的章节候选稿" in chapter_page.text
+        assert "正文已保存并成为当前版本" in chapter_page.text
+        assert "硬审计" not in chapter_page.text
         assert "场景组装" in chapter_page.text
