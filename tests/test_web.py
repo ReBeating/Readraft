@@ -1723,8 +1723,32 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert "改写" in reader.text
         assert "续写" in reader.text
         assert "作品档案" in reader.text
+        assert 'data-workbench' in reader.text
+        assert 'data-panel="directory"' in reader.text
+        assert 'data-panel="ai"' in reader.text
+        assert 'aria-label="章节原文"' in reader.text
+        assert "阅读对话" in reader.text
 
         document_id = imported.headers["location"].split("/documents/", 1)[1]
+        reference_match = re.search(
+            r'name="reference_chapter_id" value="([a-f0-9]+)"',
+            reader.text,
+        )
+        assert reference_match
+        reference_chapter_id = reference_match.group(1)
+        new_chat = client.post(
+            f"/documents/{document_id}/assistant/new",
+            data={
+                "reference_chapter_id": reference_chapter_id,
+                "csrf": csrf_from(reader.text),
+            },
+            follow_redirects=False,
+        )
+        assert new_chat.status_code == 303
+        embedded_chat = client.get(new_chat.headers["location"])
+        assert "阅读对话" in embedded_chat.text
+        assert 'data-panel="directory"' in embedded_chat.text
+
         rewritten = client.post(
             f"/documents/{document_id}/writing-branches",
             data={
@@ -1759,9 +1783,18 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert dashboard.text.count("studio-work-row") == 1
         assert "阅读分析" in dashboard.text
         assert "创作" in dashboard.text
+        assert 'data-tooltip="阅读"' in dashboard.text
+        assert 'data-tooltip="创作"' in dashboard.text
+        assert 'data-tooltip="作品档案"' in dashboard.text
+        assert re.search(r">\s*创作\s*<", dashboard.text) is None
+        assert re.search(r">\s*档案\s*<", dashboard.text) is None
         archive = client.get(f"/works/{works[0]['id']}/archive")
+        assert archive.url.path == f"/novels/{project_id}/workbench"
+        assert archive.url.params["view"] == "archive"
         assert "导入原文" in archive.text
         assert "改写稿" in archive.text
+        assert 'data-panel="directory"' in archive.text
+        assert 'data-panel="ai"' in archive.text
 
         saved = client.post(
             f"/works/{works[0]['id']}/archive",
@@ -1778,6 +1811,8 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         saved_archive = client.get(saved.headers["location"])
         assert "节奏观察" in saved_archive.text
         assert "第一章先给结果" in saved_archive.text
+        assert saved_archive.url.path == f"/novels/{project_id}/workbench"
+        assert saved_archive.url.params["view"] == "archive"
 
 
 def test_imported_writing_draft_can_create_reading_snapshot(tmp_path):

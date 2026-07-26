@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-13">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-15">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -61,6 +61,19 @@
             </button>
           </form>
         {% endif %}
+        {% if work %}
+          <a
+            class="studio-icon-button {% if view == 'archive' %}active{% endif %}"
+            href="/novels/{{ project.id }}/workbench?view=archive"
+            aria-label="作品档案"
+            title="作品档案"
+            data-save-before-navigation
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7.5h16V20H4V7.5ZM6 4h12l2 3.5H4L6 4ZM9 11h6"></path>
+            </svg>
+          </a>
+        {% endif %}
         <a class="studio-icon-button" href="{{ model_settings_url }}" data-model-settings-open aria-label="模型配置">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
@@ -87,7 +100,7 @@
           <small>›</small>
         </a>
         {% if work %}
-          <a class="studio-directory-link" href="/works/{{ work.id }}/archive" data-save-before-navigation>
+          <a class="studio-directory-link {% if view == 'archive' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive" data-save-before-navigation>
             <span>档案总览</span>
             <small>›</small>
           </a>
@@ -122,8 +135,8 @@
       </aside>
 
       <main class="studio-reading" data-panel="main">
-        {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
-        {% if saved %}<div class="studio-alert success">已保存。</div>{% endif %}
+        {% if view != 'archive' and error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
+        {% if view != 'archive' and saved %}<div class="studio-alert success">已保存。</div>{% endif %}
 
         {% if view == 'settings' %}
           <section class="studio-settings-view">
@@ -134,7 +147,7 @@
               </div>
               {% if work %}
                 <div class="studio-view-heading-actions">
-                  <a class="studio-button" href="/works/{{ work.id }}/archive">查看汇总</a>
+                  <a class="studio-button" href="/novels/{{ project.id }}/workbench?view=archive">查看汇总</a>
                   <form method="post" action="/novels/{{ project.id }}/reading-snapshots">
                     <input type="hidden" name="csrf" value="{{ csrf_token }}">
                     <button class="studio-button" type="submit">生成阅读版</button>
@@ -363,6 +376,8 @@
               </div>
             </form>
           </section>
+        {% elif view == 'archive' %}
+          {% include "_work_archive_content.html" %}
         {% elif chapter %}
           <section class="studio-manuscript-view">
             <div class="studio-chapter-heading">
@@ -782,7 +797,7 @@
             {% endfor %}
           {% else %}
             <div class="studio-chat-empty">
-              {% if view == 'settings' %}
+              {% if view in ['settings', 'archive'] %}
                 <p>不必先想好书名。告诉 AI 一个角色、一段画面或你想获得的阅读感受，它会先整理成待确认的创作资料。</p>
               {% else %}
                 <p>可以讨论剧情、续写方向、人物反应或选中的正文。</p>
@@ -845,5 +860,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-2" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-4" defer></script>
 {% endblock %}

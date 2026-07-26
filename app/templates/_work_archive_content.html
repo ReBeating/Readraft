@@ -1,0 +1,157 @@
+<section class="studio-archive-view" aria-labelledby="work-archive-title">
+  <div class="studio-view-heading studio-archive-view-heading">
+    <div>
+      <span class="studio-section-label">作品档案</span>
+      <h1 id="work-archive-title">{{ work.title or '未命名作品' }}</h1>
+    </div>
+    {% if archive_project %}
+      <a
+        class="studio-button"
+        href="/novels/{{ archive_project.id }}/workbench?view=settings"
+        data-save-before-navigation
+      >编辑创作资料</a>
+    {% endif %}
+  </div>
+
+  {% if archive_error %}<div class="studio-alert error" role="alert">{{ archive_error }}</div>{% endif %}
+  {% if archive_saved %}<div class="studio-alert success" role="status">已保存到作品档案。</div>{% endif %}
+
+  <section class="studio-archive-section">
+    <div class="studio-archive-section-heading">
+      <h2>版本</h2>
+      <span>{{ work.editions|length }}</span>
+    </div>
+    <div class="studio-edition-grid">
+      {% for edition in work.editions %}
+        <a
+          class="studio-edition-card"
+          href="{% if edition.project_id %}/novels/{{ edition.project_id }}/workbench{% else %}/documents/{{ edition.document_id }}{% endif %}"
+          data-save-before-navigation
+        >
+          <span>
+            {% if edition.kind == 'source' %}原文
+            {% elif edition.kind == 'snapshot' %}阅读版
+            {% elif edition.branch_intent == 'rewrite' %}改写
+            {% elif edition.branch_intent == 'sequel' %}续写
+            {% else %}创作稿{% endif %}
+          </span>
+          <strong>{{ edition.label }}</strong>
+          <small>
+            {% if edition.project_id %}
+              {{ edition.project_chapter_count }} 章 · 可编辑
+            {% else %}
+              {{ edition.document_chapter_count }} 章 · 只读
+            {% endif %}
+          </small>
+        </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="studio-archive-section">
+    <div class="studio-archive-section-heading">
+      <h2>分析与记录</h2>
+      <details class="studio-archive-add">
+        <summary>＋ 添加</summary>
+        <form method="post" action="/works/{{ work.id }}/archive">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+          <label>
+            <span>类型</span>
+            <select name="entry_type">
+              <option value="analysis_note">分析笔记</option>
+              <option value="source_fact">原文事实</option>
+              <option value="creative_rule">创作规则</option>
+              <option value="material">素材</option>
+            </select>
+          </label>
+          <label>
+            <span>标题（可选）</span>
+            <input name="title" maxlength="120">
+          </label>
+          <label>
+            <span>内容</span>
+            <textarea name="content" rows="5" maxlength="20000" required></textarea>
+          </label>
+          <label>
+            <span>依据（可选）</span>
+            <input name="evidence" maxlength="2000" placeholder="例如：第 3 章">
+          </label>
+          <button class="studio-button primary" type="submit">保存</button>
+        </form>
+      </details>
+    </div>
+
+    {% if archive_entries %}
+      <div class="studio-archive-note-grid">
+        {% for entry in archive_entries %}
+          <article>
+            <small>
+              {% if entry.entry_type == 'source_fact' %}原文事实
+              {% elif entry.entry_type == 'creative_rule' %}创作规则
+              {% elif entry.entry_type == 'material' %}素材
+              {% else %}分析笔记{% endif %}
+            </small>
+            {% if entry.title %}<strong>{{ entry.title }}</strong>{% endif %}
+            <p>{{ entry.content }}</p>
+            {% if entry.evidence %}<span>依据：{{ entry.evidence }}</span>{% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if archive_analyses %}
+      <div class="studio-analysis-list">
+        {% for analysis in archive_analyses %}
+          <a href="/analyses/{{ analysis.id }}" data-save-before-navigation>
+            <span>{{ analysis.document_title }} · 第{{ analysis.position }}章</span>
+            <strong>{{ analysis.result.chapter_title or analysis.chapter_title }}</strong>
+            <p>{{ analysis.result.summary or '查看本章分析' }}</p>
+          </a>
+        {% endfor %}
+      </div>
+    {% elif not archive_entries %}
+      <div class="studio-settings-empty">
+        <strong>还没有记录</strong>
+        <p>阅读分析和手动笔记会汇总到这里。</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="studio-archive-section">
+    <div class="studio-archive-section-heading">
+      <h2>创作资料</h2>
+    </div>
+    {% if archive_project %}
+      <div class="studio-creative-records">
+        <article>
+          <small>故事核心</small>
+          <p>{{ archive_project.premise or '尚未填写' }}</p>
+        </article>
+        <article>
+          <small>世界规则</small>
+          <p>{{ archive_project.world_setting or '尚未填写' }}</p>
+        </article>
+        <article>
+          <small>结局与结构约束</small>
+          <p>{{ archive_project.ending_constraint or '尚未填写' }}</p>
+        </article>
+        <article>
+          <small>人物</small>
+          <p>
+            {% if archive_characters %}
+              {% for character in archive_characters %}{{ character.name }}{% if not loop.last %}、{% endif %}{% endfor %}
+            {% else %}
+              尚未建立人物卡
+            {% endif %}
+          </p>
+        </article>
+      </div>
+    {% else %}
+      <div class="studio-settings-empty">
+        <strong>还没有创作版本</strong>
+        <p>开始改写或续写后，创作资料会显示在这里。</p>
+      </div>
+    {% endif %}
+  </section>
+</section>

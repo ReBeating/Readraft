@@ -1,22 +1,47 @@
 {% extends "base.html" %}
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
-{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-14">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-15">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
 {% block site_footer %}{% endblock %}
-{% block main_class %}studio-settings-page{% endblock %}
+{% block main_class %}studio-workbench-host{% endblock %}
 {% block content %}
-  <div class="studio-settings-shell" data-studio-theme>
-    <header class="studio-settings-header">
-      <a class="studio-icon-button" href="/dashboard" aria-label="返回作品库">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m15 18-6-6 6-6"></path>
-        </svg>
-      </a>
-      <h1>{{ document.title }}</h1>
+  <div
+    class="studio-workbench"
+    data-studio-theme
+    data-workbench
+    data-document-id="{{ document.id }}"
+    data-onboarding="false"
+    {% if active_conversation and active_conversation.pending_message_id %}
+      data-pending-message-id="{{ active_conversation.pending_message_id }}"
+    {% endif %}
+  >
+    <header class="studio-workbench-toolbar">
+      <div class="studio-toolbar-side">
+        <a class="studio-icon-button" href="/dashboard" aria-label="返回作品库">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6"></path>
+          </svg>
+        </a>
+        <button
+          class="studio-icon-button"
+          type="button"
+          data-panel-toggle="directory"
+          data-panel-label="目录"
+          aria-label="关闭目录"
+          aria-pressed="true"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16"></path>
+          </svg>
+        </button>
+      </div>
+
+      <strong class="studio-toolbar-title">{{ document.title }}</strong>
+
       <div class="studio-toolbar-side studio-toolbar-trailing">
         <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换到夜间模式">
           <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true">
@@ -24,13 +49,30 @@
           </svg>
           <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden>
             <circle cx="12" cy="12" r="4"></circle>
-            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4-1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
           </svg>
         </button>
         {% if work and writing_mode_project %}
-          <a class="studio-icon-button" href="/novels/{{ writing_mode_project.project_id }}/workbench" aria-label="切换到创作模式">
+          <a
+            class="studio-icon-button"
+            href="/novels/{{ writing_mode_project.project_id }}/workbench"
+            aria-label="切换到创作模式"
+            title="创作模式"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20ZM13.8 6.7l3.5 3.5M14.8 5.7l1.4-1.4a2 2 0 0 1 2.8 0l.7.7a2 2 0 0 1 0 2.8l-1.4 1.4"></path>
+            </svg>
+          </a>
+        {% endif %}
+        {% if work %}
+          <a
+            class="studio-icon-button {% if view == 'archive' %}active{% endif %}"
+            href="/documents/{{ document.id }}?view=archive"
+            aria-label="作品档案"
+            title="作品档案"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7.5h16V20H4V7.5ZM6 4h12l2 3.5H4L6 4ZM9 11h6"></path>
             </svg>
           </a>
         {% endif %}
@@ -39,89 +81,302 @@
             <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
           </svg>
         </a>
-        <a class="studio-icon-button" href="/documents/{{ document.id }}/assistant" aria-label="AI 对话">
+        <button
+          class="studio-icon-button"
+          type="button"
+          data-panel-toggle="ai"
+          data-panel-label="AI 对话"
+          aria-label="关闭 AI 对话"
+          aria-pressed="true"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m12 3 1.1 3.4L16.5 7.5l-3.4 1.1L12 12l-1.1-3.4-3.4-1.1 3.4-1.1L12 3Z"></path>
             <path d="m18 13 .8 2.2L21 16l-2.2.8L18 19l-.8-2.2L15 16l2.2-.8L18 13Z"></path>
           </svg>
-        </a>
+        </button>
       </div>
     </header>
 
-    <main class="studio-reader-main">
-      <div class="studio-reader-heading">
-        <div>
-          <span class="studio-section-label">
-            {% if document_edition and document_edition.kind == 'snapshot' %}阅读版{% else %}导入原文{% endif %}
-          </span>
-          <h2>{{ document.title }}</h2>
-          <p>{{ document.char_count|human_size }} · {{ document.chapter_count }} 章</p>
+    <div class="studio-workbench-layout">
+      <aside class="studio-directory" data-panel="directory">
+        <div class="studio-panel-title">
+          <strong>{{ document.title }}</strong>
         </div>
-        <div class="studio-reader-actions">
-          {% if work %}
-            <a class="studio-button" href="/works/{{ work.id }}/archive">作品档案</a>
-          {% endif %}
-          {% if not document_edition or document_edition.kind != 'snapshot' %}
-            <form method="post" action="/documents/{{ document.id }}/writing-branches">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="intent" value="rewrite">
-              <button class="studio-button" type="submit">改写</button>
-            </form>
-            <form method="post" action="/documents/{{ document.id }}/writing-branches">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="intent" value="sequel">
-              <button class="studio-button" type="submit">续写</button>
-            </form>
-          {% endif %}
+
+        <p class="studio-section-label">作品</p>
+        <a
+          class="studio-directory-link {% if view == 'body' %}active{% endif %}"
+          href="/documents/{{ document.id }}{% if chapter %}?chapter_id={{ chapter.id }}{% endif %}"
+        >
+          <span>阅读内容</span>
+          <small>›</small>
+        </a>
+        {% if work %}
+          <a
+            class="studio-directory-link {% if view == 'archive' %}active{% endif %}"
+            href="/documents/{{ document.id }}?view=archive"
+          >
+            <span>作品档案</span>
+            <small>›</small>
+          </a>
+        {% endif %}
+
+        <p class="studio-section-label">章节</p>
+        <nav class="studio-chapter-list" aria-label="章节目录">
+          {% for item in chapters %}
+            <a
+              class="studio-chapter-link {% if chapter and chapter.id == item.id and view == 'body' %}active{% endif %}"
+              href="/documents/{{ document.id }}?chapter_id={{ item.id }}"
+            >
+              <span>第{{ item.position }}章 · {{ item.title or '未命名章节' }}</span>
+            </a>
+          {% else %}
+            <p class="studio-muted">还没有章节。</p>
+          {% endfor %}
+        </nav>
+
+        <div class="studio-reader-directory-actions">
           {% if document.latest_job_id %}
-            <a class="studio-button" href="/jobs/{{ document.latest_job_id }}">分析任务</a>
+            <a class="studio-button" href="/jobs/{{ document.latest_job_id }}">分析进度</a>
           {% endif %}
           {% if document.latest_job_status not in ['queued', 'running'] %}
             <form method="post" action="/documents/{{ document.id }}/analyze">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <button class="studio-button primary" type="submit">
-                {% if document.latest_job_id %}重新分析{% else %}开始分析{% endif %}
+                {% if document.latest_job_id %}重新分析{% else %}分析全书{% endif %}
               </button>
             </form>
           {% endif %}
         </div>
-      </div>
+      </aside>
 
-      {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
-
-      <section class="studio-reader-chapters">
-        <div class="studio-archive-section-heading">
-          <div>
-            <h3>章节</h3>
-            <p>原文保持只读；分析结果会汇总到作品档案。</p>
-          </div>
-          <span>{{ chapters|length }} 章</span>
-        </div>
-        <div class="studio-reader-chapter-list">
-          {% for chapter in chapters %}
-            <article class="studio-reader-chapter">
-              <span>{{ "%03d"|format(chapter.position) }}</span>
-              <div>
-                <strong>{{ chapter.title }}</strong>
-                <small>{{ chapter.char_count|human_size }} · {{ chapter.kind }}</small>
-              </div>
-              <nav>
-                <a href="/documents/{{ document.id }}/assistant?new=true&amp;reference_chapter_id={{ chapter.id }}">引用提问</a>
-                {% if chapter.analysis_id and chapter.analysis_status == 'completed' %}
-                  <a href="/analyses/{{ chapter.analysis_id }}">查看分析</a>
-                {% elif chapter.analysis_status %}
-                  <span>{{ chapter.analysis_status|status_label }}</span>
-                {% else %}
-                  <span>未分析</span>
+      <main class="studio-reading" data-panel="main">
+        {% if view == 'archive' %}
+          {% include "_work_archive_content.html" %}
+        {% else %}
+          {% if error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
+          {% if chapter %}
+            <section class="studio-manuscript-view studio-reader-manuscript-view">
+              <div class="studio-chapter-heading studio-reader-chapter-heading">
+                <div>
+                  <small>
+                    {% if document_edition and document_edition.kind == 'snapshot' %}阅读版{% else %}导入原文{% endif %}
+                    · 第{{ chapter.position }}章
+                  </small>
+                  <h1>{{ chapter.title or '未命名章节' }}</h1>
+                </div>
+                {% if not document_edition or document_edition.kind != 'snapshot' %}
+                  <div class="studio-reader-branch-actions">
+                    <form method="post" action="/documents/{{ document.id }}/writing-branches">
+                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                      <input type="hidden" name="intent" value="rewrite">
+                      <button class="studio-button" type="submit">改写</button>
+                    </form>
+                    <form method="post" action="/documents/{{ document.id }}/writing-branches">
+                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                      <input type="hidden" name="intent" value="sequel">
+                      <button class="studio-button" type="submit">续写</button>
+                    </form>
+                  </div>
                 {% endif %}
-              </nav>
-            </article>
-          {% endfor %}
+              </div>
+              <textarea
+                class="studio-manuscript studio-reader-manuscript"
+                readonly
+                aria-label="章节原文"
+                data-manuscript
+                data-previous-url="{% if previous_chapter %}/documents/{{ document.id }}?chapter_id={{ previous_chapter.id }}{% endif %}"
+                data-next-url="{% if next_chapter %}/documents/{{ document.id }}?chapter_id={{ next_chapter.id }}{% endif %}"
+              >{{ chapter_content }}</textarea>
+              <footer class="studio-chapter-footer">
+                <span>{{ chapter_index + 1 }} / {{ chapters|length }}</span>
+                <span>
+                  {% if chapter.analysis_id and chapter.analysis_status == 'completed' %}
+                    <a href="/analyses/{{ chapter.analysis_id }}">查看分析</a>
+                  {% elif chapter.analysis_status %}
+                    {{ chapter.analysis_status|status_label }}
+                  {% else %}
+                    未分析
+                  {% endif %}
+                </span>
+                <span>{{ chapter.char_count|human_size }}</span>
+              </footer>
+              <span class="studio-edge-cue" data-edge-cue hidden></span>
+            </section>
+          {% else %}
+            <section class="studio-no-chapter">
+              <h1>没有可阅读的章节</h1>
+              <p>重新导入包含正文的文件后再试。</p>
+            </section>
+          {% endif %}
+        {% endif %}
+      </main>
+
+      <aside class="studio-ai" data-panel="ai">
+        <div class="studio-panel-title">
+          <strong>阅读对话</strong>
+          <div class="studio-chat-toolbar-actions">
+            <details class="studio-chat-history">
+              <summary aria-label="历史对话" title="历史对话">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16M4 12h16M4 18h10"></path>
+                </svg>
+              </summary>
+              <section class="studio-chat-history-panel">
+                <header>
+                  <strong>历史对话</strong>
+                  <span>{{ conversations|length }}</span>
+                </header>
+                <div class="studio-chat-history-list">
+                  {% for item in conversations %}
+                    <article class="{% if active_conversation and active_conversation.id == item.id %}active{% endif %}">
+                      <a href="/documents/{{ document.id }}?conversation_id={{ item.id }}{% if item.reference_chapter_id %}&chapter_id={{ item.reference_chapter_id }}{% else %}&view=archive{% endif %}">
+                        <strong>{{ item.title }}</strong>
+                        <small>
+                          {% if item.reference_chapter_id %}
+                            第{{ item.reference_chapter_position }}章 · {{ item.reference_chapter_title or '未命名章节' }}
+                          {% else %}
+                            全书讨论
+                          {% endif %}
+                          {% if item.latest_status in ['queued', 'running'] %} · 回复中{% endif %}
+                        </small>
+                      </a>
+                    </article>
+                  {% else %}
+                    <p>还没有历史对话。</p>
+                  {% endfor %}
+                </div>
+              </section>
+            </details>
+            <form method="post" action="/documents/{{ document.id }}/assistant/new" class="studio-new-chat-form">
+              <input type="hidden" name="csrf" value="{{ csrf_token }}">
+              <input type="hidden" name="reference_chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
+              <button type="submit" aria-label="新建对话" title="新建对话" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>＋</button>
+            </form>
+          </div>
         </div>
-      </section>
-    </main>
+
+        <div class="studio-chat-scroll" data-chat-scroll>
+          {% if sent and active_conversation and active_conversation.pending_message_id %}
+            <p class="studio-chat-state">问题已发送，AI 正在组织回答。</p>
+          {% endif %}
+          {% if active_conversation and active_conversation.messages %}
+            {% for message in active_conversation.messages[-30:] %}
+              <article class="studio-chat-message {{ message.role }}">
+                <small>{% if message.role == 'user' %}你{% else %}AI{% endif %}</small>
+                {% if message.role == 'assistant' and message.model %}
+                  <span class="studio-message-model">{{ message.model }}</span>
+                {% endif %}
+                {% if message.quote %}
+                  <blockquote>{{ message.quote.quote_text }}</blockquote>
+                {% endif %}
+                {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
+                  <p>正在读取原文与分析记录……</p>
+                {% elif message.status == 'failed' %}
+                  <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
+                {% else %}
+                  <p>{{ message.content }}</p>
+                  {% if message.response.citations %}
+                    <section class="studio-chat-citations">
+                      <strong>回答依据</strong>
+                      {% for citation in message.response.citations %}
+                        <a href="{{ citation.url }}">
+                          <span>{{ citation.label }}</span>
+                          <q>{{ citation.quote }}</q>
+                          {% if citation.note %}<small>{{ citation.note }}</small>{% endif %}
+                        </a>
+                      {% endfor %}
+                    </section>
+                  {% endif %}
+                {% endif %}
+                {% if message.role == 'assistant' and message.agent_steps %}
+                  <details class="studio-tool-trace">
+                    <summary>本轮执行 {{ message.agent_steps|length }} 步</summary>
+                    <ol>
+                      {% for step in message.agent_steps %}
+                        <li class="{{ step.outcome_status }}">
+                          <span>
+                            {% if step.action == 'finish' %}整理最终回答
+                            {% elif step.action == 'fallback' %}自动收束
+                            {% else %}{{ step.tool_label or step.tool_name or '工具调用' }}{% endif %}
+                          </span>
+                          <small>
+                            {% if step.outcome_status == 'completed' %}完成
+                            {% elif step.outcome_status == 'failed' %}失败
+                            {% elif step.outcome_status == 'denied' %}已拦截
+                            {% else %}已收束{% endif %}
+                          </small>
+                        </li>
+                      {% endfor %}
+                    </ol>
+                  </details>
+                {% endif %}
+              </article>
+            {% endfor %}
+          {% else %}
+            <div class="studio-chat-empty">
+              {% if view == 'archive' %}
+                <p>可以围绕整本作品、分析结论或创作方向继续讨论。</p>
+              {% else %}
+                <p>选择原文后可直接引用提问，也可以讨论本章结构和技法。</p>
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+
+        <form
+          id="studio-chat-form"
+          method="post"
+          action="/documents/{{ document.id }}/assistant/messages"
+          class="studio-chat-composer"
+          data-chat-form
+        >
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
+          <input type="hidden" name="reference_chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
+          <input type="hidden" name="source_type" value="reference_chapter">
+          <input type="hidden" name="source_hash" value="{{ chapter_content_hash }}">
+          <input type="hidden" name="quote_start" data-quote-start value="">
+          <input type="hidden" name="quote_end" data-quote-end value="">
+          <input type="hidden" name="quote_text" data-quote-text value="">
+          <div class="studio-chat-model-bar">
+            <label>
+              <span>本轮模型</span>
+              <select name="model_choice" data-model-choice {% if not model_groups %}disabled{% endif %}>
+                {% if model_groups %}
+                  {% for group in model_groups %}
+                    <optgroup label="{{ group.label }}">
+                      {% for model in group.models %}
+                        <option value="{{ model.value }}" {% if model.value == selected_model_choice %}selected{% endif %}>{{ model.id }}</option>
+                      {% endfor %}
+                    </optgroup>
+                  {% endfor %}
+                {% else %}
+                  <option value="">尚未配置模型</option>
+                {% endif %}
+              </select>
+            </label>
+          </div>
+          <div class="studio-chat-quote" data-quote-preview hidden>
+            <span>已引用原文</span>
+            <q></q>
+            <button type="button" data-clear-quote aria-label="清除引用">×</button>
+          </div>
+          <div class="studio-chat-input">
+            <label class="sr-only" for="studio-reader-chat-question">给 AI 的消息</label>
+            <textarea id="studio-reader-chat-question" name="question" rows="5" maxlength="8000" required placeholder="讨论原文、分析或创作方向……"></textarea>
+            <button type="submit" aria-label="发送消息" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m4 4 16 8-16 8 3-8-3-8Z"></path>
+                <path d="M7 12h13"></path>
+              </svg>
+            </button>
+          </div>
+        </form>
+      </aside>
+    </div>
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-3" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-4" defer></script>
 {% endblock %}

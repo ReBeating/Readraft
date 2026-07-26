@@ -166,7 +166,11 @@
 
   const mobileQuery = window.matchMedia("(max-width: 760px)");
   const mobileAIStateKey =
-    `novel-workbench-ai-open:${workbench.dataset.projectId || "current"}`;
+    `novel-workbench-ai-open:${
+      workbench.dataset.projectId ||
+      workbench.dataset.documentId ||
+      "current"
+    }`;
   let shouldOpenOnboardingAI =
     workbench.dataset.onboarding === "true";
   const panelState = {
@@ -207,9 +211,12 @@
     panelState[name] = Boolean(isOpen);
     panel.dataset.open = isOpen ? "true" : "false";
     button.setAttribute("aria-pressed", isOpen ? "true" : "false");
+    const panelLabel =
+      button.dataset.panelLabel ||
+      (name === "directory" ? "目录" : "AI 共创");
     button.setAttribute(
       "aria-label",
-      `${isOpen ? "关闭" : "打开"}${name === "directory" ? "目录" : " AI 共创"}`,
+      `${isOpen ? "关闭" : "打开"}${panelLabel}`,
     );
     workbench.classList.toggle(`${name}-closed`, !isOpen);
     if (

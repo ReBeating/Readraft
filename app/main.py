@@ -301,6 +301,71 @@ def _workbench_path(
     return f"{path}?{urlencode(query)}" if query else path
 
 
+def _document_workbench_path(
+    document_id: str,
+    *,
+    chapter_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    view: Optional[str] = None,
+    **params: Any,
+) -> str:
+    query: list[tuple[str, str]] = []
+    if chapter_id:
+        query.append(("chapter_id", chapter_id))
+    if conversation_id:
+        query.append(("conversation_id", conversation_id))
+    if view:
+        query.append(("view", view))
+    query.extend(
+        (key, str(value))
+        for key, value in params.items()
+        if value is not None
+    )
+    path = f"/documents/{quote(document_id, safe='')}"
+    return f"{path}?{urlencode(query)}" if query else path
+
+
+def _append_query(path: str, **params: Any) -> str:
+    query = [
+        (key, str(value))
+        for key, value in params.items()
+        if value is not None
+    ]
+    if not query:
+        return path
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}{urlencode(query)}"
+
+
+def _work_archive_destination(
+    work: Mapping[str, Any],
+    *,
+    saved: bool = False,
+    error: Optional[str] = None,
+) -> str:
+    active_document = work.get("active_document")
+    active_project = work.get("active_project")
+    if str(work.get("last_mode") or "") == "read" and active_document:
+        destination = _document_workbench_path(
+            str(active_document["document_id"]), view="archive"
+        )
+    elif active_project:
+        destination = _workbench_path(
+            str(active_project["project_id"]), view="archive"
+        )
+    elif active_document:
+        destination = _document_workbench_path(
+            str(active_document["document_id"]), view="archive"
+        )
+    else:
+        destination = "/dashboard"
+    return _append_query(
+        destination,
+        saved="true" if saved else None,
+        error=error,
+    )
+
+
 def _template_context(
     request: Request,
     *,
@@ -2245,36 +2310,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        primary_project = work.get("active_project")
-        project = (
-            database.get_novel_project(
-                user_id, str(primary_project["project_id"])
-            )
-            if primary_project
-            else None
-        )
-        characters = (
-            database.list_novel_characters(
-                user_id, str(primary_project["project_id"])
-            )
-            if primary_project
-            else []
-        )
-        entries = database.list_work_archive_entries(user_id, work_id)
-        analyses = database.list_work_analyses(user_id, work_id)
-        return render_template(
-            "work_archive.html",
-            _template_context(
-                request,
-                user=user,
-                work=work,
-                project=project,
-                characters=characters,
-                entries=entries,
-                analyses=analyses,
+        return RedirectResponse(
+            _work_archive_destination(
+                work,
                 saved=saved,
                 error=error,
             ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/works/{work_id}/archive")
@@ -2285,12 +2327,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         title: str = Form(""),
         content: str = Form(...),
         evidence: str = Form(""),
+        return_to: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        fallback = _work_archive_destination(work)
+        destination = _safe_next(return_to, fallback)
         try:
             clean_title = _clean_field(title, "标题", max_length=120)
             clean_content = _clean_field(
@@ -2303,7 +2352,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 evidence, "依据", max_length=2_000
             )
             database.add_work_archive_entry(
-                user_id=int(user["id"]),
+                user_id=user_id,
                 work_id=work_id,
                 entry_type=entry_type,
                 title=clean_title,
@@ -2312,11 +2361,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/works/{work_id}/archive?error={quote(str(exc))}",
+                _append_query(destination, error=str(exc)),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/works/{work_id}/archive?saved=true",
+            _append_query(destination, saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -2510,8 +2559,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             else (work.get("active_document") if work else None)
         )
         chapters = database.list_novel_chapters(user_id, project_id)
-        effective_view = view if view in {"body", "settings"} else "body"
-        if not chapters:
+        effective_view = (
+            view if view in {"body", "settings", "archive"} else "body"
+        )
+        if not chapters and effective_view == "body":
             effective_view = "settings"
         active_settings_tab = (
             settings_tab
@@ -2631,7 +2682,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return Response(
                     status_code=status.HTTP_404_NOT_FOUND
                 )
-        elif effective_view == "settings":
+        elif effective_view in {"settings", "archive"}:
             latest = next(
                 (
                     item
@@ -2669,10 +2720,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         setting_story_blueprint = None
         setting_story_arcs: list[dict[str, Any]] = []
         setting_voice_profile = None
-        if effective_view == "settings":
+        archive_entries: list[dict[str, Any]] = []
+        archive_analyses: list[dict[str, Any]] = []
+        if effective_view in {"settings", "archive"}:
             setting_characters = database.list_novel_characters(
                 user_id, project_id
             )
+        if effective_view == "settings":
             setting_story_blueprint = story_planning_service.get_blueprint(
                 user_id=user_id, project_id=project_id
             )
@@ -2681,6 +2735,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             setting_voice_profile = style_service.get_voice_profile(
                 user_id=user_id, project_id=project_id
+            )
+        elif effective_view == "archive" and work:
+            archive_entries = database.list_work_archive_entries(
+                user_id, str(work["id"])
+            )
+            archive_analyses = database.list_work_analyses(
+                user_id, str(work["id"])
             )
         available_chat_models = chat_model_groups(user_id)
 
@@ -2713,6 +2774,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 setting_story_blueprint=setting_story_blueprint,
                 setting_story_arcs=setting_story_arcs,
                 setting_voice_profile=setting_voice_profile,
+                archive_project=project,
+                archive_characters=setting_characters,
+                archive_entries=archive_entries,
+                archive_analyses=archive_analyses,
+                archive_return_to=_workbench_path(
+                    project_id, view="archive"
+                ),
+                archive_saved=saved,
+                archive_error=error,
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
                     available_chat_models, active_conversation
@@ -9208,124 +9278,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/documents/{document_id}/assistant",
-        response_class=HTMLResponse,
-    )
-    async def document_assistant_page(
-        request: Request,
-        document_id: str,
-        conversation_id: Optional[str] = None,
-        reference_chapter_id: Optional[str] = None,
-        new: bool = False,
-        error: Optional[str] = None,
-        sent: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        user_id = int(user["id"])
-        document = database.get_document(user_id, document_id)
-        if not document:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        conversations = (
-            assistant_chat_service.list_document_conversations(
-                user_id=user_id, document_id=document_id
-            )
-        )
-        active = None
-        if conversation_id:
-            active = assistant_chat_service.get_conversation(
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            if (
-                not active
-                or str(active.get("document_id") or "")
-                != document_id
-            ):
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-        elif not new:
-            selected = None
-            if reference_chapter_id:
-                selected = next(
-                    (
-                        item
-                        for item in conversations
-                        if str(
-                            item.get("reference_chapter_id") or ""
-                        )
-                        == reference_chapter_id
-                    ),
-                    None,
-                )
-            selected = selected or (
-                conversations[0] if conversations else None
-            )
-            if selected:
-                active = assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=str(selected["id"]),
-                )
-        chapters = database.list_chapters(user_id, document_id)
-        source_chapter_id = reference_chapter_id or ""
-        if active and active.get("reference_chapter_id"):
-            source_chapter_id = str(
-                active["reference_chapter_id"]
-            )
-        source = None
-        if source_chapter_id:
-            source = assistant_chat_service.get_reference_source(
-                user_id=user_id,
-                document_id=document_id,
-                reference_chapter_id=source_chapter_id,
-            )
-            if source:
-                source["content_hash"] = hashlib.sha256(
-                    str(source["content"]).encode("utf-8")
-                ).hexdigest()
-                source["source_label"] = (
-                    f"参考书第 {source['position']} 章"
-                    f"《{source['title']}》"
-                )
-        available_chat_models = chat_model_groups(user_id)
-        return render_template(
-            "assistant_chat.html",
-            _template_context(
-                request,
-                user=user,
-                root=document,
-                conversations=conversations,
-                active_conversation=active,
-                scope_chapters=chapters,
-                selected_scope_chapter_id=source_chapter_id,
-                source=source,
-                model_groups=available_chat_models,
-                selected_model_choice=selected_chat_model(
-                    available_chat_models, active
-                ),
-                assistant_base_url=(
-                    f"/documents/{document_id}/assistant"
-                ),
-                assistant_new_url=(
-                    f"/documents/{document_id}/assistant/new"
-                ),
-                assistant_post_url=(
-                    f"/documents/{document_id}/assistant/messages"
-                ),
-                back_url=f"/documents/{document_id}",
-                back_label="返回拆书文档",
-                error=error,
-                sent=sent,
-            ),
-        )
-
     @application.post("/documents/{document_id}/assistant/new")
     async def new_document_assistant_conversation(
         request: Request,
@@ -9356,11 +9308,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/documents/{document_id}/assistant?error={quote(str(exc))}",
+                _document_workbench_path(
+                    document_id,
+                    chapter_id=clean_chapter_id or None,
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/documents/{document_id}/assistant?conversation_id={quote(conversation_id)}",
+            _document_workbench_path(
+                document_id,
+                chapter_id=clean_chapter_id or None,
+                conversation_id=conversation_id,
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -9387,7 +9347,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         document = database.get_document(user_id, document_id)
         if not document:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        return_path = f"/documents/{document_id}/assistant"
         try:
             if conversation_id:
                 conversation = assistant_chat_service.get_conversation(
@@ -9449,24 +9408,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 max_jobs_per_day=app_settings.max_jobs_per_day,
             )
         except ValueError as exc:
-            suffix = (
-                f"?conversation_id={quote(conversation_id)}"
-                if conversation_id
-                else ""
-            )
-            separator = "&" if suffix else "?"
             return RedirectResponse(
-                return_path
-                + suffix
-                + separator
-                + "error="
-                + quote(str(exc)),
+                _document_workbench_path(
+                    document_id,
+                    chapter_id=reference_chapter_id or None,
+                    conversation_id=conversation_id or None,
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
         return RedirectResponse(
-            return_path
-            + f"?conversation_id={quote(conversation_id)}&sent=true",
+            _document_workbench_path(
+                document_id,
+                chapter_id=reference_chapter_id or None,
+                conversation_id=conversation_id,
+                sent="true",
+            ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -10049,12 +10007,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @application.get("/documents/{document_id}", response_class=HTMLResponse)
     async def document_page(
-        request: Request, document_id: str, error: Optional[str] = None
+        request: Request,
+        document_id: str,
+        chapter_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        view: str = "body",
+        error: Optional[str] = None,
+        saved: bool = False,
+        sent: bool = False,
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        document = database.get_document(int(user["id"]), document_id)
+        user_id = int(user["id"])
+        document = database.get_document(user_id, document_id)
         if not document:
             return render_template(
                 "not_found.html",
@@ -10062,7 +10028,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND,
             )
         work = database.get_work_for_document(
-            int(user["id"]), document_id
+            user_id, document_id
         )
         document_edition = (
             next(
@@ -10108,13 +10074,134 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             writing_mode_project = work.get("active_project")
         if work:
             database.set_work_mode(
-                user_id=int(user["id"]),
+                user_id=user_id,
                 work_id=str(work["id"]),
                 mode="read",
             )
         chapters = database.list_chapters(
-            int(user["id"]), document_id, document.get("latest_job_id")
+            user_id, document_id, document.get("latest_job_id")
         )
+        effective_view = "archive" if view == "archive" else "body"
+        selected_chapter = None
+        if effective_view == "body" and chapter_id:
+            selected_chapter = next(
+                (
+                    item
+                    for item in chapters
+                    if str(item["id"]) == chapter_id
+                ),
+                None,
+            )
+            if not selected_chapter:
+                return render_template(
+                    "not_found.html",
+                    _template_context(request, user=user),
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+        elif effective_view == "body" and chapters:
+            selected_chapter = chapters[0]
+
+        chapter_content = ""
+        chapter_content_hash = ""
+        selected_index = -1
+        previous_chapter = None
+        next_chapter = None
+        if selected_chapter:
+            selected_index = next(
+                index
+                for index, item in enumerate(chapters)
+                if str(item["id"]) == str(selected_chapter["id"])
+            )
+            previous_chapter = (
+                chapters[selected_index - 1]
+                if selected_index > 0
+                else None
+            )
+            next_chapter = (
+                chapters[selected_index + 1]
+                if selected_index + 1 < len(chapters)
+                else None
+            )
+            chapter_content = _read_optional_text(
+                Path(str(selected_chapter["content_path"]))
+            )
+            chapter_content_hash = hashlib.sha256(
+                chapter_content.encode("utf-8")
+            ).hexdigest()
+
+        conversations = (
+            assistant_chat_service.list_document_conversations(
+                user_id=user_id, document_id=document_id
+            )
+        )
+        active_conversation = None
+        if conversation_id:
+            active_conversation = (
+                assistant_chat_service.get_conversation(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                )
+            )
+            if (
+                not active_conversation
+                or str(active_conversation.get("document_id") or "")
+                != document_id
+            ):
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+        else:
+            latest = None
+            if effective_view == "body" and selected_chapter:
+                latest = next(
+                    (
+                        item
+                        for item in conversations
+                        if str(
+                            item.get("reference_chapter_id") or ""
+                        )
+                        == str(selected_chapter["id"])
+                    ),
+                    None,
+                )
+            elif effective_view == "archive":
+                latest = next(
+                    (
+                        item
+                        for item in conversations
+                        if not item.get("reference_chapter_id")
+                    ),
+                    None,
+                )
+            if latest:
+                active_conversation = (
+                    assistant_chat_service.get_conversation(
+                        user_id=user_id,
+                        conversation_id=str(latest["id"]),
+                    )
+                )
+
+        archive_project = None
+        archive_characters: list[dict[str, Any]] = []
+        archive_entries: list[dict[str, Any]] = []
+        archive_analyses: list[dict[str, Any]] = []
+        if effective_view == "archive" and work:
+            if writing_mode_project:
+                archive_project = database.get_novel_project(
+                    user_id,
+                    str(writing_mode_project["project_id"]),
+                )
+                if archive_project:
+                    archive_characters = (
+                        database.list_novel_characters(
+                            user_id, str(archive_project["id"])
+                        )
+                    )
+            archive_entries = database.list_work_archive_entries(
+                user_id, str(work["id"])
+            )
+            archive_analyses = database.list_work_analyses(
+                user_id, str(work["id"])
+            )
+        available_chat_models = chat_model_groups(user_id)
         return render_template(
             "document.html",
             _template_context(
@@ -10125,7 +10212,30 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 writing_mode_project=writing_mode_project,
                 document=document,
                 chapters=chapters,
+                chapter=selected_chapter,
+                chapter_content=chapter_content,
+                chapter_content_hash=chapter_content_hash,
+                chapter_index=selected_index,
+                previous_chapter=previous_chapter,
+                next_chapter=next_chapter,
+                conversations=conversations,
+                active_conversation=active_conversation,
+                view=effective_view,
+                archive_project=archive_project,
+                archive_characters=archive_characters,
+                archive_entries=archive_entries,
+                archive_analyses=archive_analyses,
+                archive_return_to=_document_workbench_path(
+                    document_id, view="archive"
+                ),
+                archive_saved=saved,
+                archive_error=error,
+                model_groups=available_chat_models,
+                selected_model_choice=selected_chat_model(
+                    available_chat_models, active_conversation
+                ),
                 error=error,
+                sent=sent,
             ),
         )
 
