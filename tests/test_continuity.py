@@ -1343,7 +1343,7 @@ def test_memory_identity_rule_web_workflow(tmp_path: Path):
         )
         page = client.get(
             f"/novels/{project_id}/workbench"
-            "?view=settings&settings_tab=world"
+            "?view=archive&archive_tab=creative&settings_tab=world"
         )
         page_csrf = page.text.split('name="csrf" value="', 1)[1].split(
             '"', 1
@@ -1360,7 +1360,7 @@ def test_memory_identity_rule_web_workflow(tmp_path: Path):
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=world&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=world&saved=true"
             in response.headers["location"]
         )
 
@@ -1383,7 +1383,7 @@ def test_memory_identity_rule_web_workflow(tmp_path: Path):
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=world&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=world&saved=true"
             in response.headers["location"]
         )
         with database.connection() as connection:

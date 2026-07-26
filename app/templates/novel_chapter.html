@@ -185,7 +185,7 @@
         <h2>AI 味编辑</h2>
         {% if not voice_profile or voice_profile.status != 'confirmed' %}
           <p>先把“冷峻、细腻”拆成可执行的句段、对话、意象和留白规则。</p>
-          <a class="button full" href="/novels/{{ chapter.project_id }}/workbench?view=settings&settings_tab=style">填写并确认作品声纹</a>
+          <a class="button full" href="/novels/{{ chapter.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style">填写并确认作品声纹</a>
         {% elif working_version %}
           <p>
             {% if working_version.style_status == 'pass' %}本版本未定位到明显问题。

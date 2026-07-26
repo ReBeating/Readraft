@@ -1,0 +1,33 @@
+{% set matching_rules = namespace(count=0) %}
+{% for entry in archive_entries %}
+  {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' and entry.category == rule_category %}
+    {% set matching_rules.count = matching_rules.count + 1 %}
+  {% endif %}
+{% endfor %}
+{% if matching_rules.count %}
+  <section class="studio-confirmed-rules" aria-label="已确认补充设定">
+    <header>
+      <strong>已确认补充设定</strong>
+      <span>{{ matching_rules.count }}</span>
+    </header>
+    <div>
+      {% for entry in archive_entries %}
+        {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' and entry.category == rule_category %}
+          <article>
+            <div>
+              {% if entry.title %}<strong>{{ entry.title }}</strong>{% endif %}
+              <p>{{ entry.content }}</p>
+              {% if entry.evidence %}<small>依据：{{ entry.evidence }}</small>{% endif %}
+            </div>
+            <button
+              type="submit"
+              form="archive-rule-delete-{{ entry.id }}"
+              aria-label="移除这条创作设定"
+              title="移除创作设定"
+            >×</button>
+          </article>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}

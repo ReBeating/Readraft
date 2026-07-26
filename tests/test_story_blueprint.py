@@ -564,7 +564,7 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
         project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
         project_url = f"/novels/{project_id}"
         workspace = client.get(
-            f"{workbench_url}?view=settings&settings_tab=structure"
+            f"{workbench_url}?view=archive&archive_tab=creative&settings_tab=structure"
         )
         assert "全书蓝图" in workspace.text
 
@@ -589,7 +589,7 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=structure&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=structure&saved=true"
             in response.headers["location"]
         )
 
@@ -771,7 +771,7 @@ def test_latest_schema_migrates_v13_without_mutating_existing_project(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 31
+                ).fetchone()[0] == 32
         assert migrated.execute(
             "SELECT COUNT(*) FROM novel_story_blueprint_versions"
         ).fetchone()[0] == 0

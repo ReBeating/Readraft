@@ -2,7 +2,7 @@
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-15">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-16">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -67,7 +67,7 @@
         {% if work %}
           <a
             class="studio-icon-button {% if view == 'archive' %}active{% endif %}"
-            href="/documents/{{ document.id }}?view=archive"
+            href="/documents/{{ document.id }}?view=archive&archive_tab=analysis"
             aria-label="作品档案"
             title="作品档案"
           >
@@ -114,7 +114,7 @@
         {% if work %}
           <a
             class="studio-directory-link {% if view == 'archive' %}active{% endif %}"
-            href="/documents/{{ document.id }}?view=archive"
+            href="/documents/{{ document.id }}?view=archive&archive_tab=analysis"
           >
             <span>作品档案</span>
             <small>›</small>
@@ -165,20 +165,18 @@
                   </small>
                   <h1>{{ chapter.title or '未命名章节' }}</h1>
                 </div>
-                {% if not document_edition or document_edition.kind != 'snapshot' %}
-                  <div class="studio-reader-branch-actions">
-                    <form method="post" action="/documents/{{ document.id }}/writing-branches">
-                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                      <input type="hidden" name="intent" value="rewrite">
-                      <button class="studio-button" type="submit">改写</button>
-                    </form>
-                    <form method="post" action="/documents/{{ document.id }}/writing-branches">
-                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                      <input type="hidden" name="intent" value="sequel">
-                      <button class="studio-button" type="submit">续写</button>
-                    </form>
-                  </div>
-                {% endif %}
+                <div class="studio-reader-branch-actions">
+                  <form method="post" action="/documents/{{ document.id }}/writing-branches">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="intent" value="rewrite">
+                    <button class="studio-button" type="submit">改写</button>
+                  </form>
+                  <form method="post" action="/documents/{{ document.id }}/writing-branches">
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="intent" value="sequel">
+                    <button class="studio-button" type="submit">续写</button>
+                  </form>
+                </div>
               </div>
               <textarea
                 class="studio-manuscript studio-reader-manuscript"
@@ -230,7 +228,7 @@
                 <div class="studio-chat-history-list">
                   {% for item in conversations %}
                     <article class="{% if active_conversation and active_conversation.id == item.id %}active{% endif %}">
-                      <a href="/documents/{{ document.id }}?conversation_id={{ item.id }}{% if item.reference_chapter_id %}&chapter_id={{ item.reference_chapter_id }}{% else %}&view=archive{% endif %}">
+                      <a href="/documents/{{ document.id }}?conversation_id={{ item.id }}{% if item.reference_chapter_id %}&chapter_id={{ item.reference_chapter_id }}{% else %}&view=archive&archive_tab=analysis{% endif %}">
                         <strong>{{ item.title }}</strong>
                         <small>
                           {% if item.reference_chapter_id %}
@@ -251,6 +249,8 @@
             <form method="post" action="/documents/{{ document.id }}/assistant/new" class="studio-new-chat-form">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <input type="hidden" name="reference_chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
+              <input type="hidden" name="return_view" value="{{ view }}">
+              <input type="hidden" name="return_archive_tab" value="{{ active_archive_tab }}">
               <button type="submit" aria-label="新建对话" title="新建对话" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>＋</button>
             </form>
           </div>
@@ -332,6 +332,8 @@
           data-chat-form
         >
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="return_view" value="{{ view }}">
+          <input type="hidden" name="return_archive_tab" value="{{ active_archive_tab }}">
           <input type="hidden" name="conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
           <input type="hidden" name="reference_chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
           <input type="hidden" name="source_type" value="reference_chapter">
@@ -378,5 +380,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-4" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-5" defer></script>
 {% endblock %}

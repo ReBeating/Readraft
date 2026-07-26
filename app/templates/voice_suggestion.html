@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">← 返回文风约束</a>
+      <a class="back-link" href="/novels/{{ suggestion.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style">← 返回文风约束</a>
       <span class="eyebrow">AUTHOR VOICE PROFILER</span>
       <h1>{{ suggestion.sample_title }}</h1>
       <p>
@@ -38,14 +38,14 @@
       <h2>这次没有形成可审核的声纹建议</h2>
       <div class="alert error">{{ suggestion.error or '未知错误' }}</div>
       <p>当前作品声纹没有发生变化。可以返回工作台调整样章或补充说明后重试。</p>
-      <a class="button" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">返回文风约束</a>
+      <a class="button" href="/novels/{{ suggestion.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style">返回文风约束</a>
     </section>
   {% elif suggestion.status == 'rejected' %}
     <section class="card">
       <span class="status">已放弃</span>
       <h2>这份建议没有写入作品声纹</h2>
       <p>样章分析记录仍保留用于追溯；Writer 和 Style Auditor 不会读取它。</p>
-      <a class="button" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">返回文风约束</a>
+      <a class="button" href="/novels/{{ suggestion.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style">返回文风约束</a>
     </section>
   {% elif suggestion.status == 'applied' %}
     <section class="card">
@@ -55,7 +55,7 @@
         当前保存状态：
         <strong>{{ '已确认，可用于写作与审校' if suggestion.applied_profile.status == 'confirmed' else '声纹草稿，尚未用于 AI 味审校' }}</strong>
       </p>
-      <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=settings&settings_tab=style">查看文风约束</a>
+      <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style">查看文风约束</a>
     </section>
   {% elif suggestion.status == 'ready' %}
     <section class="card voice-suggestion-summary">

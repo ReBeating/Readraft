@@ -1384,7 +1384,7 @@ def test_edit_preference_web_flow_requires_author_confirmation(tmp_path):
         )
         assert applied.status_code == 303
         assert (
-            "view=settings&settings_tab=style&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=style&saved=true"
             in applied.headers["location"]
         )
         context = database.get_writing_context(
@@ -1464,7 +1464,7 @@ def test_stable_preference_web_actions_use_workbench_return_path(
 
         page = client.get(
             f"/novels/{project_id}/workbench"
-            "?view=settings&settings_tab=style"
+            "?view=archive&archive_tab=creative&settings_tab=style"
         )
         assert page.status_code == 200
         response = client.post(
@@ -1486,7 +1486,7 @@ def test_stable_preference_web_actions_use_workbench_return_path(
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=style&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=style&saved=true"
             in response.headers["location"]
         )
         with database.connection() as connection:
@@ -1506,7 +1506,7 @@ def test_stable_preference_web_actions_use_workbench_return_path(
         )
         assert archived.status_code == 303
         assert (
-            "view=settings&settings_tab=style&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=style&saved=true"
             in archived.headers["location"]
         )
         restored = database.get_writing_context(

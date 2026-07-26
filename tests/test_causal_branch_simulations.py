@@ -696,7 +696,7 @@ def test_long_horizon_web_flow_renders_three_read_only_branches(
         )
         workbench = client.get(
             f"/novels/{project_id}/workbench"
-            "?view=settings&settings_tab=structure"
+            "?view=archive&archive_tab=creative&settings_tab=structure"
         )
         response = client.post(
             f"/novels/{project_id}/causal-link-suggestions",

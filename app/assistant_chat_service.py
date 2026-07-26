@@ -2922,7 +2922,8 @@ class AssistantChatService:
             archive_rows = connection.execute(
                 """
                 SELECT entry.entry_type, entry.title, entry.content,
-                       entry.evidence, entry.status
+                       entry.evidence, entry.status, entry.category,
+                       entry.provenance
                 FROM work_editions edition
                 JOIN work_archive_entries entry
                   ON entry.work_id=edition.work_id
@@ -2967,6 +2968,11 @@ class AssistantChatService:
         return {
             "linked_source": linked_source,
             "work_archive": {
+                "semantics": (
+                    "分析与笔记是带依据的描述性材料，不能自动约束创作；"
+                    "只有 status=confirmed 的 creative_rules 是作者已经"
+                    "采纳的创作设定。"
+                ),
                 "descriptive_observations": [
                     item
                     for item in archive_items
@@ -2977,6 +2983,7 @@ class AssistantChatService:
                     item
                     for item in archive_items
                     if item["entry_type"] == "creative_rule"
+                    and item["status"] == "confirmed"
                 ],
                 "materials": [
                     item
@@ -3243,6 +3250,21 @@ class AssistantChatService:
                 """,
                 (user_id, document_id),
             ).fetchall()
+            archive_rows = connection.execute(
+                """
+                SELECT entry.entry_type, entry.title, entry.content,
+                       entry.evidence, entry.status, entry.category,
+                       entry.provenance
+                FROM work_editions edition
+                JOIN work_archive_entries entry
+                  ON entry.work_id=edition.work_id
+                JOIN works work ON work.id=edition.work_id
+                WHERE edition.document_id=? AND work.user_id=?
+                ORDER BY entry.updated_at DESC
+                LIMIT 120
+                """,
+                (document_id, user_id),
+            ).fetchall()
         focus_id = str(
             conversation.get("reference_chapter_id") or ""
         )
@@ -3303,6 +3325,7 @@ class AssistantChatService:
                         "reference_chapter_id": str(row["id"]),
                     },
                 )
+        archive_items = [dict(row) for row in archive_rows]
         return (
             {
                 "scope": (
@@ -3312,6 +3335,29 @@ class AssistantChatService:
                 ),
                 "document": dict(document),
                 "chapters_and_analysis": chapter_items,
+                "work_archive": {
+                    "semantics": (
+                        "分析与笔记是描述性记录；只有作者明确采纳且状态为"
+                        " confirmed 的创作设定才可作为后续写作约束。"
+                    ),
+                    "descriptive_observations": [
+                        item
+                        for item in archive_items
+                        if item["entry_type"]
+                        in {"source_fact", "analysis_note"}
+                    ],
+                    "creative_rules": [
+                        item
+                        for item in archive_items
+                        if item["entry_type"] == "creative_rule"
+                        and item["status"] == "confirmed"
+                    ],
+                    "materials": [
+                        item
+                        for item in archive_items
+                        if item["entry_type"] == "material"
+                    ],
+                },
                 "originality_boundary": (
                     "只学习抽象方法；不续写、不复刻专有名词、独特措辞或"
                     "具体情节。"

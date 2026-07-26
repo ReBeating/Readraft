@@ -8,20 +8,26 @@ import pytest
 
 from app.config import Settings
 from app.db import Database, utc_now
-from app.project_archive import (
-    ProjectArchiveError,
-    create_project_archive,
-    import_project_archive,
-    verify_project_archive,
-)
 from app.security import hash_password
+from app.work_archive import (
+    WORK_ARCHIVE_FORMAT,
+    WorkArchiveError,
+    create_work_archive,
+    detect_archive_format,
+    import_work_archive,
+    verify_work_archive,
+)
+from app.work_library import (
+    create_reading_snapshot,
+    create_writing_branch_from_document,
+)
 
 
 def make_settings(root: Path) -> Settings:
     return Settings(
         app_name="novelAI 作品归档测试",
         app_env="test",
-        secret_key="project-archive-test-secret",
+        secret_key="work-archive-test-secret",  # pragma: allowlist secret
         data_dir=root / "data",
         database_path=root / "data" / "novelai.db",
         cookie_secure=False,
@@ -158,73 +164,145 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
     return database, user_id, project_id, chapter_id
 
 
-def test_project_archive_round_trip_preserves_project_state(tmp_path: Path):
+def test_complete_work_archive_round_trip_preserves_editions_and_archive(
+    tmp_path: Path,
+):
     settings = make_settings(tmp_path)
-    database, user_id, project_id, chapter_id = create_project(settings)
-    archive = tmp_path / "paper-lighthouse.novelai.zip"
-
-    summary = create_project_archive(
+    database, user_id, project_id, _chapter_id = create_project(settings)
+    work_id, _edition_id = database.ensure_project_work(
+        user_id=user_id,
+        project_id=project_id,
+    )
+    note_id = database.add_work_archive_entry(
+        user_id=user_id,
+        work_id=work_id,
+        entry_type="analysis_note",
+        title="钟表意象",
+        content="停走的秒针总在人物回避旧约时出现。",
+        evidence="第一章",
+        category="structure",
+    )
+    setting_id = database.adopt_work_archive_entry(
+        user_id=user_id,
+        work_id=work_id,
+        entry_id=note_id,
+        category="structure",
+        title="钟表意象规则",
+        content="人物回避旧约时，让停走的秒针推动下一步行动。",
+    )
+    document_id = create_reading_snapshot(
+        database=database,
+        documents_dir=settings.documents_dir,
+        user_id=user_id,
+        project_id=project_id,
+    )
+    rewrite_project_id = create_writing_branch_from_document(
         database=database,
         novels_dir=settings.novels_dir,
         user_id=user_id,
-        project_id=project_id,
+        document_id=document_id,
+        intent="rewrite",
+    )
+    archive = tmp_path / "complete-work.novelai.zip"
+
+    summary = create_work_archive(
+        database=database,
+        novels_dir=settings.novels_dir,
+        documents_dir=settings.documents_dir,
+        user_id=user_id,
+        work_id=work_id,
         destination=archive,
         max_uncompressed_bytes=20 * 1024 * 1024,
     )
-    manifest = verify_project_archive(
-        archive, max_uncompressed_bytes=20 * 1024 * 1024
-    )
-
-    assert summary.file_count == 2
-    assert summary.row_count >= 5
-    assert "users" not in manifest["tables"]
-    assert "api_credentials" not in manifest["tables"]
-    assert "api_models" not in manifest["tables"]
-    assert b"CREDENTIAL-MUST-NOT-BE-EXPORTED" not in archive.read_bytes()
-    assert (
-        manifest["tables"]["novel_chapters"][0]["content_path"]
-        == "project://chapters/portable-chapter/content.txt"
-    )
-
-    imported = import_project_archive(
-        database=database,
-        novels_dir=settings.novels_dir,
-        user_id=user_id,
-        archive_path=archive,
+    manifest = verify_work_archive(
+        archive,
         max_uncompressed_bytes=20 * 1024 * 1024,
     )
 
-    assert imported.project_id != project_id
-    project = database.get_novel_project(user_id, imported.project_id)
-    assert project and project["title"] == "纸灯塔"
-    characters = database.list_novel_characters(
-        user_id, imported.project_id
+    assert detect_archive_format(archive) == WORK_ARCHIVE_FORMAT
+    assert summary.edition_count == 3
+    assert manifest["counts"]["editions"] == 3
+    assert len(manifest["roots"]["projects"]) == 2
+    assert len(manifest["roots"]["documents"]) == 1
+    assert "works" in manifest["tables"]
+    assert "work_editions" in manifest["tables"]
+    assert "work_archive_entries" in manifest["tables"]
+    assert "documents" in manifest["tables"]
+    assert "api_credentials" not in manifest["tables"]
+    assert b"CREDENTIAL-MUST-NOT-BE-EXPORTED" not in archive.read_bytes()
+
+    imported = import_work_archive(
+        database=database,
+        novels_dir=settings.novels_dir,
+        documents_dir=settings.documents_dir,
+        user_id=user_id,
+        archive_path=archive,
+        max_uncompressed_bytes=20 * 1024 * 1024,
+        max_documents=50,
+        max_stored_chars=20_000_000,
     )
-    assert [character["name"] for character in characters] == ["林岚"]
-    chapters = database.list_novel_chapters(user_id, imported.project_id)
-    assert len(chapters) == 1
-    assert chapters[0]["id"] != chapter_id
-    imported_path = Path(str(chapters[0]["content_path"]))
-    assert imported_path.is_relative_to(
-        settings.novels_dir / str(user_id) / imported.project_id
+
+    assert imported.work_id != work_id
+    assert imported.edition_count == 3
+    imported_work = database.get_work(user_id, imported.work_id)
+    assert imported_work and imported_work["title"] == "纸灯塔"
+    assert len(imported_work["writing_editions"]) == 2
+    assert len(imported_work["reading_editions"]) == 1
+    imported_rewrite = next(
+        edition
+        for edition in imported_work["writing_editions"]
+        if edition["branch_intent"] == "rewrite"
     )
-    assert imported_path.read_text(encoding="utf-8").startswith("林岚把船票")
+    assert imported_rewrite["project_id"] != rewrite_project_id
+    assert imported_rewrite["source_edition"]["kind"] == "snapshot"
+    imported_snapshot = imported_work["reading_editions"][0]
+    assert imported_snapshot["source_edition"]["project_id"] != project_id
+
+    entries = database.list_work_archive_entries(
+        user_id,
+        imported.work_id,
+    )
+    imported_note = next(
+        entry for entry in entries if entry["entry_type"] == "analysis_note"
+    )
+    imported_setting = next(
+        entry for entry in entries if entry["entry_type"] == "creative_rule"
+    )
+    assert imported_note["id"] != note_id
+    assert imported_setting["id"] != setting_id
+    assert imported_note["status"] == "adopted"
+    assert imported_note["adopted_setting_id"] == imported_setting["id"]
+    assert imported_setting["adopted_from_entry_id"] == imported_note["id"]
+    assert imported_setting["status"] == "confirmed"
+
+    imported_chapters = database.list_novel_chapters(
+        user_id,
+        str(imported_rewrite["project_id"]),
+    )
+    assert len(imported_chapters) == 1
+    imported_content_path = Path(
+        str(imported_chapters[0]["content_path"])
+    )
+    assert imported_content_path.is_relative_to(
+        settings.novels_dir
+        / str(user_id)
+        / str(imported_rewrite["project_id"])
+    )
+    assert "林岚把船票" in imported_content_path.read_text(
+        encoding="utf-8"
+    )
+    imported_document = database.get_document(
+        user_id,
+        str(imported_snapshot["document_id"]),
+    )
+    assert imported_document
+    assert Path(str(imported_document["source_path"])).is_relative_to(
+        settings.documents_dir
+        / str(user_id)
+        / str(imported_snapshot["document_id"])
+    )
     with database.connection() as connection:
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        imported_binding = connection.execute(
-            """
-            SELECT b.project_id, c.user_id, c.name
-            FROM novel_technique_bindings b
-            JOIN reference_technique_cards c ON c.id=b.technique_id
-            WHERE b.project_id=?
-            """,
-            (imported.project_id,),
-        ).fetchone()
-        assert dict(imported_binding) == {
-            "project_id": imported.project_id,
-            "user_id": user_id,
-            "name": "线索先改变行动",
-        }
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM api_credentials WHERE user_id=?",
@@ -234,7 +312,7 @@ def test_project_archive_round_trip_preserves_project_state(tmp_path: Path):
         )
 
 
-def test_project_archive_rejects_path_traversal(tmp_path: Path):
+def test_work_archive_rejects_path_traversal(tmp_path: Path):
     archive = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(archive, "w") as payload:
         payload.writestr("../escape.txt", "unsafe")
@@ -242,34 +320,47 @@ def test_project_archive_rejects_path_traversal(tmp_path: Path):
             "manifest.json",
             json.dumps(
                 {
-                    "format": "novelai-project",
+                    "format": WORK_ARCHIVE_FORMAT,
                     "version": 1,
-                    "project": {"id": "p", "title": "unsafe"},
+                    "work": {"id": "w", "title": "unsafe"},
+                    "roots": {"projects": [], "documents": []},
                     "tables": {
-                        "novel_projects": [
-                            {"id": "p", "user_id": 1}
-                        ]
+                        "works": [{"id": "w", "user_id": 1}],
+                        "work_editions": [
+                            {
+                                "id": "e",
+                                "work_id": "w",
+                                "project_id": "p",
+                                "document_id": None,
+                            }
+                        ],
                     },
                     "files": [],
                 }
             ),
         )
 
-    with pytest.raises(ProjectArchiveError, match="不安全"):
-        verify_project_archive(
-            archive, max_uncompressed_bytes=1024 * 1024
+    with pytest.raises(WorkArchiveError, match="不安全"):
+        verify_work_archive(
+            archive,
+            max_uncompressed_bytes=1024 * 1024,
         )
 
 
-def test_project_archive_detects_file_tampering(tmp_path: Path):
+def test_work_archive_detects_file_tampering(tmp_path: Path):
     settings = make_settings(tmp_path / "source")
     database, user_id, project_id, _chapter_id = create_project(settings)
-    archive = tmp_path / "original.zip"
-    create_project_archive(
-        database=database,
-        novels_dir=settings.novels_dir,
+    work_id, _edition_id = database.ensure_project_work(
         user_id=user_id,
         project_id=project_id,
+    )
+    archive = tmp_path / "original.zip"
+    create_work_archive(
+        database=database,
+        novels_dir=settings.novels_dir,
+        documents_dir=settings.documents_dir,
+        user_id=user_id,
+        work_id=work_id,
         destination=archive,
         max_uncompressed_bytes=20 * 1024 * 1024,
     )
@@ -285,33 +376,47 @@ def test_project_archive_detects_file_tampering(tmp_path: Path):
         for name, value in entries.items():
             target.writestr(name, value)
 
-    with pytest.raises(ProjectArchiveError, match="大小与清单不一致|校验失败"):
-        verify_project_archive(
-            tampered, max_uncompressed_bytes=20 * 1024 * 1024
+    with pytest.raises(
+        WorkArchiveError,
+        match="大小与清单不一致|校验失败",
+    ):
+        verify_work_archive(
+            tampered,
+            max_uncompressed_bytes=20 * 1024 * 1024,
         )
 
 
-def test_project_archive_rejects_unowned_project(tmp_path: Path):
+def test_work_archive_rejects_unowned_work(tmp_path: Path):
     settings = make_settings(tmp_path)
-    database, _user_id, project_id, _chapter_id = create_project(settings)
+    database, user_id, project_id, _chapter_id = create_project(settings)
+    work_id, _edition_id = database.ensure_project_work(
+        user_id=user_id,
+        project_id=project_id,
+    )
     other_user = database.create_user(
-        "other-author", hash_password("password-456")
+        "other-author",
+        hash_password("password-456"),
     )
 
-    with pytest.raises(ProjectArchiveError, match="不属于"):
-        create_project_archive(
+    with pytest.raises(WorkArchiveError, match="不属于"):
+        create_work_archive(
             database=database,
             novels_dir=settings.novels_dir,
+            documents_dir=settings.documents_dir,
             user_id=other_user,
-            project_id=project_id,
+            work_id=work_id,
             destination=tmp_path / "forbidden.zip",
             max_uncompressed_bytes=20 * 1024 * 1024,
         )
 
 
-def test_project_archive_waits_for_active_ai_task(tmp_path: Path):
+def test_work_archive_waits_for_active_ai_task(tmp_path: Path):
     settings = make_settings(tmp_path)
     database, user_id, project_id, chapter_id = create_project(settings)
+    work_id, _edition_id = database.ensure_project_work(
+        user_id=user_id,
+        project_id=project_id,
+    )
     database.create_generation_job(
         user_id=user_id,
         project_id=project_id,
@@ -323,12 +428,13 @@ def test_project_archive_waits_for_active_ai_task(tmp_path: Path):
         credential_source="personal",
     )
 
-    with pytest.raises(ProjectArchiveError, match="AI 任务正在"):
-        create_project_archive(
+    with pytest.raises(WorkArchiveError, match="AI 任务正在"):
+        create_work_archive(
             database=database,
             novels_dir=settings.novels_dir,
+            documents_dir=settings.documents_dir,
             user_id=user_id,
-            project_id=project_id,
-            destination=tmp_path / "busy-project.zip",
+            work_id=work_id,
+            destination=tmp_path / "busy-work.zip",
             max_uncompressed_bytes=20 * 1024 * 1024,
         )

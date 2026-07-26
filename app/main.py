@@ -84,11 +84,6 @@ from .preference_service import (
     PreferenceService,
 )
 from .process_lock import ProcessLock
-from .project_archive import (
-    ProjectArchiveError,
-    create_project_archive,
-    import_project_archive,
-)
 from .quality_audit import build_quality_auditor, effective_char_count
 from .reader_planner import build_reader_planner
 from .reader_service import ReaderDecisionService
@@ -110,6 +105,13 @@ from .story_structure_schema import AuthorChapterSkeleton
 from .story_structure_service import StoryStructureSuggestionService
 from .structure_link_service import StructureLinkService
 from .worker import AnalysisWorker
+from .work_archive import (
+    WORK_ARCHIVE_FORMAT,
+    WorkArchiveError,
+    create_work_archive,
+    detect_archive_format,
+    import_work_archive,
+)
 from .style_editor import build_style_editor
 from .style_service import StyleService
 from .technique_schema import TechniqueObservation
@@ -148,9 +150,29 @@ WORKBENCH_SETTING_TABS = (
     ("structure", "故事结构"),
     ("style", "文风约束"),
     ("parameters", "创作参数"),
+    ("additional", "补充设定"),
 )
 WORKBENCH_SETTING_TAB_KEYS = frozenset(
     key for key, _label in WORKBENCH_SETTING_TABS
+)
+WORK_ARCHIVE_TABS = (
+    ("creative", "创作设定"),
+    ("analysis", "分析与笔记"),
+    ("versions", "版本与来源"),
+)
+WORK_ARCHIVE_TAB_KEYS = frozenset(
+    key for key, _label in WORK_ARCHIVE_TABS
+)
+WORK_ARCHIVE_CATEGORIES = (
+    ("core", "作品核心"),
+    ("world", "世界规则"),
+    ("character", "人物关系"),
+    ("structure", "剧情结构"),
+    ("style", "文风表达"),
+    ("general", "其他"),
+)
+WORK_ARCHIVE_CATEGORY_KEYS = frozenset(
+    key for key, _label in WORK_ARCHIVE_CATEGORIES
 )
 EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "diction",
@@ -280,14 +302,23 @@ def _workbench_path(
     *,
     settings_tab: Optional[str] = None,
     chapter_id: Optional[str] = None,
+    archive_tab: Optional[str] = None,
     **params: Any,
 ) -> str:
     query: list[tuple[str, str]] = []
     if settings_tab:
         query.extend(
             (
-                ("view", "settings"),
+                ("view", "archive"),
+                ("archive_tab", "creative"),
                 ("settings_tab", settings_tab),
+            )
+        )
+    elif archive_tab:
+        query.extend(
+            (
+                ("view", "archive"),
+                ("archive_tab", archive_tab),
             )
         )
     if chapter_id:
@@ -347,15 +378,20 @@ def _work_archive_destination(
     active_project = work.get("active_project")
     if str(work.get("last_mode") or "") == "read" and active_document:
         destination = _document_workbench_path(
-            str(active_document["document_id"]), view="archive"
+            str(active_document["document_id"]),
+            view="archive",
+            archive_tab="analysis",
         )
     elif active_project:
         destination = _workbench_path(
-            str(active_project["project_id"]), view="archive"
+            str(active_project["project_id"]),
+            archive_tab="creative",
         )
     elif active_document:
         destination = _document_workbench_path(
-            str(active_document["document_id"]), view="archive"
+            str(active_document["document_id"]),
+            view="archive",
+            archive_tab="analysis",
         )
     else:
         destination = "/dashboard"
@@ -2136,7 +2172,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 error=error,
                 max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
                 max_archive_mb=(
-                    app_settings.max_project_archive_bytes // 1024 // 1024
+                    app_settings.max_work_archive_bytes // 1024 // 1024
                 ),
             ),
         )
@@ -2173,7 +2209,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         app_settings.max_upload_bytes // 1024 // 1024
                     ),
                     max_archive_mb=(
-                        app_settings.max_project_archive_bytes
+                        app_settings.max_work_archive_bytes
                         // 1024
                         // 1024
                     ),
@@ -2189,32 +2225,42 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             temporary_path = Path(temporary.name)
             total_bytes = 0
+            imported_work_id = ""
             try:
                 while True:
                     chunk = await work_file.read(1024 * 1024)
                     if not chunk:
                         break
                     total_bytes += len(chunk)
-                    if total_bytes > app_settings.max_project_archive_bytes:
-                        raise ProjectArchiveError("作品归档文件超过允许大小")
+                    if total_bytes > app_settings.max_work_archive_bytes:
+                        raise WorkArchiveError(
+                            "作品归档文件超过允许大小"
+                        )
                     temporary.write(chunk)
                 temporary.close()
                 if total_bytes == 0:
-                    raise ProjectArchiveError("请选择非空的作品归档")
-                imported_project = import_project_archive(
+                    raise WorkArchiveError("请选择非空的作品归档")
+                archive_format = detect_archive_format(temporary_path)
+                if archive_format != WORK_ARCHIVE_FORMAT:
+                    raise WorkArchiveError(
+                        "只支持当前版本导出的完整作品归档"
+                    )
+                imported_work = import_work_archive(
                     database=database,
                     novels_dir=app_settings.novels_dir,
+                    documents_dir=app_settings.documents_dir,
                     user_id=user_id,
                     archive_path=temporary_path,
                     max_uncompressed_bytes=(
-                        app_settings.max_project_archive_bytes
+                        app_settings.max_work_archive_bytes
+                    ),
+                    max_documents=app_settings.max_documents_per_user,
+                    max_stored_chars=(
+                        app_settings.max_stored_chars_per_user
                     ),
                 )
-                database.ensure_project_work(
-                    user_id=user_id,
-                    project_id=imported_project.project_id,
-                )
-            except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
+                imported_work_id = imported_work.work_id
+            except (WorkArchiveError, OSError, sqlite3.Error) as exc:
                 logger.warning("unified archive import rejected: %s", exc)
                 return render_import_error(str(exc))
             finally:
@@ -2222,7 +2268,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 temporary_path.unlink(missing_ok=True)
                 await work_file.close()
             return RedirectResponse(
-                f"/dashboard?imported=true&project={imported_project.project_id}",
+                f"/dashboard?imported=true&work={imported_work_id}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
 
@@ -2324,6 +2370,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         work_id: str,
         entry_type: str = Form("analysis_note"),
+        category: str = Form("general"),
+        edition_id: str = Form(""),
         title: str = Form(""),
         content: str = Form(...),
         evidence: str = Form(""),
@@ -2358,6 +2406,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 title=clean_title,
                 content=clean_content,
                 evidence=clean_evidence,
+                edition_id=edition_id.strip() or None,
+                category=category,
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -2366,6 +2416,132 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         return RedirectResponse(
             _append_query(destination, saved="true"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/works/{work_id}/archive/entries/{entry_id}/adopt"
+    )
+    async def adopt_work_archive_note(
+        request: Request,
+        work_id: str,
+        entry_id: str,
+        category: str = Form(...),
+        title: str = Form(""),
+        content: str = Form(""),
+        return_to: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        fallback = _work_archive_destination(work)
+        destination = _safe_next(return_to, fallback)
+        try:
+            clean_title = _clean_field(title, "标题", max_length=120)
+            clean_content = _clean_field(
+                content, "创作设定", max_length=20_000
+            )
+            database.adopt_work_archive_entry(
+                user_id=user_id,
+                work_id=work_id,
+                entry_id=entry_id,
+                category=category,
+                title=clean_title,
+                content=clean_content,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                _append_query(destination, error=str(exc)),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _append_query(destination, adopted="true"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/works/{work_id}/archive/analyses/{analysis_id}/adopt"
+    )
+    async def adopt_work_chapter_analysis(
+        request: Request,
+        work_id: str,
+        analysis_id: str,
+        category: str = Form(...),
+        title: str = Form(""),
+        content: str = Form(...),
+        return_to: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        fallback = _work_archive_destination(work)
+        destination = _safe_next(return_to, fallback)
+        try:
+            clean_title = _clean_field(title, "标题", max_length=120)
+            clean_content = _clean_field(
+                content,
+                "创作设定",
+                max_length=20_000,
+                required=True,
+            )
+            database.adopt_work_analysis(
+                user_id=user_id,
+                work_id=work_id,
+                analysis_id=analysis_id,
+                category=category,
+                title=clean_title,
+                content=clean_content,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                _append_query(destination, error=str(exc)),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return RedirectResponse(
+            _append_query(destination, adopted="true"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/works/{work_id}/archive/entries/{entry_id}/delete"
+    )
+    async def delete_work_archive_note(
+        request: Request,
+        work_id: str,
+        entry_id: str,
+        return_to: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        fallback = _work_archive_destination(work)
+        destination = _safe_next(return_to, fallback)
+        if not database.delete_work_archive_entry(
+            user_id=user_id,
+            work_id=work_id,
+            entry_id=entry_id,
+        ):
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _append_query(destination, removed="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -2497,10 +2673,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapter_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         view: str = "body",
+        archive_tab: str = "creative",
         settings_tab: str = "core",
         onboarding: bool = False,
         error: Optional[str] = None,
         saved: bool = False,
+        adopted: bool = False,
+        removed: bool = False,
         sent: bool = False,
     ):
         user = _current_user(request)
@@ -2559,11 +2738,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             else (work.get("active_document") if work else None)
         )
         chapters = database.list_novel_chapters(user_id, project_id)
-        effective_view = (
-            view if view in {"body", "settings", "archive"} else "body"
-        )
+        effective_view = view if view in {"body", "archive"} else "body"
         if not chapters and effective_view == "body":
-            effective_view = "settings"
+            effective_view = "archive"
+        active_archive_tab = (
+            archive_tab
+            if archive_tab in WORK_ARCHIVE_TAB_KEYS
+            else "creative"
+        )
         active_settings_tab = (
             settings_tab
             if settings_tab in WORKBENCH_SETTING_TAB_KEYS
@@ -2682,7 +2864,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return Response(
                     status_code=status.HTTP_404_NOT_FOUND
                 )
-        elif effective_view in {"settings", "archive"}:
+        elif effective_view == "archive":
             latest = next(
                 (
                     item
@@ -2722,11 +2904,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         setting_voice_profile = None
         archive_entries: list[dict[str, Any]] = []
         archive_analyses: list[dict[str, Any]] = []
-        if effective_view in {"settings", "archive"}:
+        if effective_view == "archive":
             setting_characters = database.list_novel_characters(
                 user_id, project_id
             )
-        if effective_view == "settings":
+        if effective_view == "archive" and active_archive_tab == "creative":
             setting_story_blueprint = story_planning_service.get_blueprint(
                 user_id=user_id, project_id=project_id
             )
@@ -2736,7 +2918,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             setting_voice_profile = style_service.get_voice_profile(
                 user_id=user_id, project_id=project_id
             )
-        elif effective_view == "archive" and work:
+        if effective_view == "archive" and work:
             archive_entries = database.list_work_archive_entries(
                 user_id, str(work["id"])
             )
@@ -2768,6 +2950,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 chapter_target_chars=chapter_target_chars,
                 chapter_workflow=chapter_workflow,
                 view=effective_view,
+                archive_tabs=WORK_ARCHIVE_TABS,
+                active_archive_tab=active_archive_tab,
+                archive_categories=WORK_ARCHIVE_CATEGORIES,
                 setting_tabs=WORKBENCH_SETTING_TABS,
                 active_settings_tab=active_settings_tab,
                 setting_characters=setting_characters,
@@ -2775,13 +2960,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 setting_story_arcs=setting_story_arcs,
                 setting_voice_profile=setting_voice_profile,
                 archive_project=project,
+                archive_base_url=f"/novels/{project_id}/workbench",
                 archive_characters=setting_characters,
                 archive_entries=archive_entries,
                 archive_analyses=archive_analyses,
                 archive_return_to=_workbench_path(
-                    project_id, view="archive"
+                    project_id, archive_tab=active_archive_tab
                 ),
                 archive_saved=saved,
+                archive_adopted=adopted,
+                archive_removed=removed,
                 archive_error=error,
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
@@ -3062,7 +3250,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         return RedirectResponse(
             f"/novels/{project_id}/workbench"
-            "?view=settings&onboarding=true",
+            "?view=archive&archive_tab=creative&onboarding=true",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4454,6 +4642,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         target_chapter_chars: int = Form(3000),
         planning_horizon: int = Form(20),
         settings_tab: str = Form("core"),
+        return_to: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -4464,6 +4653,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             settings_tab
             if settings_tab in WORKBENCH_SETTING_TAB_KEYS
             else "core"
+        )
+        destination = (
+            _append_query(
+                _safe_next(return_to, "/dashboard"),
+                settings_tab=clean_settings_tab,
+            )
+            if return_to.strip()
+            else _workbench_path(
+                project_id,
+                settings_tab=clean_settings_tab,
+            )
         )
         try:
             clean_title = _clean_field(
@@ -4527,19 +4727,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
         except ValueError as exc:
             return RedirectResponse(
-                _workbench_path(
-                    project_id,
-                    settings_tab=clean_settings_tab,
-                    error=str(exc),
-                ),
+                _append_query(destination, error=str(exc)),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _workbench_path(
-                project_id,
-                settings_tab=clean_settings_tab,
-                saved="true",
-            ),
+            _append_query(destination, saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -8556,125 +8748,44 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get("/projects/import", response_class=HTMLResponse)
-    async def project_import_page(request: Request):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        return RedirectResponse(
-            "/import", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post("/projects/import", response_class=HTMLResponse)
-    async def import_novel_project(
-        request: Request,
-        archive_file: UploadFile = File(...),
-        csrf: str = Form(...),
+    @application.get("/works/{work_id}/export.novelai.zip")
+    async def export_complete_work_archive(
+        request: Request, work_id: str
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        verify_csrf(request, csrf)
-        temporary = tempfile.NamedTemporaryFile(
-            prefix="novelai-project-upload-",
-            suffix=".zip",
-            delete=False,
-        )
-        temporary_path = Path(temporary.name)
-        total_bytes = 0
-        try:
-            while True:
-                chunk = await archive_file.read(1024 * 1024)
-                if not chunk:
-                    break
-                total_bytes += len(chunk)
-                if total_bytes > app_settings.max_project_archive_bytes:
-                    raise ProjectArchiveError(
-                        "作品归档文件超过允许大小"
-                    )
-                temporary.write(chunk)
-            temporary.close()
-            if total_bytes == 0:
-                raise ProjectArchiveError("请选择非空的作品归档")
-            imported = import_project_archive(
-                database=database,
-                novels_dir=app_settings.novels_dir,
-                user_id=int(user["id"]),
-                archive_path=temporary_path,
-                max_uncompressed_bytes=(
-                    app_settings.max_project_archive_bytes
-                ),
-            )
-            database.ensure_project_work(
-                user_id=int(user["id"]),
-                project_id=imported.project_id,
-            )
-        except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
-            logger.warning("project archive import rejected: %s", exc)
-            return render_template(
-                "work_import.html",
-                _template_context(
-                    request,
-                    user=user,
-                    error=str(exc),
-                    initial_mode="read",
-                    max_upload_mb=(
-                        app_settings.max_upload_bytes // 1024 // 1024
-                    ),
-                    max_archive_mb=(
-                        app_settings.max_project_archive_bytes
-                        // 1024
-                        // 1024
-                    ),
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-        finally:
-            temporary.close()
-            temporary_path.unlink(missing_ok=True)
-            await archive_file.close()
-        return RedirectResponse(
-            f"/dashboard?imported=true&project={imported.project_id}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get("/novels/{project_id}/export.novelai.zip")
-    async def export_novel_project_archive(
-        request: Request, project_id: str
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        project = database.get_novel_project(int(user["id"]), project_id)
-        if not project:
+        work = database.get_work(int(user["id"]), work_id)
+        if not work:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         file_descriptor, raw_path = tempfile.mkstemp(
-            prefix=f"novelai-project-{project_id[:8]}-",
+            prefix=f"novelai-work-{work_id[:8]}-",
             suffix=".novelai.zip",
         )
         os.close(file_descriptor)
         archive_path = Path(raw_path)
         try:
-            create_project_archive(
+            create_work_archive(
                 database=database,
                 novels_dir=app_settings.novels_dir,
+                documents_dir=app_settings.documents_dir,
                 user_id=int(user["id"]),
-                project_id=project_id,
+                work_id=work_id,
                 destination=archive_path,
                 max_uncompressed_bytes=(
-                    app_settings.max_project_archive_bytes
+                    app_settings.max_work_archive_bytes
                 ),
             )
-        except (ProjectArchiveError, OSError, sqlite3.Error) as exc:
+        except (WorkArchiveError, OSError, sqlite3.Error) as exc:
             archive_path.unlink(missing_ok=True)
             return RedirectResponse(
-                f"/novels/{project_id}/workbench?error={quote(str(exc))}",
+                f"/dashboard?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return FileResponse(
             archive_path,
             media_type="application/zip",
-            filename=f"novel-{project_id[:8]}.novelai.zip",
+            filename=f"work-{work_id[:8]}.novelai.zip",
             headers={"Cache-Control": "no-store"},
             background=BackgroundTask(
                 archive_path.unlink, missing_ok=True
@@ -8742,7 +8853,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if chapter_id:
             query.append("chapter_id=" + quote(chapter_id))
         else:
-            query.append("view=settings")
+            query.extend(["view=archive", "archive_tab=creative"])
         destination = f"/novels/{project_id}/workbench"
         if query:
             destination += "?" + "&".join(query)
@@ -8756,6 +8867,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         project_id: str,
         chapter_id: str = Form(""),
         settings_tab: str = Form(""),
+        archive_tab: str = Form("creative"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -8791,8 +8903,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 else "core"
             )
             query += (
-                "&view=settings"
-                f"&settings_tab={clean_settings_tab}"
+                "&view=archive&archive_tab="
+                + quote(
+                    archive_tab
+                    if archive_tab in WORK_ARCHIVE_TAB_KEYS
+                    else "creative"
+                )
+                + f"&settings_tab={clean_settings_tab}"
             )
         return RedirectResponse(
             f"/novels/{project_id}/workbench" + query,
@@ -8810,6 +8927,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         current_conversation_id: str = Form(""),
         chapter_id: str = Form(""),
         return_view: str = Form(""),
+        return_archive_tab: str = Form("creative"),
         settings_tab: str = Form(""),
         csrf: str = Form(...),
     ):
@@ -8831,6 +8949,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             settings_tab
             if settings_tab in WORKBENCH_SETTING_TAB_KEYS
             else "core"
+        )
+        clean_archive_tab = (
+            return_archive_tab
+            if return_archive_tab in WORK_ARCHIVE_TAB_KEYS
+            else "creative"
         )
         destination = f"/novels/{project_id}/workbench"
         try:
@@ -8880,21 +9003,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             else:
                 query.extend(
                     [
-                        "view=settings",
+                        "view=archive",
+                        f"archive_tab={clean_archive_tab}",
                         f"settings_tab={clean_settings_tab}",
                     ]
                 )
-        elif return_view == "settings":
+        elif return_view == "archive":
             query.extend(
                 [
-                    "view=settings",
+                    "view=archive",
+                    f"archive_tab={clean_archive_tab}",
                     f"settings_tab={clean_settings_tab}",
                 ]
             )
         elif chapter_id:
             query.append("chapter_id=" + quote(chapter_id))
         else:
-            query.append("view=settings")
+            query.extend(["view=archive", "archive_tab=creative"])
         return RedirectResponse(
             destination + ("?" + "&".join(query) if query else ""),
             status_code=status.HTTP_303_SEE_OTHER,
@@ -8915,6 +9040,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         source_hash: str = Form(""),
         model_choice: str = Form(""),
         return_view: str = Form(""),
+        return_archive_tab: str = Form("creative"),
         return_settings_tab: str = Form(""),
         csrf: str = Form(...),
     ):
@@ -8931,6 +9057,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return_settings_tab
             if return_settings_tab in WORKBENCH_SETTING_TAB_KEYS
             else "core"
+        )
+        clean_return_archive_tab = (
+            return_archive_tab
+            if return_archive_tab in WORK_ARCHIVE_TAB_KEYS
+            else "creative"
         )
         try:
             if conversation_id:
@@ -8991,7 +9122,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 agent_role="auto",
                 ui_surface=(
                     "settings"
-                    if return_view == "settings"
+                    if return_view == "archive"
+                    and clean_return_archive_tab == "creative"
                     else (
                         "chapter"
                         if novel_chapter_id
@@ -9027,10 +9159,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     ("&" if suffix else "?")
                     + f"chapter_id={quote(novel_chapter_id)}"
                 )
-            if return_view == "settings":
+            if return_view == "archive":
                 suffix += (
                     ("&" if suffix else "?")
-                    + "view=settings"
+                    + "view=archive"
+                    + f"&archive_tab={clean_return_archive_tab}"
                     + f"&settings_tab={clean_return_settings_tab}"
                 )
             separator = "&" if suffix else "?"
@@ -9048,9 +9181,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         if novel_chapter_id:
             query += f"&chapter_id={quote(novel_chapter_id)}"
-        if return_view == "settings":
+        if return_view == "archive":
             query += (
-                "&view=settings"
+                "&view=archive"
+                f"&archive_tab={clean_return_archive_tab}"
                 f"&settings_tab={clean_return_settings_tab}"
             )
         return RedirectResponse(
@@ -9082,7 +9216,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 else "core"
             )
             destination += (
-                "&view=settings"
+                "&view=archive&archive_tab=creative"
                 f"&settings_tab={clean_settings_tab}"
             )
         return destination
@@ -9283,6 +9417,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         document_id: str,
         reference_chapter_id: str = Form(""),
+        return_view: str = Form(""),
+        return_archive_tab: str = Form("analysis"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -9294,6 +9430,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not document:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         clean_chapter_id = reference_chapter_id.strip()
+        clean_archive_tab = (
+            return_archive_tab
+            if return_archive_tab in WORK_ARCHIVE_TAB_KEYS
+            else "analysis"
+        )
+        return_archive = return_view == "archive" and not clean_chapter_id
         try:
             conversation_id = assistant_chat_service.create_conversation(
                 user_id=user_id,
@@ -9311,6 +9453,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 _document_workbench_path(
                     document_id,
                     chapter_id=clean_chapter_id or None,
+                    view="archive" if return_archive else None,
+                    archive_tab=clean_archive_tab if return_archive else None,
                     error=str(exc),
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
@@ -9320,6 +9464,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 document_id,
                 chapter_id=clean_chapter_id or None,
                 conversation_id=conversation_id,
+                view="archive" if return_archive else None,
+                archive_tab=clean_archive_tab if return_archive else None,
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -9337,6 +9483,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         quote_text: str = Form(""),
         source_hash: str = Form(""),
         model_choice: str = Form(""),
+        return_view: str = Form(""),
+        return_archive_tab: str = Form("analysis"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -9347,6 +9495,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         document = database.get_document(user_id, document_id)
         if not document:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
+        clean_archive_tab = (
+            return_archive_tab
+            if return_archive_tab in WORK_ARCHIVE_TAB_KEYS
+            else "analysis"
+        )
+        return_archive = (
+            return_view == "archive" and not reference_chapter_id
+        )
         try:
             if conversation_id:
                 conversation = assistant_chat_service.get_conversation(
@@ -9413,6 +9569,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     document_id,
                     chapter_id=reference_chapter_id or None,
                     conversation_id=conversation_id or None,
+                    view="archive" if return_archive else None,
+                    archive_tab=clean_archive_tab if return_archive else None,
                     error=str(exc),
                 ),
                 status_code=status.HTTP_303_SEE_OTHER,
@@ -9423,6 +9581,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 document_id,
                 chapter_id=reference_chapter_id or None,
                 conversation_id=conversation_id,
+                view="archive" if return_archive else None,
+                archive_tab=clean_archive_tab if return_archive else None,
                 sent="true",
             ),
             status_code=status.HTTP_303_SEE_OTHER,
@@ -9571,13 +9731,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
             return RedirectResponse(
                 f"/novels/{conversation['project_id']}/workbench"
-                f"?view=settings&conversation_id={conversation['id']}"
+                "?view=archive&archive_tab=creative"
+                f"&conversation_id={conversation['id']}"
                 f"&error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         destination = (
             f"/novels/{result['project_id']}/workbench"
-            f"?view=settings&conversation_id={result['conversation_id']}"
+            "?view=archive&archive_tab=creative"
+            f"&conversation_id={result['conversation_id']}"
         )
         if not return_to_workbench:
             destination = (
@@ -9624,14 +9786,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
             return RedirectResponse(
                 f"/novels/{conversation['project_id']}/workbench"
-                f"?view=settings&settings_tab=structure"
+                "?view=archive&archive_tab=creative&settings_tab=structure"
                 f"&conversation_id={conversation['id']}"
                 f"&error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
             f"/novels/{result['project_id']}/workbench"
-            "?view=settings&settings_tab=structure"
+            "?view=archive&archive_tab=creative&settings_tab=structure"
             f"&conversation_id={result['conversation_id']}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -9929,7 +10091,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     initial_mode="read",
                     max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
                     max_archive_mb=(
-                        app_settings.max_project_archive_bytes // 1024 // 1024
+                        app_settings.max_work_archive_bytes // 1024 // 1024
                     ),
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -9978,7 +10140,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     initial_mode="read",
                     max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
                     max_archive_mb=(
-                        app_settings.max_project_archive_bytes // 1024 // 1024
+                        app_settings.max_work_archive_bytes // 1024 // 1024
                     ),
                 ),
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -9996,7 +10158,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     initial_mode="read",
                     max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
                     max_archive_mb=(
-                        app_settings.max_project_archive_bytes // 1024 // 1024
+                        app_settings.max_work_archive_bytes // 1024 // 1024
                     ),
                 ),
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -10012,8 +10174,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapter_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         view: str = "body",
+        archive_tab: str = "analysis",
+        settings_tab: str = "core",
         error: Optional[str] = None,
         saved: bool = False,
+        adopted: bool = False,
+        removed: bool = False,
         sent: bool = False,
     ):
         user = _current_user(request)
@@ -10082,6 +10248,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             user_id, document_id, document.get("latest_job_id")
         )
         effective_view = "archive" if view == "archive" else "body"
+        active_archive_tab = (
+            archive_tab
+            if archive_tab in WORK_ARCHIVE_TAB_KEYS
+            else "analysis"
+        )
+        active_settings_tab = (
+            settings_tab
+            if settings_tab in WORKBENCH_SETTING_TAB_KEYS
+            else "core"
+        )
         selected_chapter = None
         if effective_view == "body" and chapter_id:
             selected_chapter = next(
@@ -10181,6 +10357,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         archive_project = None
         archive_characters: list[dict[str, Any]] = []
+        setting_story_blueprint = None
+        setting_story_arcs: list[dict[str, Any]] = []
+        setting_voice_profile = None
         archive_entries: list[dict[str, Any]] = []
         archive_analyses: list[dict[str, Any]] = []
         if effective_view == "archive" and work:
@@ -10195,6 +10374,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                             user_id, str(archive_project["id"])
                         )
                     )
+                    if active_archive_tab == "creative":
+                        setting_story_blueprint = (
+                            story_planning_service.get_blueprint(
+                                user_id=user_id,
+                                project_id=str(archive_project["id"]),
+                            )
+                        )
+                        setting_story_arcs = (
+                            story_planning_service.list_arcs(
+                                user_id=user_id,
+                                project_id=str(archive_project["id"]),
+                            )
+                        )
+                        setting_voice_profile = (
+                            style_service.get_voice_profile(
+                                user_id=user_id,
+                                project_id=str(archive_project["id"]),
+                            )
+                        )
             archive_entries = database.list_work_archive_entries(
                 user_id, str(work["id"])
             )
@@ -10221,19 +10419,34 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 conversations=conversations,
                 active_conversation=active_conversation,
                 view=effective_view,
+                archive_tabs=WORK_ARCHIVE_TABS,
+                active_archive_tab=active_archive_tab,
+                archive_categories=WORK_ARCHIVE_CATEGORIES,
+                setting_tabs=WORKBENCH_SETTING_TABS,
+                active_settings_tab=active_settings_tab,
                 archive_project=archive_project,
+                archive_base_url=f"/documents/{document_id}",
                 archive_characters=archive_characters,
+                setting_characters=archive_characters,
+                setting_story_blueprint=setting_story_blueprint,
+                setting_story_arcs=setting_story_arcs,
+                setting_voice_profile=setting_voice_profile,
                 archive_entries=archive_entries,
                 archive_analyses=archive_analyses,
                 archive_return_to=_document_workbench_path(
-                    document_id, view="archive"
+                    document_id,
+                    view="archive",
+                    archive_tab=active_archive_tab,
                 ),
                 archive_saved=saved,
+                archive_adopted=adopted,
+                archive_removed=removed,
                 archive_error=error,
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
                     available_chat_models, active_conversation
                 ),
+                pov_options=POV_OPTIONS,
                 error=error,
                 sent=sent,
             ),

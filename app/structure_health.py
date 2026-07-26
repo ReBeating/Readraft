@@ -81,14 +81,14 @@ def _chapter_action(project_id: str, chapter_id: str) -> str:
 def _volume_action(project_id: str, volume_id: str) -> str:
     return (
         f"/novels/{project_id}/workbench"
-        "?view=settings&settings_tab=structure"
+        "?view=archive&archive_tab=creative&settings_tab=structure"
     )
 
 
 def _arc_action(project_id: str, arc_id: str) -> str:
     return (
         f"/novels/{project_id}/workbench"
-        "?view=settings&settings_tab=structure"
+        "?view=archive&archive_tab=creative&settings_tab=structure"
     )
 
 
@@ -690,7 +690,7 @@ class StructureHealthService:
                 evidence="当前项目没有 confirmed blueprint",
                 action_url=(
                     f"/novels/{project_id}/workbench"
-                    "?view=settings&settings_tab=structure"
+                    "?view=archive&archive_tab=creative&settings_tab=structure"
                 ),
                 action_label="检查全书蓝图",
             )
@@ -713,7 +713,7 @@ class StructureHealthService:
                 evidence="确认剧情线中未找到 planned / active main",
                 action_url=(
                     f"/novels/{project_id}/workbench"
-                    "?view=settings&settings_tab=structure"
+                    "?view=archive&archive_tab=creative&settings_tab=structure"
                 ),
                 action_label="检查规划剧情线",
             )
@@ -735,7 +735,7 @@ class StructureHealthService:
                 evidence="重名：" + "、".join(duplicate_titles),
                 action_url=(
                     f"/novels/{project_id}/workbench"
-                    "?view=settings&settings_tab=structure"
+                    "?view=archive&archive_tab=creative&settings_tab=structure"
                 ),
                 action_label="为剧情线改成唯一标题",
             )
@@ -1441,7 +1441,7 @@ class StructureHealthService:
                 ),
                 action_url=(
                     f"/novels/{project_id}/workbench"
-                    "?view=settings&settings_tab=structure"
+                    "?view=archive&archive_tab=creative&settings_tab=structure"
                 ),
                 action_label="建立因果链接",
                 chapter_positions=[int(chapter["position"])],

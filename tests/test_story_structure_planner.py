@@ -915,7 +915,7 @@ def test_v16_migrates_v15_database_and_preserves_existing_data(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 31
+                ).fetchone()[0] == 32
         assert migrated.execute(
             "SELECT COUNT(*) FROM story_structure_suggestions"
         ).fetchone()[0] == 0
@@ -1053,7 +1053,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=structure&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=structure&saved=true"
             in response.headers["location"]
         )
         database = application.state.database
@@ -1126,7 +1126,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=structure&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=structure&saved=true"
             in response.headers["location"]
         )
         assert PlanningService(database).list_volumes(

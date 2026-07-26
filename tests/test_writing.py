@@ -99,6 +99,28 @@ def test_deepseek_writer_sends_plain_text_request(tmp_path):
     assert seen["payload"]["messages"][0]["role"] == "system"
 
 
+def test_writing_prompt_only_includes_confirmed_archive_settings():
+    context = writing_context()
+    context["confirmed_archive_rules"] = [
+        {
+            "category": "world",
+            "title": "潮汐限制",
+            "content": "退潮后旧港入口只开放二十分钟。",
+            "status": "confirmed",
+        }
+    ]
+    messages = build_writing_messages(
+        context=context,
+        operation="draft",
+        instruction="",
+        current_content="",
+        previous_content="",
+    )
+    prompt = messages[1]["content"]
+    assert "<confirmed_work_archive_settings>" in prompt
+    assert "退潮后旧港入口只开放二十分钟" in prompt
+
+
 def test_deepseek_writer_reports_content_filter_with_usage(tmp_path):
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

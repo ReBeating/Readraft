@@ -203,6 +203,9 @@ def build_scene_writing_messages(
         "previous_scene_plan": context.get("previous_scene"),
         "next_scene_plan": context.get("next_scene"),
         "characters": context.get("characters") or [],
+        "confirmed_work_archive_settings": (
+            context.get("confirmed_archive_rules") or []
+        ),
         "confirmed_voice_profile": context.get("voice_profile") or {},
         "confirmed_editing_preferences": (
             context.get("confirmed_editing_preferences") or []
@@ -309,6 +312,11 @@ def build_writing_messages(
         ensure_ascii=False,
         indent=2,
     )
+    archive_settings_text = json.dumps(
+        context.get("confirmed_archive_rules") or [],
+        ensure_ascii=False,
+        indent=2,
+    )
     story_plan_text = json.dumps(
         compile_story_plan_context(context, usage="write"),
         ensure_ascii=False,
@@ -361,6 +369,12 @@ def build_writing_messages(
 <characters>
 {character_text or "[]"}
 </characters>
+
+<confirmed_work_archive_settings>
+这些是作者手动确认，或从阅读分析中明确采纳的创作设定。它们可以补充项目
+字段，但任何未经采纳的分析与笔记都不会出现在这里。
+{archive_settings_text}
+</confirmed_work_archive_settings>
 
 <confirmed_voice_profile>
 这是作者逐项确认的可执行声纹。它约束叙述距离、句段节奏、对话、意象、

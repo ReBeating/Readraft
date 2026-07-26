@@ -1,0 +1,323 @@
+{% if archive_project %}
+  <nav class="studio-settings-tabs" role="tablist" aria-label="创作设定分类">
+    {% for tab_key, tab_label in setting_tabs %}
+      <button
+        id="settings-tab-{{ tab_key }}"
+        type="button"
+        role="tab"
+        aria-controls="settings-panel-{{ tab_key }}"
+        aria-selected="{{ 'true' if active_settings_tab == tab_key else 'false' }}"
+        tabindex="{{ '0' if active_settings_tab == tab_key else '-1' }}"
+        data-settings-tab="{{ tab_key }}"
+      >{{ tab_label }}</button>
+    {% endfor %}
+  </nav>
+
+  <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+    <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}" data-settings-tab-input>
+
+    <section
+      id="settings-panel-core"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-core"
+      data-settings-panel="core"
+      {% if active_settings_tab != 'core' %}hidden{% endif %}
+    >
+      <header>
+        <h2>作品核心</h2>
+        <p>作者确认的故事方向与读者承诺。</p>
+      </header>
+      {% set rule_category = 'core' %}
+      {% include "_confirmed_archive_rules.html" %}
+      <div class="studio-settings-field-grid">
+        <label>
+          <span>书名</span>
+          <input name="title" maxlength="120" value="{{ archive_project.title }}" placeholder="未命名作品">
+        </label>
+        <label>
+          <span>题材</span>
+          <input name="genre" maxlength="80" value="{{ archive_project.genre }}" placeholder="例如：悬疑、科幻、都市">
+        </label>
+        <label class="studio-settings-wide">
+          <span>故事核心</span>
+          <textarea name="premise" rows="5" maxlength="4000" placeholder="故事围绕谁、什么矛盾展开？">{{ archive_project.premise }}</textarea>
+        </label>
+        <label>
+          <span>作品承诺</span>
+          <textarea name="story_promise" rows="4" maxlength="4000" placeholder="读者会持续获得什么体验？">{{ archive_project.story_promise }}</textarea>
+        </label>
+        <label>
+          <span>核心吸引力</span>
+          <textarea name="core_appeal" rows="4" maxlength="4000" placeholder="谜团、关系张力、成长或世界探索">{{ archive_project.core_appeal }}</textarea>
+        </label>
+        <label class="studio-settings-wide">
+          <span>目标读者</span>
+          <textarea name="target_audience" rows="3" maxlength="1000">{{ archive_project.target_audience }}</textarea>
+        </label>
+      </div>
+    </section>
+
+    <section
+      id="settings-panel-world"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-world"
+      data-settings-panel="world"
+      {% if active_settings_tab != 'world' %}hidden{% endif %}
+    >
+      <header>
+        <h2>世界规则</h2>
+        <p>时代、地点、社会秩序、能力边界和不可突破的限制。</p>
+      </header>
+      {% set rule_category = 'world' %}
+      {% include "_confirmed_archive_rules.html" %}
+      <label>
+        <span>世界设定与运行规则</span>
+        <textarea name="world_setting" rows="14" maxlength="20000">{{ archive_project.world_setting }}</textarea>
+      </label>
+    </section>
+
+    <section
+      id="settings-panel-characters"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-characters"
+      data-settings-panel="characters"
+      {% if active_settings_tab != 'characters' %}hidden{% endif %}
+    >
+      <header>
+        <h2>人物关系</h2>
+        <p>人物卡和作者确认的人物补充设定。</p>
+      </header>
+      {% set rule_category = 'character' %}
+      {% include "_confirmed_archive_rules.html" %}
+      {% if setting_characters %}
+        <div class="studio-settings-card-grid">
+          {% for character in setting_characters %}
+            <article>
+              <strong>{{ character.name }}</strong>
+              <small>{{ character.role or '角色定位待补充' }}</small>
+              {% if character.traits %}<p>{{ character.traits }}</p>{% endif %}
+              {% if character.character_arc %}<p><b>人物弧光：</b>{{ character.character_arc }}</p>{% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="studio-settings-empty">
+          <strong>还没有人物卡</strong>
+          <p>可以在右侧对话中整理人物，再确认写入。</p>
+        </div>
+      {% endif %}
+    </section>
+
+    <section
+      id="settings-panel-structure"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-structure"
+      data-settings-panel="structure"
+      {% if active_settings_tab != 'structure' %}hidden{% endif %}
+    >
+      <header>
+        <h2>故事结构</h2>
+        <p>全书必须兑现的方向、悬问和推进约束。</p>
+      </header>
+      {% set rule_category = 'structure' %}
+      {% include "_confirmed_archive_rules.html" %}
+      <label>
+        <span>结局与结构约束</span>
+        <textarea name="ending_constraint" rows="6" maxlength="4000">{{ archive_project.ending_constraint }}</textarea>
+      </label>
+      {% if setting_story_blueprint and setting_story_blueprint.confirmed %}
+        <div class="studio-structure-summary">
+          <div>
+            <small>核心悬问</small>
+            <p>{{ setting_story_blueprint.confirmed.central_question or '待补充' }}</p>
+          </div>
+          <div>
+            <small>主角长期目标</small>
+            <p>{{ setting_story_blueprint.confirmed.protagonist_goal or '待补充' }}</p>
+          </div>
+          <div>
+            <small>确认剧情线</small>
+            <p>{{ setting_story_arcs|length }} 条</p>
+          </div>
+        </div>
+      {% else %}
+        <div class="studio-settings-empty">
+          <strong>全书蓝图尚未确认</strong>
+          <p>可以在右侧对话中逐步收敛，再由你确认。</p>
+        </div>
+      {% endif %}
+    </section>
+
+    <section
+      id="settings-panel-style"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-style"
+      data-settings-panel="style"
+      {% if active_settings_tab != 'style' %}hidden{% endif %}
+    >
+      <header>
+        <h2>文风约束</h2>
+        <p>叙述距离、句段节奏、对白习惯和禁用表达。</p>
+      </header>
+      {% set rule_category = 'style' %}
+      {% include "_confirmed_archive_rules.html" %}
+      <div class="studio-settings-field-grid">
+        <label>
+          <span>叙事视角</span>
+          <select name="point_of_view">
+            {% for option in pov_options %}
+              <option value="{{ option }}" {% if archive_project.point_of_view == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="studio-settings-status">
+          <span>作品声纹</span>
+          <strong>
+            {% if setting_voice_profile and setting_voice_profile.status == 'confirmed' %}
+              已确认
+            {% elif setting_voice_profile %}
+              草稿
+            {% else %}
+              尚未建立
+            {% endif %}
+          </strong>
+        </div>
+        <label class="studio-settings-wide">
+          <span>叙事风格规范</span>
+          <textarea name="style_guide" rows="10" maxlength="10000">{{ archive_project.style_guide }}</textarea>
+        </label>
+      </div>
+    </section>
+
+    <section
+      id="settings-panel-parameters"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-parameters"
+      data-settings-panel="parameters"
+      {% if active_settings_tab != 'parameters' %}hidden{% endif %}
+    >
+      <header>
+        <h2>创作参数</h2>
+        <p>默认篇幅、规划范围和本书专用协作指令。</p>
+      </header>
+      <div class="studio-settings-field-grid">
+        <label>
+          <span>默认单章篇幅</span>
+          <input type="number" name="target_chapter_chars" min="2000" max="12000" step="100" value="{{ archive_project.target_chapter_chars or 3000 }}">
+        </label>
+        <label>
+          <span>规划章节范围</span>
+          <input type="number" name="planning_horizon" min="3" max="50" value="{{ archive_project.planning_horizon or 20 }}">
+        </label>
+        <label class="studio-settings-wide">
+          <span>本书 AI 协作补充指令</span>
+          <textarea name="ai_instructions" rows="9" maxlength="10000">{{ archive_project.ai_instructions }}</textarea>
+        </label>
+      </div>
+    </section>
+
+    <section
+      id="settings-panel-additional"
+      class="studio-settings-panel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-additional"
+      data-settings-panel="additional"
+      {% if active_settings_tab != 'additional' %}hidden{% endif %}
+    >
+      <header>
+        <h2>补充设定</h2>
+        <p>已经确认但暂不属于其他结构化字段的规则。</p>
+      </header>
+      {% set rule_category = 'general' %}
+      {% include "_confirmed_archive_rules.html" %}
+      {% set general_rules = namespace(count=0) %}
+      {% for entry in archive_entries %}
+        {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' and entry.category == 'general' %}
+          {% set general_rules.count = general_rules.count + 1 %}
+        {% endif %}
+      {% endfor %}
+      {% if not general_rules.count %}
+        <div class="studio-settings-empty">
+          <strong>还没有补充设定</strong>
+          <p>可以从“分析与笔记”中采纳，也可以继续使用上面的结构化字段。</p>
+        </div>
+      {% endif %}
+    </section>
+
+    <div class="studio-settings-actions">
+      <button class="studio-button primary" type="submit">保存创作设定</button>
+    </div>
+  </form>
+{% else %}
+  {% set confirmed_without_project = namespace(count=0) %}
+  {% for entry in archive_entries %}
+    {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' %}
+      {% set confirmed_without_project.count = confirmed_without_project.count + 1 %}
+    {% endif %}
+  {% endfor %}
+  {% if confirmed_without_project.count %}
+    <section class="studio-archive-section">
+      <div class="studio-archive-section-heading">
+        <div>
+          <h2>已确认创作设定</h2>
+          <p>创建创作版本后，这些设定会自动进入写作上下文。</p>
+        </div>
+        <span>{{ confirmed_without_project.count }}</span>
+      </div>
+      {% for category_key, category_label in archive_categories %}
+        {% set category_count = namespace(value=0) %}
+        {% for entry in archive_entries %}
+          {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' and entry.category == category_key %}
+            {% set category_count.value = category_count.value + 1 %}
+          {% endif %}
+        {% endfor %}
+        {% if category_count.value %}
+          <h3 class="studio-rule-category-title">{{ category_label }}</h3>
+          {% set rule_category = category_key %}
+          {% include "_confirmed_archive_rules.html" %}
+        {% endif %}
+      {% endfor %}
+    </section>
+  {% endif %}
+  <div class="studio-settings-empty studio-archive-empty">
+    <strong>还没有创作版本</strong>
+    <p>先从任一阅读版本创建改写或续写，创作设定会在整个作品内共享。</p>
+    {% if work.active_document %}
+      <div class="studio-empty-actions">
+        <form method="post" action="/documents/{{ work.active_document.document_id }}/writing-branches">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="intent" value="rewrite">
+          <button class="studio-button" type="submit">创建改写稿</button>
+        </form>
+        <form method="post" action="/documents/{{ work.active_document.document_id }}/writing-branches">
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="intent" value="sequel">
+          <button class="studio-button primary" type="submit">从此续写</button>
+        </form>
+      </div>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% for entry in archive_entries %}
+  {% if entry.entry_type == 'creative_rule' and entry.status == 'confirmed' %}
+    <form
+      id="archive-rule-delete-{{ entry.id }}"
+      method="post"
+      action="/works/{{ work.id }}/archive/entries/{{ entry.id }}/delete"
+      data-delete-archive-entry
+      hidden
+    >
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+    </form>
+  {% endif %}
+{% endfor %}

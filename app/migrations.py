@@ -3081,6 +3081,73 @@ def _unified_work_library_v31(
         )
 
 
+def _work_archive_semantics_v32(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    _add_column(
+        connection,
+        "work_archive_entries",
+        "category",
+        "TEXT NOT NULL DEFAULT 'general'",
+    )
+    _add_column(
+        connection,
+        "work_archive_entries",
+        "source_analysis_id",
+        "TEXT REFERENCES chapter_analyses(id) ON DELETE SET NULL",
+    )
+    _add_column(
+        connection,
+        "work_archive_entries",
+        "adopted_from_entry_id",
+        "TEXT REFERENCES work_archive_entries(id) ON DELETE SET NULL",
+    )
+    _add_column(
+        connection,
+        "work_archive_entries",
+        "adopted_at",
+        "TEXT",
+    )
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_work_archive_adopted_entry
+            ON work_archive_entries(adopted_from_entry_id)
+            WHERE entry_type='creative_rule'
+              AND adopted_from_entry_id IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_work_archive_adopted_analysis
+            ON work_archive_entries(source_analysis_id)
+            WHERE entry_type='creative_rule'
+              AND source_analysis_id IS NOT NULL
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_work_archive_confirmed_rules
+            ON work_archive_entries(
+                work_id, entry_type, status, category, updated_at DESC
+            )
+            """,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE work_archive_entries
+        SET status='confirmed',
+            category=CASE
+                WHEN category='' THEN 'general'
+                ELSE category
+            END,
+            adopted_at=COALESCE(adopted_at, ?)
+        WHERE entry_type='creative_rule' AND status='draft'
+        """,
+        (applied_at,),
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3196,6 +3263,11 @@ MIGRATIONS = (
         31,
         "unified_work_library_v31",
         _unified_work_library_v31,
+    ),
+    Migration(
+        32,
+        "work_archive_semantics_v32",
+        _work_archive_semantics_v32,
     ),
 )
 

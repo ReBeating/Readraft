@@ -66,7 +66,7 @@ class Settings:
     credential_encryption_key: str | None = None
     model_adapter_prompt: str = ""
     model_provider: str = "deepseek"
-    max_project_archive_bytes: int = 256 * 1024 * 1024
+    max_work_archive_bytes: int = 256 * 1024 * 1024
     allow_private_model_base_urls: bool = False
 
     @property
@@ -151,8 +151,8 @@ class Settings:
                 "MODEL_ADAPTER_PROMPT", ""
             ).strip(),
             model_provider=os.getenv("MODEL_PROVIDER", "deepseek"),
-            max_project_archive_bytes=_as_int(
-                "APP_MAX_PROJECT_ARCHIVE_BYTES", 256 * 1024 * 1024
+            max_work_archive_bytes=_as_int(
+                "APP_MAX_WORK_ARCHIVE_BYTES", 256 * 1024 * 1024
             ),
             allow_private_model_base_urls=_as_bool(
                 "APP_ALLOW_PRIVATE_MODEL_BASE_URLS",
@@ -171,7 +171,7 @@ class Settings:
             "APP_MAX_DOCUMENTS_PER_USER": self.max_documents_per_user,
             "APP_MAX_STORED_CHARS_PER_USER": self.max_stored_chars_per_user,
             "APP_MAX_JOBS_PER_DAY": self.max_jobs_per_day,
-            "APP_MAX_PROJECT_ARCHIVE_BYTES": self.max_project_archive_bytes,
+            "APP_MAX_WORK_ARCHIVE_BYTES": self.max_work_archive_bytes,
             "DEEPSEEK_MAX_TOKENS": self.deepseek_max_tokens,
             "DEEPSEEK_CONNECT_TIMEOUT_SECONDS": self.deepseek_connect_timeout_seconds,
             "DEEPSEEK_READ_TIMEOUT_SECONDS": self.deepseek_read_timeout_seconds,

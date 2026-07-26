@@ -1211,7 +1211,7 @@ def test_v20_migrates_v17_links_without_creating_ai_or_adoption_records(
     with database.connection() as migrated:
         assert migrated.execute(
             "SELECT MAX(version) FROM schema_migrations"
-                ).fetchone()[0] == 31
+                ).fetchone()[0] == 32
         assert migrated.execute(
             "SELECT COUNT(*) FROM novel_chapter_causal_links"
         ).fetchone()[0] == 1
@@ -1264,7 +1264,7 @@ def test_causal_suggestion_web_flow_is_read_only_until_acceptance(
         )
         workbench = client.get(
             f"/novels/{project_id}/workbench"
-            "?view=settings&settings_tab=structure"
+            "?view=archive&archive_tab=creative&settings_tab=structure"
         )
         assert workbench.status_code == 200
         response = client.post(

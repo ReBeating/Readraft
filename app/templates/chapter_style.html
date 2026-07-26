@@ -21,7 +21,7 @@
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
   {% if not voice_profile or voice_profile.status != 'confirmed' %}
     <div class="alert warning">
-      作品声纹尚未确认。<a href="/novels/{{ chapter.project_id }}/workbench?view=settings&settings_tab=style"><strong>先填写可执行声纹规则</strong></a>，再让审校器判断偏离。
+      作品声纹尚未确认。<a href="/novels/{{ chapter.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style"><strong>先填写可执行声纹规则</strong></a>，再让审校器判断偏离。
     </div>
   {% endif %}
 

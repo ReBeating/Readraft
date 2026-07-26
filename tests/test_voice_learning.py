@@ -648,7 +648,7 @@ def test_voice_learning_web_workflow_requires_rights_and_author_confirmation(
         )
         assert apply_response.status_code == 303
         assert (
-            "view=settings&settings_tab=style&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=style&saved=true"
             in apply_response.headers["location"]
         )
         workspace = client.get(apply_response.headers["location"])

@@ -697,7 +697,7 @@ class ChapterWorkflowService:
                         label="填写并确认作品声纹",
                         url=(
                             f"/novels/{project_id}/workbench"
-                            "?view=settings&settings_tab=style"
+                            "?view=archive&archive_tab=creative&settings_tab=style"
                         ),
                     ),
                     [

@@ -494,7 +494,7 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
 
         page = client.get(
             f"/novels/{project_id}/workbench"
-            "?view=settings&settings_tab=structure"
+            "?view=archive&archive_tab=creative&settings_tab=structure"
         )
         assert page.status_code == 200
         response = client.post(
@@ -512,7 +512,7 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=structure&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=structure&saved=true"
             in response.headers["location"]
         )
         target_page = client.get(
@@ -533,7 +533,7 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=structure&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=structure&saved=true"
             in response.headers["location"]
         )
         assert not StructureLinkService(database).list_links(

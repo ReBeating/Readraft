@@ -45,6 +45,21 @@ def _load_json(value: Any, fallback: Any) -> Any:
         return fallback
 
 
+WORK_ARCHIVE_CATEGORIES = frozenset(
+    {
+        "core",
+        "world",
+        "character",
+        "structure",
+        "style",
+        "general",
+    }
+)
+WORK_ARCHIVE_ANALYSIS_TYPES = frozenset(
+    {"source_fact", "analysis_note", "material"}
+)
+
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -1060,6 +1075,20 @@ class Database:
             if reading_editions
             else None
         )
+        edition_index = {
+            str(item["id"]): item
+            for item in editions
+        }
+        for edition in editions:
+            source = edition_index.get(
+                str(edition.get("source_edition_id") or "")
+            )
+            edition["source_edition"] = source
+            edition["source_label"] = (
+                str(source.get("label") or "")
+                if source
+                else ""
+            )
         display_title = str(work.get("title") or "").strip()
         if not display_title and primary_edition:
             display_title = str(
@@ -1231,11 +1260,23 @@ class Database:
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT entry.*
+                SELECT entry.*, edition.label AS edition_label,
+                    (
+                        SELECT adopted.id
+                        FROM work_archive_entries adopted
+                        WHERE adopted.adopted_from_entry_id=entry.id
+                          AND adopted.entry_type='creative_rule'
+                        LIMIT 1
+                    ) AS adopted_setting_id
                 FROM work_archive_entries entry
                 JOIN works w ON w.id=entry.work_id
+                LEFT JOIN work_editions edition
+                  ON edition.id=entry.edition_id
                 WHERE entry.work_id=? AND w.user_id=?
-                ORDER BY entry.updated_at DESC, entry.id
+                ORDER BY
+                    CASE WHEN entry.entry_type='creative_rule' THEN 0 ELSE 1 END,
+                    entry.updated_at DESC,
+                    entry.id
                 """,
                 (work_id, user_id),
             ).fetchall()
@@ -1251,14 +1292,12 @@ class Database:
         content: str,
         evidence: str = "",
         edition_id: Optional[str] = None,
+        category: str = "general",
     ) -> str:
-        if entry_type not in {
-            "source_fact",
-            "analysis_note",
-            "creative_rule",
-            "material",
-        }:
+        if entry_type not in WORK_ARCHIVE_ANALYSIS_TYPES:
             raise ValueError("不支持的档案类型")
+        if category not in WORK_ARCHIVE_CATEGORIES:
+            raise ValueError("不支持的档案分类")
         now = utc_now()
         entry_id = uuid.uuid4().hex
         with self.connection() as connection:
@@ -1282,8 +1321,11 @@ class Database:
                 """
                 INSERT INTO work_archive_entries(
                     id, work_id, edition_id, entry_type, title, content,
-                    provenance, status, evidence, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'author', 'draft', ?, ?, ?)
+                    provenance, status, evidence, category,
+                    created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, 'author', 'draft', ?, ?, ?, ?
+                )
                 """,
                 (
                     entry_id,
@@ -1293,6 +1335,7 @@ class Database:
                     title,
                     content,
                     evidence,
+                    category,
                     now,
                     now,
                 ),
@@ -1304,6 +1347,223 @@ class Database:
             connection.commit()
         return entry_id
 
+    def adopt_work_archive_entry(
+        self,
+        *,
+        user_id: int,
+        work_id: str,
+        entry_id: str,
+        category: str,
+        title: str = "",
+        content: str = "",
+    ) -> str:
+        if category not in WORK_ARCHIVE_CATEGORIES:
+            raise ValueError("请选择有效的创作设定分类")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = connection.execute(
+                """
+                SELECT entry.*
+                FROM work_archive_entries entry
+                JOIN works work ON work.id=entry.work_id
+                WHERE entry.id=? AND entry.work_id=? AND work.user_id=?
+                """,
+                (entry_id, work_id, user_id),
+            ).fetchone()
+            if not source:
+                connection.rollback()
+                raise ValueError("分析记录不存在")
+            if str(source["entry_type"]) not in WORK_ARCHIVE_ANALYSIS_TYPES:
+                connection.rollback()
+                raise ValueError("只有分析与笔记可以采纳为创作设定")
+            existing = connection.execute(
+                """
+                SELECT id FROM work_archive_entries
+                WHERE adopted_from_entry_id=?
+                  AND entry_type='creative_rule'
+                """,
+                (entry_id,),
+            ).fetchone()
+            if existing:
+                connection.rollback()
+                return str(existing["id"])
+            clean_content = str(content or source["content"]).strip()
+            if not clean_content:
+                connection.rollback()
+                raise ValueError("创作设定内容不能为空")
+            setting_id = uuid.uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO work_archive_entries(
+                    id, work_id, edition_id, entry_type, title, content,
+                    provenance, status, evidence, source_ref, category,
+                    adopted_from_entry_id, adopted_at, created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, 'creative_rule', ?, ?, 'adopted',
+                    'confirmed', ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    setting_id,
+                    work_id,
+                    source["edition_id"],
+                    str(title or source["title"] or "").strip(),
+                    clean_content,
+                    str(source["evidence"] or ""),
+                    f"entry:{entry_id}",
+                    category,
+                    entry_id,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE work_archive_entries
+                SET status='adopted', adopted_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (now, now, entry_id),
+            )
+            connection.execute(
+                "UPDATE works SET updated_at=? WHERE id=?",
+                (now, work_id),
+            )
+            connection.commit()
+        return setting_id
+
+    def adopt_work_analysis(
+        self,
+        *,
+        user_id: int,
+        work_id: str,
+        analysis_id: str,
+        category: str,
+        title: str,
+        content: str,
+    ) -> str:
+        if category not in WORK_ARCHIVE_CATEGORIES:
+            raise ValueError("请选择有效的创作设定分类")
+        clean_content = str(content or "").strip()
+        if not clean_content:
+            raise ValueError("创作设定内容不能为空")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = connection.execute(
+                """
+                SELECT analysis.id, edition.id AS edition_id,
+                       document.title AS document_title,
+                       chapter.position, chapter.title AS chapter_title
+                FROM chapter_analyses analysis
+                JOIN analysis_jobs job ON job.id=analysis.job_id
+                JOIN chapters chapter ON chapter.id=analysis.chapter_id
+                JOIN documents document ON document.id=chapter.document_id
+                JOIN work_editions edition
+                  ON edition.document_id=document.id
+                JOIN works work ON work.id=edition.work_id
+                WHERE analysis.id=? AND edition.work_id=?
+                  AND work.user_id=? AND analysis.status='completed'
+                """,
+                (analysis_id, work_id, user_id),
+            ).fetchone()
+            if not source:
+                connection.rollback()
+                raise ValueError("章节分析不存在")
+            existing = connection.execute(
+                """
+                SELECT id FROM work_archive_entries
+                WHERE source_analysis_id=?
+                  AND entry_type='creative_rule'
+                """,
+                (analysis_id,),
+            ).fetchone()
+            if existing:
+                connection.rollback()
+                return str(existing["id"])
+            setting_id = uuid.uuid4().hex
+            evidence = (
+                f"《{source['document_title']}》第{source['position']}章"
+                f"《{source['chapter_title']}》"
+            )
+            connection.execute(
+                """
+                INSERT INTO work_archive_entries(
+                    id, work_id, edition_id, entry_type, title, content,
+                    provenance, status, evidence, source_ref, category,
+                    source_analysis_id, adopted_at, created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, 'creative_rule', ?, ?, 'analysis',
+                    'confirmed', ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    setting_id,
+                    work_id,
+                    source["edition_id"],
+                    str(title or source["chapter_title"] or "").strip(),
+                    clean_content,
+                    evidence,
+                    f"analysis:{analysis_id}",
+                    category,
+                    analysis_id,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE works SET updated_at=? WHERE id=?",
+                (now, work_id),
+            )
+            connection.commit()
+        return setting_id
+
+    def delete_work_archive_entry(
+        self,
+        *,
+        user_id: int,
+        work_id: str,
+        entry_id: str,
+    ) -> bool:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT entry.adopted_from_entry_id
+                FROM work_archive_entries entry
+                JOIN works work ON work.id=entry.work_id
+                WHERE entry.id=? AND entry.work_id=? AND work.user_id=?
+                """,
+                (entry_id, work_id, user_id),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                return False
+            source_entry_id = row["adopted_from_entry_id"]
+            connection.execute(
+                "DELETE FROM work_archive_entries WHERE id=?",
+                (entry_id,),
+            )
+            if source_entry_id:
+                connection.execute(
+                    """
+                    UPDATE work_archive_entries
+                    SET status='draft', adopted_at=NULL, updated_at=?
+                    WHERE id=?
+                    """,
+                    (now, source_entry_id),
+                )
+            connection.execute(
+                "UPDATE works SET updated_at=? WHERE id=?",
+                (now, work_id),
+            )
+            connection.commit()
+        return True
+
     def list_work_analyses(
         self, user_id: int, work_id: str
     ) -> List[Dict[str, Any]]:
@@ -1313,7 +1573,14 @@ class Database:
                 SELECT a.id, a.result_json, a.finished_at,
                     c.id AS chapter_id, c.position, c.title AS chapter_title,
                     d.id AS document_id, d.title AS document_title,
-                    e.id AS edition_id, e.label AS edition_label
+                    e.id AS edition_id, e.label AS edition_label,
+                    (
+                        SELECT adopted.id
+                        FROM work_archive_entries adopted
+                        WHERE adopted.source_analysis_id=a.id
+                          AND adopted.entry_type='creative_rule'
+                        LIMIT 1
+                    ) AS adopted_setting_id
                 FROM work_editions e
                 JOIN works w ON w.id=e.work_id
                 JOIN documents d ON d.id=e.document_id
@@ -2368,6 +2635,31 @@ class Database:
                 """,
                 (chapter["project_id"],),
             ).fetchall()
+            confirmed_archive_rules = connection.execute(
+                """
+                SELECT entry.id, entry.category, entry.title,
+                       entry.content, entry.evidence, entry.provenance,
+                       entry.updated_at
+                FROM work_editions edition
+                JOIN work_archive_entries entry
+                  ON entry.work_id=edition.work_id
+                WHERE edition.project_id=?
+                  AND entry.entry_type='creative_rule'
+                  AND entry.status='confirmed'
+                ORDER BY
+                    CASE entry.category
+                        WHEN 'core' THEN 0
+                        WHEN 'world' THEN 1
+                        WHEN 'character' THEN 2
+                        WHEN 'structure' THEN 3
+                        WHEN 'style' THEN 4
+                        ELSE 5
+                    END,
+                    entry.updated_at DESC
+                LIMIT 120
+                """,
+                (chapter["project_id"],),
+            ).fetchall()
             plan = connection.execute(
                 """
                 SELECT * FROM novel_chapter_plans
@@ -2770,6 +3062,9 @@ class Database:
             "story_blueprint": confirmed_story_blueprint,
             "planned_plot_arcs": confirmed_plot_arcs,
             "planned_causal_links": planned_causal_links,
+            "confirmed_archive_rules": [
+                dict(row) for row in confirmed_archive_rules
+            ],
             "confirmed_editing_preferences": [
                 dict(row) for row in editing_preferences
             ],

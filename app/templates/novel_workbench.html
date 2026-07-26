@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-15">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-16">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -64,7 +64,7 @@
         {% if work %}
           <a
             class="studio-icon-button {% if view == 'archive' %}active{% endif %}"
-            href="/novels/{{ project.id }}/workbench?view=archive"
+            href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=creative"
             aria-label="作品档案"
             title="作品档案"
             data-save-before-navigation
@@ -94,14 +94,10 @@
           <strong>{{ display_title }}</strong>
         </div>
 
-        <p class="studio-section-label">作品档案</p>
-        <a class="studio-directory-link {% if view == 'settings' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=settings{% if chapter %}&chapter_id={{ chapter.id }}{% endif %}" data-save-before-navigation>
-          <span>创作资料</span>
-          <small>›</small>
-        </a>
+        <p class="studio-section-label">作品</p>
         {% if work %}
-          <a class="studio-directory-link {% if view == 'archive' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive" data-save-before-navigation>
-            <span>档案总览</span>
+          <a class="studio-directory-link {% if view == 'archive' %}active{% endif %}" href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=creative" data-save-before-navigation>
+            <span>作品档案</span>
             <small>›</small>
           </a>
         {% endif %}
@@ -138,245 +134,7 @@
         {% if view != 'archive' and error %}<div class="studio-alert error">{{ error }}</div>{% endif %}
         {% if view != 'archive' and saved %}<div class="studio-alert success">已保存。</div>{% endif %}
 
-        {% if view == 'settings' %}
-          <section class="studio-settings-view">
-            <div class="studio-view-heading">
-              <div>
-                <h1>作品档案</h1>
-                <p>作者确认的创作资料会作为本书的长期写作上下文。</p>
-              </div>
-              {% if work %}
-                <div class="studio-view-heading-actions">
-                  <a class="studio-button" href="/novels/{{ project.id }}/workbench?view=archive">查看汇总</a>
-                  <form method="post" action="/novels/{{ project.id }}/reading-snapshots">
-                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                    <button class="studio-button" type="submit">生成阅读版</button>
-                  </form>
-                </div>
-              {% endif %}
-            </div>
-            <nav class="studio-settings-tabs" role="tablist" aria-label="作品档案分类">
-              {% for tab_key, tab_label in setting_tabs %}
-                <button
-                  id="settings-tab-{{ tab_key }}"
-                  type="button"
-                  role="tab"
-                  aria-controls="settings-panel-{{ tab_key }}"
-                  aria-selected="{{ 'true' if active_settings_tab == tab_key else 'false' }}"
-                  tabindex="{{ '0' if active_settings_tab == tab_key else '-1' }}"
-                  data-settings-tab="{{ tab_key }}"
-                >{{ tab_label }}</button>
-              {% endfor %}
-            </nav>
-
-            <form method="post" action="/novels/{{ project.id }}/settings" class="studio-settings-form">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}" data-settings-tab-input>
-
-              <section
-                id="settings-panel-core"
-                class="studio-settings-panel"
-                role="tabpanel"
-                aria-labelledby="settings-tab-core"
-                data-settings-panel="core"
-                {% if active_settings_tab != 'core' %}hidden{% endif %}
-              >
-                <header>
-                  <h2>作品核心</h2>
-                  <p>先确定这本书持续向读者提供什么，以及故事围绕什么矛盾展开。</p>
-                </header>
-                <div class="studio-settings-field-grid">
-                  <label>
-                    <span>书名</span>
-                    <input name="title" maxlength="120" value="{{ project.title }}" placeholder="可以暂时留空，之后和 AI 一起讨论">
-                  </label>
-                  <label>
-                    <span>题材</span>
-                    <input name="genre" maxlength="80" value="{{ project.genre }}" placeholder="例如：悬疑、科幻、都市">
-                  </label>
-                  <label class="studio-settings-wide">
-                    <span>故事核心</span>
-                    <textarea name="premise" rows="5" maxlength="4000" placeholder="从一个人物、一段画面、一个矛盾或一句话开始">{{ project.premise }}</textarea>
-                  </label>
-                  <label>
-                    <span>作品承诺</span>
-                    <textarea name="story_promise" rows="4" maxlength="4000" placeholder="读者持续阅读时，稳定能够获得什么体验？">{{ project.story_promise }}</textarea>
-                  </label>
-                  <label>
-                    <span>核心吸引力</span>
-                    <textarea name="core_appeal" rows="4" maxlength="4000" placeholder="谜团、关系张力、成长、世界探索……">{{ project.core_appeal }}</textarea>
-                  </label>
-                  <label class="studio-settings-wide">
-                    <span>目标读者</span>
-                    <textarea name="target_audience" rows="3" maxlength="1000" placeholder="这本书主要写给怎样的读者？">{{ project.target_audience }}</textarea>
-                  </label>
-                </div>
-              </section>
-
-              <section
-                id="settings-panel-world"
-                class="studio-settings-panel"
-                role="tabpanel"
-                aria-labelledby="settings-tab-world"
-                data-settings-panel="world"
-                {% if active_settings_tab != 'world' %}hidden{% endif %}
-              >
-                <header>
-                  <h2>世界规则</h2>
-                  <p>记录时代、地点、社会秩序、能力边界，以及剧情不能随意突破的客观限制。</p>
-                </header>
-                <label>
-                  <span>世界设定与运行规则</span>
-                  <textarea name="world_setting" rows="14" maxlength="20000" placeholder="可按时代与地点、社会结构、特殊规则、资源与限制、不可违背事项分段记录。">{{ project.world_setting }}</textarea>
-                </label>
-              </section>
-
-              <section
-                id="settings-panel-characters"
-                class="studio-settings-panel"
-                role="tabpanel"
-                aria-labelledby="settings-tab-characters"
-                data-settings-panel="characters"
-                {% if active_settings_tab != 'characters' %}hidden{% endif %}
-              >
-                <header>
-                  <h2>人物关系</h2>
-                  <p>人物卡会进入规划与写作上下文；关系变化仍应通过章节任务和正史逐步确认。</p>
-                </header>
-                {% if setting_characters %}
-                  <div class="studio-settings-card-grid">
-                    {% for character in setting_characters %}
-                      <article>
-                        <strong>{{ character.name }}</strong>
-                        <small>{{ character.role or '角色定位待补充' }}</small>
-                        {% if character.traits %}<p>{{ character.traits }}</p>{% endif %}
-                        {% if character.character_arc %}<p><b>人物弧光：</b>{{ character.character_arc }}</p>{% endif %}
-                      </article>
-                    {% endfor %}
-                  </div>
-                {% else %}
-                  <div class="studio-settings-empty">
-                    <strong>还没有人物卡</strong>
-                    <p>可以先在右侧讨论主角想要什么、害怕失去什么，以及人物之间最不稳定的关系。</p>
-                  </div>
-                {% endif %}
-              </section>
-
-              <section
-                id="settings-panel-structure"
-                class="studio-settings-panel"
-                role="tabpanel"
-                aria-labelledby="settings-tab-structure"
-                data-settings-panel="structure"
-                {% if active_settings_tab != 'structure' %}hidden{% endif %}
-              >
-                <header>
-                  <h2>故事结构</h2>
-                  <p>记录全书必须兑现的方向、核心悬问和主线推进约束。</p>
-                </header>
-                <label>
-                  <span>结局与结构约束</span>
-                  <textarea name="ending_constraint" rows="6" maxlength="4000" placeholder="终局必须兑现什么？哪些捷径或结果绝不能出现？">{{ project.ending_constraint }}</textarea>
-                </label>
-                {% if setting_story_blueprint and setting_story_blueprint.confirmed %}
-                  <div class="studio-structure-summary">
-                    <div>
-                      <small>核心悬问</small>
-                      <p>{{ setting_story_blueprint.confirmed.central_question or '待补充' }}</p>
-                    </div>
-                    <div>
-                      <small>主角长期目标</small>
-                      <p>{{ setting_story_blueprint.confirmed.protagonist_goal or '待补充' }}</p>
-                    </div>
-                    <div>
-                      <small>确认剧情线</small>
-                      <p>{{ setting_story_arcs|length }} 条</p>
-                    </div>
-                  </div>
-                {% else %}
-                  <div class="studio-settings-empty">
-                    <strong>全书蓝图尚未确认</strong>
-                    <p>可以先在右侧和 AI 收敛核心悬问、主角目标与冲突引擎。</p>
-                  </div>
-                {% endif %}
-              </section>
-
-              <section
-                id="settings-panel-style"
-                class="studio-settings-panel"
-                role="tabpanel"
-                aria-labelledby="settings-tab-style"
-                data-settings-panel="style"
-                {% if active_settings_tab != 'style' %}hidden{% endif %}
-              >
-                <header>
-                  <h2>文风约束</h2>
-                  <p>把叙述距离、句段节奏、对白习惯和禁用表达写成能够实际执行的规则。</p>
-                </header>
-                <div class="studio-settings-field-grid">
-                  <label>
-                    <span>叙事视角</span>
-                    <select name="point_of_view">
-                      {% for option in pov_options %}
-                        <option value="{{ option }}" {% if project.point_of_view == option %}selected{% endif %}>{{ option }}</option>
-                      {% endfor %}
-                    </select>
-                  </label>
-                  <div class="studio-settings-status">
-                    <span>作品声纹</span>
-                    <strong>
-                      {% if setting_voice_profile and setting_voice_profile.status == 'confirmed' %}
-                        已确认
-                      {% elif setting_voice_profile %}
-                        草稿
-                      {% else %}
-                        尚未建立
-                      {% endif %}
-                    </strong>
-                  </div>
-                  <label class="studio-settings-wide">
-                    <span>叙事风格规范</span>
-                    <textarea name="style_guide" rows="10" maxlength="10000" placeholder="例如：少做情绪总结；人物先行动再解释；避免整齐排比；紧张段落允许停顿和无效交流。">{{ project.style_guide }}</textarea>
-                  </label>
-                </div>
-              </section>
-
-              <section
-                id="settings-panel-parameters"
-                class="studio-settings-panel"
-                role="tabpanel"
-                aria-labelledby="settings-tab-parameters"
-                data-settings-panel="parameters"
-                {% if active_settings_tab != 'parameters' %}hidden{% endif %}
-              >
-                <header>
-                  <h2>创作参数</h2>
-                  <p>这些参数控制默认篇幅、滚动规划范围，以及本书对 AI 的额外协作要求。</p>
-                </header>
-                <div class="studio-settings-field-grid">
-                  <label>
-                    <span>默认单章篇幅</span>
-                    <input type="number" name="target_chapter_chars" min="2000" max="12000" step="100" value="{{ project.target_chapter_chars or 3000 }}">
-                    <small>新章节默认继承此目标；每章任务卡仍可单独调整。</small>
-                  </label>
-                  <label>
-                    <span>规划章节范围</span>
-                    <input type="number" name="planning_horizon" min="3" max="50" value="{{ project.planning_horizon or 20 }}">
-                    <small>系统持续维护未来多少章的计划，建议 10–30 章。</small>
-                  </label>
-                  <label class="studio-settings-wide">
-                    <span>本书 AI 协作补充指令</span>
-                    <textarea name="ai_instructions" rows="9" maxlength="10000" placeholder="只填写这本书特有的协作边界，例如固定叙事禁区或信息释放顺序。">{{ project.ai_instructions }}</textarea>
-                  </label>
-                </div>
-              </section>
-
-              <div class="studio-settings-actions">
-                <button class="studio-button primary" type="submit">保存创作资料</button>
-              </div>
-            </form>
-          </section>
-        {% elif view == 'archive' %}
+        {% if view == 'archive' %}
           {% include "_work_archive_content.html" %}
         {% elif chapter %}
           <section class="studio-manuscript-view">
@@ -500,7 +258,7 @@
                 <div class="studio-chat-history-list">
                   {% for item in conversations %}
                     <article class="{% if active_conversation and active_conversation.id == item.id %}active{% endif %}">
-                      <a href="/novels/{{ project.id }}/workbench?conversation_id={{ item.id }}{% if item.novel_chapter_id %}&chapter_id={{ item.novel_chapter_id }}{% else %}&view=settings{% endif %}" data-save-before-navigation>
+                      <a href="/novels/{{ project.id }}/workbench?conversation_id={{ item.id }}{% if item.novel_chapter_id %}&chapter_id={{ item.novel_chapter_id }}{% else %}&view=archive&archive_tab=creative{% endif %}" data-save-before-navigation>
                         <strong>{{ item.title }}</strong>
                         <small>
                           {% if item.novel_chapter_id %}
@@ -520,6 +278,7 @@
                         <input type="hidden" name="current_conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
                         <input type="hidden" name="chapter_id" value="{% if chapter %}{{ chapter.id }}{% endif %}">
                         <input type="hidden" name="return_view" value="{{ view }}">
+                        <input type="hidden" name="return_archive_tab" value="{{ active_archive_tab }}">
                         <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
                         <button
                           type="submit"
@@ -543,6 +302,7 @@
             <form method="post" action="/novels/{{ project.id }}/assistant/new" class="studio-new-chat-form" data-save-before-submit>
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <input type="hidden" name="chapter_id" value="{% if view == 'body' and chapter %}{{ chapter.id }}{% endif %}">
+              <input type="hidden" name="archive_tab" value="{{ active_archive_tab }}">
               <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
               <button type="submit" aria-label="新建对话" title="新建对话" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>＋</button>
             </form>
@@ -570,7 +330,7 @@
                   <blockquote>{{ message.quote.quote_text }}</blockquote>
                 {% endif %}
                 {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
-                  <p>正在读取当前创作资料与章节……</p>
+                  <p>正在读取当前创作设定与章节……</p>
                 {% elif message.status == 'failed' %}
                   <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
                 {% else %}
@@ -579,7 +339,7 @@
                   {% if message.response.settings_patch %}
                     <section class="studio-settings-candidate">
                       <header>
-                        <strong>候选创作资料</strong>
+                        <strong>候选创作设定</strong>
                         <span>{% if message.response.settings_patch_status == 'applied' %}已应用{% else %}尚未写入{% endif %}</span>
                       </header>
                       <dl>
@@ -594,7 +354,7 @@
                         <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
                           <input type="hidden" name="return_to_workbench" value="1">
-                          <button class="studio-button primary" type="submit">应用到创作资料</button>
+                          <button class="studio-button primary" type="submit">应用到创作设定</button>
                         </form>
                       {% endif %}
                     </section>
@@ -797,8 +557,8 @@
             {% endfor %}
           {% else %}
             <div class="studio-chat-empty">
-              {% if view in ['settings', 'archive'] %}
-                <p>不必先想好书名。告诉 AI 一个角色、一段画面或你想获得的阅读感受，它会先整理成待确认的创作资料。</p>
+              {% if view == 'archive' %}
+                <p>可以讨论作品设定、分析结论或版本方向；未经确认的分析不会自动写入创作设定。</p>
               {% else %}
                 <p>可以讨论剧情、续写方向、人物反应或选中的正文。</p>
               {% endif %}
@@ -812,6 +572,7 @@
         <form id="studio-chat-form" method="post" action="/novels/{{ project.id }}/assistant/messages" class="studio-chat-composer" data-chat-form>
           <input type="hidden" name="csrf" value="{{ csrf_token }}">
           <input type="hidden" name="return_view" value="{{ view }}">
+          <input type="hidden" name="return_archive_tab" value="{{ active_archive_tab }}">
           <input type="hidden" name="return_settings_tab" value="{{ active_settings_tab }}">
           <input type="hidden" name="conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
           <input type="hidden" name="novel_chapter_id" value="{% if chapter %}{{ chapter.id }}{% endif %}">
@@ -860,5 +621,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-4" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-5" defer></script>
 {% endblock %}

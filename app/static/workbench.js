@@ -137,6 +137,13 @@
     confirmLabel: "删除配置",
   });
 
+  bindDestructiveConfirmation("[data-delete-archive-entry]", {
+    title: "移除这条档案记录？",
+    message:
+      "记录会从作品档案中删除；如果它是已采纳设定，对写作模型的约束也会同时移除。",
+    confirmLabel: "确认移除",
+  });
+
   const unifiedImport = document.querySelector("[data-unified-import]");
   if (unifiedImport) {
     const fileInput = unifiedImport.querySelector("[data-import-file]");

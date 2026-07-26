@@ -187,6 +187,59 @@ def test_full_mock_workflow(tmp_path):
         assert export.status_code == 200
         assert len(export.json()["chapters"]) == 2
 
+        document_id = document_url.rsplit("/", 1)[-1]
+        user = client.app.state.database.get_user_by_username("测试者")
+        work = client.app.state.database.get_work_for_document(
+            int(user["id"]), document_id
+        )
+        archive = client.get(
+            f"/documents/{document_id}"
+            "?view=archive&archive_tab=analysis"
+        )
+        assert "章节分析" in archive.text
+        analysis_id = analysis_match.group(1)
+        assert (
+            f"/works/{work['id']}/archive/analyses/{analysis_id}/adopt"
+            in archive.text
+        )
+        adopted = client.post(
+            f"/works/{work['id']}/archive/analyses/{analysis_id}/adopt",
+            data={
+                "category": "structure",
+                "title": "开篇推进规则",
+                "content": "每章先建立一个可核对的新问题，再延迟解释。",
+                "return_to": (
+                    f"/documents/{document_id}"
+                    "?view=archive&archive_tab=analysis"
+                ),
+                "csrf": csrf_from(archive.text),
+            },
+            follow_redirects=False,
+        )
+        assert adopted.status_code == 303
+        assert "adopted=true" in adopted.headers["location"]
+
+        branch = client.post(
+            f"/documents/{document_id}/writing-branches",
+            data={
+                "intent": "rewrite",
+                "csrf": csrf_from(archive.text),
+            },
+            follow_redirects=False,
+        )
+        project_id = branch.headers["location"].split("/novels/", 1)[1].split(
+            "/", 1
+        )[0]
+        chapters = client.app.state.database.list_novel_chapters(
+            int(user["id"]), project_id
+        )
+        writing_context = client.app.state.database.get_writing_context(
+            int(user["id"]), str(chapters[0]["id"])
+        )
+        assert writing_context["confirmed_archive_rules"][0]["content"] == (
+            "每章先建立一个可核对的新问题，再延迟解释。"
+        )
+
 
 def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
     application = create_app(make_settings(tmp_path))
@@ -1205,7 +1258,7 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         assert workbench.status_code == 200
         assert 'data-workbench' in workbench.text
         assert "默认单章篇幅" in workbench.text
-        assert "不必先想好书名" in workbench.text
+        assert "创作设定" in workbench.text
         for settings_tab in (
             "作品核心",
             "世界规则",
@@ -1356,7 +1409,7 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
             project_id,
         )
         settings_page = client.get(
-            f"/novels/{project_id}/workbench?view=settings"
+            f"/novels/{project_id}/workbench?view=archive&archive_tab=creative"
         )
         response = client.post(
             f"/novels/{project_id}/settings",
@@ -1378,7 +1431,7 @@ def test_unified_workbench_creates_edits_and_saves_book_prompt(tmp_path):
         )
         assert response.status_code == 303
         assert (
-            "view=settings&settings_tab=parameters&saved=true"
+            "view=archive&archive_tab=creative&settings_tab=parameters&saved=true"
             in response.headers["location"]
         )
         project = application.state.database.get_novel_project(
@@ -1444,7 +1497,8 @@ def test_zero_input_project_enters_settings_and_applies_ai_candidate(
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "view=settings" in response.headers["location"]
+        assert "view=archive" in response.headers["location"]
+        assert "archive_tab=creative" in response.headers["location"]
         workbench_url = response.headers["location"]
         project_id = workbench_url.split("/novels/", 1)[1].split("/", 1)[0]
 
@@ -1539,6 +1593,8 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         user_id = int(
             database.get_user_by_username("删除作品作者")["id"]
         )
+        work = database.get_work_for_project(user_id, project_id)
+        assert work
         project_dir = tmp_path / "novels" / str(user_id) / project_id
         assert project_dir.is_dir()
         conversation_id = (
@@ -1574,7 +1630,7 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         )
         for export_path in (
             f"/novels/{project_id}/export.txt",
-            f"/novels/{project_id}/export.novelai.zip",
+            f"/works/{work['id']}/export.novelai.zip",
         ):
             assert f'href="{export_path}"' in dashboard.text
         response = client.post(
@@ -1598,7 +1654,9 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         assert not project_dir.exists()
 
 
-def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
+def test_complete_work_archive_can_be_exported_and_imported_from_ui(
+    tmp_path,
+):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         page = client.get("/register")
@@ -1623,41 +1681,61 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
             follow_redirects=False,
         )
         project_id = created.headers["location"].split("/")[2]
+        user = application.state.database.get_user_by_username(
+            "作品迁移用户"
+        )
+        work = application.state.database.get_work_for_project(
+            int(user["id"]), project_id
+        )
+        assert work
         workbench = client.get(created.headers["location"])
         assert "导出作品归档" not in workbench.text
         dashboard = client.get("/dashboard")
         assert "导出正文" in dashboard.text
-        assert "导出归档" in dashboard.text
+        assert "导出完整作品归档" in dashboard.text
         assert 'class="studio-book-controls"' in dashboard.text
         assert dashboard.text.count('class="studio-export-icon"') == 2
         assert re.search(r">\s*导出正文\s*<", dashboard.text) is None
-        assert re.search(r">\s*导出归档\s*<", dashboard.text) is None
+        assert re.search(r">\s*导出完整作品归档\s*<", dashboard.text) is None
         assert 'aria-label="导出正文"' in dashboard.text
-        assert 'aria-label="导出归档"' in dashboard.text
+        assert 'aria-label="导出完整作品归档"' in dashboard.text
         assert 'data-tooltip="导出正文（TXT）"' in dashboard.text
-        assert 'data-tooltip="导出归档（ZIP）"' in dashboard.text
+        assert (
+            'data-tooltip="导出完整作品归档（ZIP）"'
+            in dashboard.text
+        )
         assert ">TXT</span>" in dashboard.text
         assert ">ZIP</span>" in dashboard.text
         assert '<span aria-hidden="true">›</span>' not in dashboard.text
         assert (
-            f'href="/novels/{project_id}/export.novelai.zip"'
+            f'href="/works/{work["id"]}/export.novelai.zip"'
             in dashboard.text
+        )
+        assert client.get("/projects/import").status_code == 404
+        assert (
+            client.get(
+                f"/novels/{project_id}/export.novelai.zip"
+            ).status_code
+            == 404
         )
 
         exported = client.get(
-            f"/novels/{project_id}/export.novelai.zip"
+            f"/works/{work['id']}/export.novelai.zip"
         )
         assert exported.status_code == 200
         assert exported.headers["content-type"] == "application/zip"
         assert ".novelai.zip" in exported.headers["content-disposition"]
 
-        import_page = client.get("/projects/import")
+        import_page = client.get("/import")
         assert import_page.status_code == 200
         imported = client.post(
-            "/projects/import",
-            data={"csrf": csrf_from(import_page.text)},
+            "/import",
+            data={
+                "initial_mode": "read",
+                "csrf": csrf_from(import_page.text),
+            },
             files={
-                "archive_file": (
+                "work_file": (
                     "book.novelai.zip",
                     exported.content,
                     "application/zip",
@@ -1669,13 +1747,12 @@ def test_project_archive_can_be_exported_and_imported_from_ui(tmp_path):
         assert imported.headers["location"].startswith(
             "/dashboard?imported=true"
         )
-        user = application.state.database.get_user_by_username(
-            "作品迁移用户"
-        )
         projects = application.state.database.list_novel_projects(
             user["id"]
         )
         assert len(projects) == 2
+        works = application.state.database.list_works(int(user["id"]))
+        assert len(works) == 2
 
 
 def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
@@ -1791,19 +1868,34 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         archive = client.get(f"/works/{works[0]['id']}/archive")
         assert archive.url.path == f"/novels/{project_id}/workbench"
         assert archive.url.params["view"] == "archive"
-        assert "导入原文" in archive.text
-        assert "改写稿" in archive.text
+        assert archive.url.params["archive_tab"] == "creative"
+        assert "创作设定" in archive.text
         assert 'data-panel="directory"' in archive.text
         assert 'data-panel="ai"' in archive.text
 
+        versions = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=archive&archive_tab=versions"
+        )
+        assert "导入原文" in versions.text
+        assert "改写稿" in versions.text
+        analysis_archive = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=archive&archive_tab=analysis"
+        )
         saved = client.post(
             f"/works/{works[0]['id']}/archive",
             data={
                 "entry_type": "analysis_note",
+                "category": "structure",
                 "title": "节奏观察",
                 "content": "第一章先给结果，再延迟解释。",
                 "evidence": "第 1 章",
-                "csrf": csrf_from(archive.text),
+                "return_to": (
+                    f"/novels/{project_id}/workbench"
+                    "?view=archive&archive_tab=analysis"
+                ),
+                "csrf": csrf_from(analysis_archive.text),
             },
             follow_redirects=False,
         )
@@ -1813,6 +1905,70 @@ def test_unified_import_creates_one_work_with_reading_and_rewrite_versions(
         assert "第一章先给结果" in saved_archive.text
         assert saved_archive.url.path == f"/novels/{project_id}/workbench"
         assert saved_archive.url.params["view"] == "archive"
+        assert saved_archive.url.params["archive_tab"] == "analysis"
+
+        entries = application.state.database.list_work_archive_entries(
+            int(user["id"]), str(works[0]["id"])
+        )
+        note = next(
+            entry
+            for entry in entries
+            if entry["entry_type"] == "analysis_note"
+        )
+        adopted = client.post(
+            f"/works/{works[0]['id']}/archive/entries/{note['id']}/adopt",
+            data={
+                "category": "structure",
+                "content": "章节开头先展示结果，随后延迟解释原因。",
+                "return_to": (
+                    f"/novels/{project_id}/workbench"
+                    "?view=archive&archive_tab=creative"
+                    "&settings_tab=structure"
+                ),
+                "csrf": csrf_from(saved_archive.text),
+            },
+            follow_redirects=False,
+        )
+        assert adopted.status_code == 303
+        adopted_page = client.get(adopted.headers["location"])
+        assert "已采纳为创作设定" in adopted_page.text
+        assert "章节开头先展示结果" in adopted_page.text
+
+        entries = application.state.database.list_work_archive_entries(
+            int(user["id"]), str(works[0]["id"])
+        )
+        confirmed = next(
+            entry
+            for entry in entries
+            if entry["entry_type"] == "creative_rule"
+        )
+        delete_form_id = f"archive-rule-delete-{confirmed['id']}"
+        assert f'form="{delete_form_id}"' in adopted_page.text
+        assert re.search(
+            rf"<form\b[^>]*\bid=\"{re.escape(delete_form_id)}\"",
+            adopted_page.text,
+        )
+        assert (
+            f'action="/works/{works[0]["id"]}/archive/entries/'
+            f'{confirmed["id"]}/delete"'
+            in adopted_page.text
+        )
+        assert confirmed["status"] == "confirmed"
+        assert confirmed["category"] == "structure"
+        writing_context = application.state.database.get_writing_context(
+            int(user["id"]), str(chapters[0]["id"])
+        )
+        assert writing_context["confirmed_archive_rules"] == [
+            {
+                "id": confirmed["id"],
+                "category": "structure",
+                "title": "节奏观察",
+                "content": "章节开头先展示结果，随后延迟解释原因。",
+                "evidence": "第 1 章",
+                "provenance": "adopted",
+                "updated_at": confirmed["updated_at"],
+            }
+        ]
 
 
 def test_imported_writing_draft_can_create_reading_snapshot(tmp_path):
@@ -1933,10 +2089,10 @@ def test_full_mock_novel_writing_workflow(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert (
-            "view=settings&settings_tab=style&saved=true"
-            in response.headers["location"]
-        )
+        assert "view=archive" in response.headers["location"]
+        assert "archive_tab=creative" in response.headers["location"]
+        assert "settings_tab=style" in response.headers["location"]
+        assert "saved=true" in response.headers["location"]
 
         page = client.get(workbench_url)
         response = client.post(
