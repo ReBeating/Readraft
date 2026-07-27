@@ -1,17 +1,17 @@
 [Unit]
-Description=novelAI FastAPI service
+Description=Readraft FastAPI service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=novelai
-Group=novelai
+User=readraft
+Group=readraft
 UMask=0077
-WorkingDirectory=/opt/novelai
-EnvironmentFile=/opt/novelai/.env
+WorkingDirectory=/opt/readraft
+EnvironmentFile=/opt/readraft/.env
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/novelai/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1
+ExecStart=/opt/readraft/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=30
@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/novelai/data
+ReadWritePaths=/opt/readraft/data
 MemoryHigh=450M
 MemoryMax=600M
 

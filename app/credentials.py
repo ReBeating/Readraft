@@ -8,9 +8,9 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")
-# This protocol namespace predates the display-name change. It is intentionally
-# stable: changing it would make every stored encrypted API key unreadable.
-CREDENTIAL_KDF_NAMESPACE = b"xushu:credential:v1\0"
+# Frozen with the first public Readraft release. Changing it would make every
+# stored encrypted API key unreadable.
+CREDENTIAL_KDF_NAMESPACE = b"readraft:credential:v1\0"
 
 class CredentialError(ValueError):
     pass

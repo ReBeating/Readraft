@@ -19,11 +19,11 @@ from app.security import hash_password
 
 def make_settings(root: Path) -> Settings:
     return Settings(
-        app_name="novelAI 备份测试",
+        app_name="Readraft 备份测试",
         app_env="test",
         secret_key="same-test-secret-for-backup",
         data_dir=root / "data",
-        database_path=root / "data" / "novelai.db",
+        database_path=root / "data" / "readraft.db",
         cookie_secure=False,
         allow_registration=True,
         max_upload_bytes=1_000_000,
@@ -107,7 +107,7 @@ def test_full_backup_is_portable_and_verifiable(tmp_path: Path):
             "再订下返程票。"
         ),
     )
-    archive = tmp_path / "exports" / "novelai-backup.zip"
+    archive = tmp_path / "exports" / "readraft-backup.zip"
 
     created = create_backup(source_settings, archive)
     checked = verify_backup(archive)
@@ -129,7 +129,7 @@ def test_full_backup_is_portable_and_verifiable(tmp_path: Path):
             "SELECT content_path FROM novel_chapters WHERE id=?",
             (chapter_id,),
         ).fetchone()[0]
-    assert stored_path.startswith("__NOVELAI_DATA__/")
+    assert stored_path.startswith("__READRAFT_DATA__/")
     assert str(source_settings.data_dir) not in stored_path
 
     target_settings = make_settings(tmp_path / "target")

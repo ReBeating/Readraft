@@ -104,7 +104,7 @@
     if (
       event.origin !== window.location.origin
       || event.source !== frame.contentWindow
-      || event.data?.type !== "novelai:model-settings-updated"
+      || event.data?.type !== "readraft:model-settings-updated"
     ) {
       return;
     }

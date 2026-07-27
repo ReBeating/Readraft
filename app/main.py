@@ -2233,7 +2233,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         if lower_filename.endswith(".zip"):
             temporary = tempfile.NamedTemporaryFile(
-                prefix="novelai-unified-import-",
+                prefix="readraft-unified-import-",
                 suffix=".zip",
                 delete=False,
             )
@@ -2290,7 +2290,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if extension not in ALLOWED_EXTENSIONS:
             await work_file.close()
             return render_import_error(
-                "支持 TXT、Markdown 和 .novelai.zip 作品归档"
+                "支持 TXT、Markdown 和 .readraft.zip 作品归档"
             )
         raw = await work_file.read(app_settings.max_upload_bytes + 1)
         await work_file.close()
@@ -8780,7 +8780,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "error": job["error"] if job["status"] == "failed" else None,
         }
 
-    @application.get("/works/{work_id}/export.novelai.zip")
+    @application.get("/works/{work_id}/export.readraft.zip")
     async def export_complete_work_archive(
         request: Request, work_id: str
     ):
@@ -8791,8 +8791,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not work:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         file_descriptor, raw_path = tempfile.mkstemp(
-            prefix=f"novelai-work-{work_id[:8]}-",
-            suffix=".novelai.zip",
+            prefix=f"readraft-work-{work_id[:8]}-",
+            suffix=".readraft.zip",
         )
         os.close(file_descriptor)
         archive_path = Path(raw_path)
@@ -8817,7 +8817,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return FileResponse(
             archive_path,
             media_type="application/zip",
-            filename=f"work-{work_id[:8]}.novelai.zip",
+            filename=f"work-{work_id[:8]}.readraft.zip",
             headers={"Cache-Control": "no-store"},
             background=BackgroundTask(
                 archive_path.unlink, missing_ok=True

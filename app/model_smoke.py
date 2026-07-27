@@ -15,7 +15,7 @@ from .writing import DeepSeekWriter
 
 
 SAFE_SMOKE_MODEL_ADAPTER_PROMPT = (
-    "这是 novelAI 的合成连通性测试。只处理本次请求提供的虚构材料，"
+    "这是 Readraft 的合成连通性测试。只处理本次请求提供的虚构材料，"
     "不要引用或假定任何真实作品内容。"
 )
 
@@ -85,7 +85,7 @@ async def run_smoke(
     settings: Settings, *, run_text: bool = True, run_json: bool = True
 ) -> Sequence[Dict[str, Any]]:
     results = []
-    provider_user_id = "novelai-synthetic-smoke"
+    provider_user_id = "readraft-synthetic-smoke"
     if run_text:
         writer = DeepSeekWriter(settings)
         try:

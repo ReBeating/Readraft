@@ -24,11 +24,11 @@ from app.work_library import (
 
 def make_settings(root: Path) -> Settings:
     return Settings(
-        app_name="novelAI 作品归档测试",
+        app_name="Readraft 作品归档测试",
         app_env="test",
         secret_key="work-archive-test-secret",  # pragma: allowlist secret
         data_dir=root / "data",
-        database_path=root / "data" / "novelai.db",
+        database_path=root / "data" / "readraft.db",
         cookie_secure=False,
         allow_registration=True,
         max_upload_bytes=1_000_000,
@@ -226,7 +226,7 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
         project_id=project_id,
         label="一稿",
     )
-    archive = tmp_path / "complete-work.novelai.zip"
+    archive = tmp_path / "complete-work.readraft.zip"
 
     summary = create_work_archive(
         database=database,

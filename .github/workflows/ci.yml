@@ -25,7 +25,9 @@ jobs:
       - name: Install locked dependencies
         run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Static checks
-        run: python -m ruff check app tests
+        run: |
+          python -m ruff check app tests
+          bash -n deploy/update.sh
       - name: Test
         run: python -m pytest
 

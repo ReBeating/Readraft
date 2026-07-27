@@ -3,10 +3,21 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "novelai-studio"
+name = "readraft"
 version = "0.1.0"
-description = "novelAI：面向长篇中文小说的 AI 辅助创作工作台。"
+description = "Readraft：面向长篇中文小说的 AI 辅助创作工作台。"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
+keywords = ["ai", "creative-writing", "novel", "reading", "self-hosted"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
 dependencies = [
   "cryptography>=48.0.1,<50",
   "fastapi>=0.140,<0.141",
@@ -21,8 +32,8 @@ dependencies = [
 ]
 
 [project.scripts]
-novelai-backup = "app.backup:main"
-novelai-model-smoke = "app.model_smoke:main"
+readraft-backup = "app.backup:main"
+readraft-model-smoke = "app.model_smoke:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

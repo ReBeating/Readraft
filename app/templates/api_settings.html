@@ -274,7 +274,7 @@
     document.addEventListener("DOMContentLoaded", () => {
       {% if embedded and (saved or removed or adapter_saved) %}
         window.parent.postMessage(
-          {type: "novelai:model-settings-updated"},
+          {type: "readraft:model-settings-updated"},
           window.location.origin,
         );
       {% endif %}

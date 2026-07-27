@@ -1,6 +1,14 @@
-# novelAI
+# Readraft
 
-novelAI 是一套面向长篇中文小说的轻量 Web 创作工作台。它把设定、全书规划、章节正文、故事记忆、编辑审校与 AI 共创组织在同一个创作空间中。用户登录后可以建立小说项目、确认全书蓝图与长期剧情线、维护设定和人物卡、规划分卷/章节/场景，并使用自己的模型账号生成初稿、续写、重写或润色正文。
+> 读懂作品，再写可能。Read. Draft. Redraft.
+
+Readraft 是一套开源、自托管的 AI 阅读与创作工作台，面向长篇中文
+小说的阅读分析、原创、续写、改写和二次创作。它把原文、不可变版本、
+作品资料、分析笔记、故事记忆、编辑审校与 AI 对话组织在同一个作品库
+中；只有可写的 `main` 可以改变正文，固定 Tag 始终保持只读。
+
+模型由部署者或用户自行配置。正文和凭据默认保存在自己的服务器，
+Readraft 不提供内置模型账号，也不会在缺少真实模型时伪造生成结果。
 
 Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章分析可以提取可迁移技法，作者保存、改造并主动绑定后，系统才会在对应的规划、正文创作或审校任务中读取这些抽象规则。
 
@@ -117,7 +125,8 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 `requirements*.lock` 固定并校验全部依赖及其下载哈希。
 
 ```bash
-cd novelAI
+git clone https://github.com/YOUR_ACCOUNT/Readraft.git
+cd Readraft
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --require-hashes -r requirements-dev.lock
@@ -129,7 +138,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 1. 在“模型设置”中选择 DeepSeek、OpenAI、Google Gemini、Ollama 或 OpenAI 兼容接口，并保存对应模型。Ollama 与兼容接口可修改 Base URL，API Key 可选。
 2. 在首页直接“新建作品”。系统会进入设定页，不要求预先填写书名。
-3. 在右侧对话框说出人物、画面、题材或阅读感受；需要时把 AI 整理出的候选设定应用到作品，再在六个设定分类中继续修改。
+3. 在右侧对话框说出人物、画面、题材或阅读感受；需要时把 AI 整理出的候选设定应用到作品，再在五个作品资料分类中继续修改。
 4. 从左侧目录新建章节，或直接要求 AI 创作第一章。空白章节会先讨论写作思路；明确要求创作后，正文才会提交到可撤回工作稿。
 5. 正文会自动保存。选择一段文字后直接向 AI 提问，可以分析、局部修订或继续写作；引用依据会回到对应不可变版本。
 6. 不需要选择 Agent 或工作模式。服务端会结合当前页面、引用和明确要求，在交流想法、整理设定、创作正文、修改正文与分析作品之间调度。
@@ -214,7 +223,7 @@ python -m app.model_smoke --username 你的账号 --mode all
 
 ## 作品导入与导出
 
-作品库中的 ZIP 操作会生成唯一格式的 `.novelai.zip` 完整作品归档。
+作品库中的 ZIP 操作会生成唯一格式的 `.readraft.zip` 完整作品归档。
 “导入”会先校验归档格式、文件大小和 SHA-256，再创建一部新的独立
 作品，不覆盖现有内容。归档会保留同一作品下唯一可写的 `main`、所有
 不可变 Tag、版本来源、Tag 对应的作品资料快照、按内容版本绑定的分析
@@ -242,19 +251,22 @@ Tag 表示固定快照。分析结果引用具体版本，但可以在之后继�
 以下命令要求先停止 Web 应用：
 
 ```bash
-.venv/bin/python -m app.backup create /安全目录/novelai-backup.zip
-.venv/bin/python -m app.backup verify /安全目录/novelai-backup.zip
-.venv/bin/python -m app.backup restore /安全目录/novelai-backup.zip --replace
+.venv/bin/python -m app.backup create /安全目录/readraft-backup.zip
+.venv/bin/python -m app.backup verify /安全目录/readraft-backup.zip
+.venv/bin/python -m app.backup restore /安全目录/readraft-backup.zip --replace
 ```
 
 备份必须保存在 `APP_DATA_DIR` 之外。恢复会先在备份文件旁创建
-`novelai-pre-restore-*.zip`，校验成功后才替换当前数据库和正文目录。
+`readraft-pre-restore-*.zip`，校验成功后才替换当前数据库和正文目录。
 完整备份含账号、正文和加密后的个人 API Key，仍应按敏感文件保存；
 `.env` 与加密密钥不会写入归档，需要另行安全保管。
 
-## Azure 部署
+## 生产部署与升级
 
-低内存 VM 必须保持：
+完整的一次性安装、Nginx、systemd、备份、升级和故障处理步骤见
+[生产部署与升级指南](docs/deployment.md)。
+
+低内存 Linux VM（包括 Azure VM）必须保持：
 
 - `uvicorn --workers 1`
 - 应用内 AI 并发为 1
@@ -263,7 +275,7 @@ Tag 表示固定快照。分析结果引用具体版本，但可以在之后继�
 
 示例文件：
 
-- `deploy/novelai.service`
+- `deploy/readraft.service`
 - `deploy/nginx.conf`
 
 生产环境至少设置：
@@ -278,13 +290,28 @@ APP_ALLOW_REGISTRATION=false
 DEEPSEEK_API_KEY=
 ```
 
-部署前创建专用账号和数据目录：
+标准部署使用 `/opt/readraft`、专用系统账号 `readraft` 和
+`readraft.service`。首次安装完成后，后续更新只需：
 
 ```bash
-sudo useradd --system --home /opt/novelai --shell /usr/sbin/nologin novelai
-sudo install -d -o novelai -g novelai -m 700 /opt/novelai/data
-sudo chown root:novelai /opt/novelai/.env
-sudo chmod 640 /opt/novelai/.env
+sudo /opt/readraft/deploy/update.sh
 ```
 
-后台队列与 Web 服务同进程，因此只能启动一个 Uvicorn worker。进程锁会拒绝第二个实例，避免同一生成任务被重复执行和计费。
+更新脚本会拒绝脏工作树和非快进更新，预装目标版本依赖，停止服务后
+创建完整备份，再执行 `git pull --ff-only`、更新 systemd 单元、重启并
+检查 `/healthz`。数据库迁移在应用启动时自动执行。后台队列与 Web
+服务同进程，因此只能启动一个 Uvicorn worker；进程锁会拒绝第二个
+实例，避免同一生成任务被重复执行和计费。
+
+## 安全、隐私与贡献
+
+- 安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+- 自托管数据边界与模型调用说明见 [PRIVACY.md](PRIVACY.md)。
+- 本地开发、迁移约束和提交要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可证
+
+Readraft 的代码和项目文档采用
+[Apache License 2.0](LICENSE) 发布。该许可证不改变你对自己导入、
+创作或生成内容所拥有的权利，也不会替你取得参考作品或模型输出的使用
+授权；使用者仍需自行确认相关内容与模型服务条款。

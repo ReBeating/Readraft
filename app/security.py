@@ -91,11 +91,11 @@ def signed_in_user(request: Request) -> dict[str, Any] | None:
 
 
 def stable_provider_user_id(user_id: int, secret_key: str) -> str:
-    # Keep this provider-facing namespace stable across display-name changes so
-    # one local account does not appear as a new API user after an upgrade.
+    # Keep this provider-facing namespace stable so one local account does not
+    # appear as a new API user after an upgrade.
     digest = hmac.new(
         secret_key.encode("utf-8"),
-        f"xushu:user:{user_id}".encode("utf-8"),
+        f"readraft:user:{user_id}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
     return f"u_{digest[:32]}"

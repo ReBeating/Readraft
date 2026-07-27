@@ -1500,7 +1500,7 @@ class Database:
                 voice_item.pop("style_examples_json", "[]"), []
             )
         return {
-            "schema": "novelai-creative-snapshot-v2",
+            "schema": "readraft-creative-snapshot-v2",
             "project": dict(project),
             "world_entries": [dict(row) for row in world_entries],
             "characters": [dict(row) for row in characters],

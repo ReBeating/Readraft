@@ -38,7 +38,7 @@ from .archive_support import (
 from .db import Database, has_active_project_ai_task
 
 
-WORK_ARCHIVE_FORMAT = "novelai-work"
+WORK_ARCHIVE_FORMAT = "readraft-work"
 WORK_ARCHIVE_VERSION = 2
 WORK_PATH_PREFIX = "work://"
 WORK_EXCLUDED_TABLES = {
@@ -555,7 +555,7 @@ def _validate_manifest_shape(manifest: Any) -> Dict[str, Any]:
     if not isinstance(manifest, dict):
         raise WorkArchiveError("作品归档清单格式不正确")
     if manifest.get("format") != WORK_ARCHIVE_FORMAT:
-        raise WorkArchiveError("这不是 novelAI 完整作品归档")
+        raise WorkArchiveError("这不是 Readraft 完整作品归档")
     if manifest.get("version") != WORK_ARCHIVE_VERSION:
         raise WorkArchiveError("暂不支持这个完整作品归档版本")
     work = manifest.get("work")
@@ -789,7 +789,7 @@ def _remap_import_rows(
     unknown_tables = set(archive_tables).difference(tables)
     if unknown_tables:
         raise WorkArchiveError(
-            "当前 novelAI 版本缺少归档所需的数据表，请先升级"
+            "当前 Readraft 版本缺少归档所需的数据表，请先升级"
         )
     id_map: Dict[str, str] = {}
     for table_name, rows in archive_tables.items():
@@ -1006,7 +1006,7 @@ def import_work_archive(
             )
             if _schema_version(connection) < source_schema_version:
                 raise WorkArchiveError(
-                    "归档来自更新的 novelAI 数据结构，请先升级当前程序"
+                    "归档来自更新的 Readraft 数据结构，请先升级当前程序"
                 )
             _validate_document_quota(
                 connection,

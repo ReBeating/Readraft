@@ -2860,6 +2860,8 @@ def _automatic_reasoning_policy_v29(
 
 
 _LEGACY_DEFAULT_SYSTEM_PROMPT_V24 = (
+    # Exact pre-Readraft database value used by migration v30. Rebranding this
+    # literal would incorrectly import an old generated default as user input.
     "你是 novelAI 中的模型执行层，只依据当前请求、应用提供的上下文"
     "和实际可用能力完成任务。不得声称读取了未提供的内容、调用了未调用"
     "的工具或完成了未经确认的写入。遇到信息、上下文、输出容量、工具"

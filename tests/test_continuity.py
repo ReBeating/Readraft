@@ -1175,7 +1175,7 @@ def test_v11_backfills_legacy_identity_columns_and_replays_state(
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
-        app_name="novelAI 测试",
+        app_name="Readraft 测试",
         app_env="test",
         secret_key="test-secret-long-enough",
         data_dir=tmp_path,

@@ -104,10 +104,10 @@ class Settings:
     def from_env(cls) -> "Settings":
         data_dir = _path_from_env("APP_DATA_DIR", PROJECT_ROOT / "data")
         database_path = _path_from_env(
-            "APP_DATABASE_PATH", data_dir / "novelai.db"
+            "APP_DATABASE_PATH", data_dir / "readraft.db"
         )
         return cls(
-            app_name=os.getenv("APP_NAME", "novelAI"),
+            app_name=os.getenv("APP_NAME", "Readraft"),
             app_env=os.getenv("APP_ENV", "development"),
             secret_key=os.getenv(
                 "APP_SECRET_KEY", "dev-only-change-this-secret-before-deploy"
@@ -191,7 +191,7 @@ class Settings:
         provider = get_provider(self.model_provider)
         if self.deepseek_thinking and not provider.capabilities.thinking:
             raise ValueError(
-                f"{provider.label} 暂不支持 novelAI 的思考模式"
+                f"{provider.label} 暂不支持 Readraft 的思考模式"
             )
         if len(self.model_adapter_prompt) > 20_000:
             raise ValueError("MODEL_ADAPTER_PROMPT 不能超过 20000 个字符")

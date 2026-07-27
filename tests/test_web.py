@@ -1782,7 +1782,7 @@ def test_five_material_sections_are_editable_and_fixed_in_tags(tmp_path):
             if item["label"] == "资料快照"
         )
         snapshot = fixed["creative_snapshot"]
-        assert snapshot["schema"] == "novelai-creative-snapshot-v2"
+        assert snapshot["schema"] == "readraft-creative-snapshot-v2"
         assert snapshot["project"]["theme"] == "共同记忆是否构成真实"
         assert snapshot["world_entries"][0]["name"] == "潮汐钟"
         assert snapshot["characters"][0]["external_goal"]
@@ -1963,7 +1963,7 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         )
         for export_path in (
             f"/novels/{project_id}/export.txt",
-            f"/works/{work['id']}/export.novelai.zip",
+            f"/works/{work['id']}/export.readraft.zip",
         ):
             assert f'href="{export_path}"' in dashboard.text
         response = client.post(
@@ -2034,7 +2034,7 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
         assert 'data-tooltip="作品档案"' not in dashboard.text
         assert '<span aria-hidden="true">›</span>' not in dashboard.text
         assert (
-            f'href="/works/{work["id"]}/export.novelai.zip"'
+            f'href="/works/{work["id"]}/export.readraft.zip"'
             in dashboard.text
         )
         assert client.get("/projects/import").status_code == 404
@@ -2050,7 +2050,7 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
         )
         assert (
             client.get(
-                f"/novels/{project_id}/export.novelai.zip"
+                f"/novels/{project_id}/export.readraft.zip"
             ).status_code
             == 404
         )
@@ -2069,11 +2069,11 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
         assert tables == {"work_versions"}
 
         exported = client.get(
-            f"/works/{work['id']}/export.novelai.zip"
+            f"/works/{work['id']}/export.readraft.zip"
         )
         assert exported.status_code == 200
         assert exported.headers["content-type"] == "application/zip"
-        assert ".novelai.zip" in exported.headers["content-disposition"]
+        assert ".readraft.zip" in exported.headers["content-disposition"]
 
         import_page = client.get("/import")
         assert import_page.status_code == 200
@@ -2084,7 +2084,7 @@ def test_complete_work_archive_can_be_exported_and_imported_from_ui(
             },
             files={
                 "work_file": (
-                    "book.novelai.zip",
+                    "book.readraft.zip",
                     exported.content,
                     "application/zip",
                 )
@@ -2753,7 +2753,7 @@ def test_tag_reuses_exact_main_analysis_and_can_be_deleted(tmp_path):
         )
 
         exported = client.get(
-            f"/works/{work['id']}/export.novelai.zip"
+            f"/works/{work['id']}/export.readraft.zip"
         )
         assert exported.status_code == 200
         import_page = client.get("/import")
@@ -2762,7 +2762,7 @@ def test_tag_reuses_exact_main_analysis_and_can_be_deleted(tmp_path):
             data={"csrf": csrf_from(import_page.text)},
             files={
                 "work_file": (
-                    "analysis-snapshot.novelai.zip",
+                    "analysis-snapshot.readraft.zip",
                     exported.content,
                     "application/zip",
                 )

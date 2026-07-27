@@ -12,5 +12,5 @@ def test_default_brand_and_database(
 
     settings = Settings.from_env()
 
-    assert settings.app_name == "novelAI"
-    assert settings.database_path == tmp_path / "novelai.db"
+    assert settings.app_name == "Readraft"
+    assert settings.database_path == tmp_path / "readraft.db"

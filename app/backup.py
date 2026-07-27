@@ -19,11 +19,11 @@ from .config import Settings
 from .process_lock import ProcessLock
 
 
-BACKUP_FORMAT = "novelai-full-backup"
+BACKUP_FORMAT = "readraft-full-backup"
 BACKUP_VERSION = 1
 DATABASE_ARCHIVE_PATH = "database.sqlite3"
 MANIFEST_ARCHIVE_PATH = "manifest.json"
-DATA_PATH_TOKEN = "__NOVELAI_DATA__/"
+DATA_PATH_TOKEN = "__READRAFT_DATA__/"
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024 * 1024
 PATH_COLUMNS = (
@@ -307,7 +307,7 @@ def _write_archive(
     total_bytes = 0
     try:
         with tempfile.TemporaryDirectory(
-            prefix="novelai-backup-"
+            prefix="readraft-backup-"
         ) as temporary:
             snapshot = Path(temporary) / DATABASE_ARCHIVE_PATH
             _create_database_snapshot(settings.database_path, snapshot)
@@ -391,7 +391,7 @@ def _read_manifest(archive: zipfile.ZipFile) -> Mapping[str, Any]:
     if not isinstance(payload, dict):
         raise BackupError("备份清单格式不正确")
     if payload.get("format") != BACKUP_FORMAT:
-        raise BackupError("这不是 novelAI 完整备份")
+        raise BackupError("这不是 Readraft 完整备份")
     if payload.get("version") != BACKUP_VERSION:
         raise BackupError("暂不支持这个备份版本")
     return payload
@@ -488,7 +488,7 @@ def _extract_and_verify(
 
 def verify_backup(archive_path: Path) -> BackupSummary:
     with tempfile.TemporaryDirectory(
-        prefix="novelai-verify-"
+        prefix="readraft-verify-"
     ) as temporary:
         manifest, file_count, total_bytes = _extract_and_verify(
             archive_path.resolve(), Path(temporary)
@@ -596,11 +596,11 @@ def restore_backup(
         token = f"{_timestamp_token()}-{uuid.uuid4().hex[:8]}"
         if settings.database_path.exists():
             safety_backup = archive_path.with_name(
-                f"novelai-pre-restore-{token}.zip"
+                f"readraft-pre-restore-{token}.zip"
             )
             _write_archive(settings, safety_backup, overwrite=False)
         with tempfile.TemporaryDirectory(
-            prefix="novelai-restore-",
+            prefix="readraft-restore-",
             dir=settings.data_dir.parent,
         ) as temporary:
             extracted = Path(temporary)
@@ -633,8 +633,8 @@ def _summary_payload(summary: BackupSummary) -> dict[str, Any]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="novelai-backup",
-        description="创建、校验或恢复 novelAI 完整本地备份。",
+        prog="readraft-backup",
+        description="创建、校验或恢复 Readraft 完整本地备份。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     create_parser = subparsers.add_parser("create", help="创建完整备份")
