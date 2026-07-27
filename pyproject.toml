@@ -35,6 +35,11 @@ dependencies = [
 readraft-backup = "app.backup:main"
 readraft-model-smoke = "app.model_smoke:main"
 
+[project.urls]
+Homepage = "https://github.com/ReBeating/Readraft"
+Repository = "https://github.com/ReBeating/Readraft"
+Issues = "https://github.com/ReBeating/Readraft/issues"
+
 [tool.setuptools.packages.find]
 include = ["app*"]
 

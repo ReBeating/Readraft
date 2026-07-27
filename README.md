@@ -1,5 +1,10 @@
 # Readraft
 
+> [!WARNING]
+> **Readraft 目前只是早期开发版本（0.1.0）。**
+> 核心流程已经可以使用，但界面、数据格式和部署方式仍可能发生不兼容变化。
+> 请勿把它作为重要作品的唯一副本，升级前务必创建并校验完整备份。
+
 > 读懂作品，再写可能。Read. Draft. Redraft.
 
 Readraft 是一套开源、自托管的 AI 阅读与创作工作台，面向长篇中文
@@ -125,7 +130,7 @@ Codex 暂未接入。拆文能力作为辅助研究工具服务创作：逐章�
 `requirements*.lock` 固定并校验全部依赖及其下载哈希。
 
 ```bash
-git clone https://github.com/YOUR_ACCOUNT/Readraft.git
+git clone https://github.com/ReBeating/Readraft.git
 cd Readraft
 python3.12 -m venv .venv
 source .venv/bin/activate

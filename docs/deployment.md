@@ -20,7 +20,7 @@ sudo install -d -o readraft -g readraft -m 700 /var/backups/readraft
 ## 2. 克隆和安装
 
 ```bash
-sudo -u readraft git clone https://github.com/YOUR_ACCOUNT/Readraft.git /opt/readraft
+sudo -u readraft git clone https://github.com/ReBeating/Readraft.git /opt/readraft
 sudo install -d -o readraft -g readraft -m 700 /opt/readraft/data
 sudo -u readraft python3.12 -m venv /opt/readraft/.venv
 sudo -u readraft /opt/readraft/.venv/bin/python -m pip install \
