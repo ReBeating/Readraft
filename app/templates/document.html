@@ -2,7 +2,7 @@
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-4">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260728-2">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -269,7 +269,10 @@
           {% endif %}
           {% if active_conversation and active_conversation.messages %}
             {% for message in active_conversation.messages[-30:] %}
-              <article class="studio-chat-message {{ message.role }}">
+              <article
+                class="studio-chat-message {{ message.role }}"
+                {% if message.role == 'assistant' %}data-assistant-message-id="{{ message.id }}"{% endif %}
+              >
                 <small>{% if message.role == 'user' %}你{% else %}AI{% endif %}</small>
                 {% if message.role == 'assistant' and message.model %}
                   <span class="studio-message-model">{{ message.model }}</span>
@@ -278,7 +281,7 @@
                   <blockquote>{{ message.quote.quote_text }}</blockquote>
                 {% endif %}
                 {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
-                  <p>正在读取原文与分析记录……</p>
+                  <p data-stream-content>正在读取原文与分析记录……</p>
                 {% elif message.status == 'failed' %}
                   <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
                 {% else %}
@@ -287,7 +290,10 @@
                     <section class="studio-chat-citations">
                       <strong>回答依据</strong>
                       {% for citation in message.response.citations %}
-                        <a href="{{ citation.url }}">
+                        <a
+                          href="{{ citation.url }}"
+                          {% if citation.external %}target="_blank" rel="noopener noreferrer"{% endif %}
+                        >
                           <span>{{ citation.label }}</span>
                           <q>{{ citation.quote }}</q>
                           {% if citation.note %}<small>{{ citation.note }}</small>{% endif %}
@@ -348,24 +354,6 @@
           <input type="hidden" name="quote_start" data-quote-start value="">
           <input type="hidden" name="quote_end" data-quote-end value="">
           <input type="hidden" name="quote_text" data-quote-text value="">
-          <div class="studio-chat-model-bar">
-            <label>
-              <span>本轮模型</span>
-              <select name="model_choice" data-model-choice {% if not model_groups %}disabled{% endif %}>
-                {% if model_groups %}
-                  {% for group in model_groups %}
-                    <optgroup label="{{ group.label }}">
-                      {% for model in group.models %}
-                        <option value="{{ model.value }}" {% if model.value == selected_model_choice %}selected{% endif %}>{{ model.id }}</option>
-                      {% endfor %}
-                    </optgroup>
-                  {% endfor %}
-                {% else %}
-                  <option value="">尚未配置模型</option>
-                {% endif %}
-              </select>
-            </label>
-          </div>
           <div class="studio-chat-quote" data-quote-preview hidden>
             <span>已引用原文</span>
             <q></q>
@@ -374,6 +362,24 @@
           <div class="studio-chat-input">
             <label class="sr-only" for="studio-reader-chat-question">给 AI 的消息</label>
             <textarea id="studio-reader-chat-question" name="question" rows="5" maxlength="8000" required placeholder="讨论原文、分析或创作方向……"></textarea>
+            <label class="studio-chat-quality">
+              <span class="sr-only">本轮模型强度</span>
+              <select
+                name="quality_mode"
+                data-quality-mode
+                data-conversation-id="{% if active_conversation %}{{ active_conversation.id }}{% endif %}"
+                aria-label="本轮模型强度"
+                {% if not model_groups or (active_conversation and active_conversation.pending_message_id) %}disabled{% endif %}
+              >
+                {% for mode in quality_modes %}
+                  <option
+                    value="{{ mode.value }}"
+                    title="{{ mode.description }}"
+                    {% if mode.value == selected_quality_mode %}selected{% endif %}
+                  >{{ mode.label }} · {{ mode.detail }}</option>
+                {% endfor %}
+              </select>
+            </label>
             <button type="submit" aria-label="发送消息" {% if active_conversation and active_conversation.pending_message_id %}disabled{% endif %}>
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="m4 4 16 8-16 8 3-8-3-8Z"></path>
@@ -387,5 +393,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-4" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260728-2" defer></script>
 {% endblock %}

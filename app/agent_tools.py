@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Type
+from typing import Any, Callable, Mapping, Optional, Sequence, Type
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +20,7 @@ from .agent_capabilities import (
     READ_REFERENCE,
     SEARCH_PROJECT,
     SEARCH_REFERENCE,
+    WEB_SEARCH,
 )
 from .assistant_chat_schema import (
     AssistantDraftProposal,
@@ -49,6 +51,13 @@ class SearchArguments(BaseModel):
 
     query: str = Field(min_length=1, max_length=500)
     max_results: int = Field(default=6, ge=1, le=10)
+
+
+class WebSearchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    query: str = Field(min_length=1, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=6)
 
 
 class ReferenceChapterArguments(BaseModel):
@@ -133,6 +142,25 @@ AGENT_TOOL_SPECS: dict[str, AgentToolSpec] = {
         scopes=frozenset({"reference_document", "reference_chapter"}),
         input_model=SearchArguments,
     ),
+    "search_web": AgentToolSpec(
+        name="search_web",
+        label="联网搜索",
+        description=(
+            "搜索当前互联网并返回标题、链接和可引用摘要。用户明确要求"
+            "搜索、核实或来源，问题依赖近期变化，或者缺少必要的外部现实"
+            "资料时调用；纯创作、改写、概括已有材料时不要调用。"
+        ),
+        capability=WEB_SEARCH,
+        scopes=frozenset(
+            {
+                "novel_project",
+                "novel_chapter",
+                "reference_document",
+                "reference_chapter",
+            }
+        ),
+        input_model=WebSearchArguments,
+    ),
     "read_reference_analysis": AgentToolSpec(
         name="read_reference_analysis",
         label="读取拆书分析",
@@ -203,7 +231,12 @@ def available_agent_tools(
     return [
         spec
         for spec in AGENT_TOOL_SPECS.values()
-        if spec.capability in capabilities and scope in spec.scopes
+        if spec.capability in capabilities
+        and scope in spec.scopes
+        and (
+            spec.name != "search_web"
+            or bool(context.get("web_search_available"))
+        )
     ]
 
 
@@ -217,9 +250,20 @@ class AgentToolExecution:
     rewrite: AssistantRewriteProposal | None = None
 
 
+WebSearchCallable = Callable[
+    [int, str, int], Sequence[Mapping[str, Any]]
+]
+
+
 class AgentToolExecutor:
-    def __init__(self, database: Database):
+    def __init__(
+        self,
+        database: Database,
+        *,
+        web_search: WebSearchCallable | None = None,
+    ):
         self.database = database
+        self.web_search = web_search
 
     def execute(
         self,
@@ -400,7 +444,7 @@ class AgentToolExecutor:
         self,
         *,
         user_id: int,
-        arguments: SearchArguments,
+        arguments: WebSearchArguments,
         context: Mapping[str, Any],
         **_: Any,
     ) -> AgentToolExecution:
@@ -453,6 +497,61 @@ class AgentToolExecutor:
                 "matched_count": len(matches),
             },
             accessed_sources=accessed_sources,
+        )
+
+    def _execute_search_web(
+        self,
+        *,
+        user_id: int,
+        arguments: SearchArguments,
+        **_: Any,
+    ) -> AgentToolExecution:
+        if self.web_search is None:
+            raise ValueError("联网搜索尚未配置")
+        raw_results = self.web_search(
+            user_id,
+            arguments.query,
+            arguments.max_results,
+        )
+        matches: list[dict[str, Any]] = []
+        sources: list[dict[str, Any]] = []
+        for raw in raw_results[: arguments.max_results]:
+            title = str(raw.get("title") or "").strip()
+            url = str(raw.get("url") or "").strip()
+            snippet = str(raw.get("snippet") or "").strip()
+            if not title or not url or not snippet:
+                continue
+            source_id = (
+                "web:"
+                + hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+            )
+            source = {
+                "source_id": source_id,
+                "kind": "web",
+                "label": title,
+                "text": snippet,
+                "base_offset": 0,
+                "url": url,
+            }
+            sources.append(source)
+            matches.append(
+                {
+                    "source_id": source_id,
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                }
+            )
+        return AgentToolExecution(
+            result={
+                "query": arguments.query,
+                "matches": matches,
+                "matched_count": len(matches),
+                "source_notice": (
+                    "搜索摘要来自外部网页，必须交叉核对并引用来源。"
+                ),
+            },
+            accessed_sources=sources,
         )
 
     def _execute_read_reference_analysis(

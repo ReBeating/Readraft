@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .assistant_chat import (
+    AnswerUpdateCallback,
     BaseAssistantChatModel,
     DeepSeekAssistantChatModel,
 )
@@ -42,9 +43,13 @@ from .memory_extraction import (
 from .memory_service import MemoryService
 from .model_provider import (
     ProviderConfigError,
-    ReasoningPolicy,
     settings_for_credential,
     settings_for_reasoning_policy,
+)
+from .model_routing import (
+    ModelTaskPolicy,
+    normalize_quality_mode,
+    route_model_task,
 )
 from .planning_ai import (
     BaseChapterPlanner,
@@ -92,6 +97,7 @@ from .voice_extraction import (
     locate_voice_evidence,
 )
 from .writing import BaseWriter, DeepSeekWriter
+from .web_search import ExaWebSearch, WebSearchError
 
 
 logger = logging.getLogger(__name__)
@@ -145,7 +151,8 @@ class AnalysisWorker:
             settings.documents_dir,
         )
         self.assistant_agent_orchestrator = AssistantAgentOrchestrator(
-            self.assistant_chat_service
+            self.assistant_chat_service,
+            web_search=self._search_web,
         )
         self.planning_service = PlanningService(database)
         self.scene_service = SceneService(database)
@@ -173,6 +180,33 @@ class AnalysisWorker:
         self.last_error: str | None = None
         self.consecutive_loop_failures = 0
 
+    def _search_web(
+        self,
+        user_id: int,
+        query: str,
+        max_results: int,
+    ) -> list[dict[str, str]]:
+        settings = self.database.get_web_search_settings(user_id)
+        if settings is not None and not settings.get("enabled"):
+            raise ValueError("联网搜索尚未启用")
+        try:
+            results = ExaWebSearch(
+                api_key=self.settings.exa_api_key,
+            ).search(
+                query,
+                max_results=max_results,
+            )
+        except WebSearchError as exc:
+            raise ValueError(str(exc)) from exc
+        return [
+            {
+                "title": item.title,
+                "url": item.url,
+                "snippet": item.snippet,
+            }
+            for item in results
+        ]
+
     @property
     def healthy(self) -> bool:
         return not self._stopping and self.consecutive_loop_failures < 3
@@ -181,18 +215,54 @@ class AnalysisWorker:
         self._wake.set()
 
     async def _personal_model_settings(
-        self, item: dict, reasoning_policy: ReasoningPolicy
+        self, item: dict, task_policy: ModelTaskPolicy
     ) -> Settings:
         user_id = int(item["user_id"])
-        provider = str(item["provider"])
-        credential, stored_adapter_prompt = await asyncio.gather(
+        routing_preferences, stored_adapter_prompt = await asyncio.gather(
             asyncio.to_thread(
-                self.database.get_api_credential, user_id, provider
+                self.database.get_model_routing_preferences, user_id
             ),
             asyncio.to_thread(
                 self.database.get_model_adapter_prompt, user_id
             ),
         )
+        quality_mode = normalize_quality_mode(
+            item.get("quality_mode")
+            or routing_preferences["default_quality_mode"]
+        )
+        routing = route_model_task(quality_mode, task_policy)
+        preferred_provider = str(
+            routing_preferences[
+                f"{routing.model_role}_provider"
+            ]
+            or ""
+        )
+        preferred_model = str(
+            routing_preferences[f"{routing.model_role}_model"]
+            or ""
+        )
+        provider = preferred_provider or str(item["provider"])
+        model = preferred_model or str(item["model"])
+        credential, allowed_models = await asyncio.gather(
+            asyncio.to_thread(
+                self.database.get_api_credential, user_id, provider
+            ),
+            asyncio.to_thread(
+                self.database.list_api_models, user_id, provider
+            ),
+        )
+        if (
+            not credential
+            or (
+                model != str(credential["model"])
+                and model not in allowed_models
+            )
+        ):
+            provider = str(item["provider"])
+            model = str(item["model"])
+            credential = await asyncio.to_thread(
+                self.database.get_api_credential, user_id, provider
+            )
         if not credential:
             raise AnalyzerError(
                 "个人模型凭据已被删除，请重新配置后重试"
@@ -206,14 +276,14 @@ class AnalysisWorker:
                     self.settings,
                     credential=credential,
                     api_key=api_key,
-                    model=str(item["model"]),
+                    model=model,
                     model_adapter_prompt=(
                         self.settings.model_adapter_prompt
                         if stored_adapter_prompt is None
                         else stored_adapter_prompt
                     ),
                 ),
-                reasoning_policy,
+                routing.reasoning_policy,
             )
         except (CredentialError, ProviderConfigError) as exc:
             raise AnalyzerError(str(exc)) from exc
@@ -477,6 +547,42 @@ class AnalysisWorker:
     async def _process_assistant_chat(self, item: dict) -> None:
         message_id = str(item["id"])
         claim_token = str(item["claim_token"])
+        pending_stream = ""
+        flushed_stream = ""
+        last_stream_write = 0.0
+
+        async def update_stream(content: str) -> None:
+            nonlocal pending_stream, flushed_stream, last_stream_write
+            pending_stream = content
+            now = time.monotonic()
+            if (
+                len(pending_stream) - len(flushed_stream) < 48
+                and now - last_stream_write < 0.08
+            ):
+                return
+            accepted = await asyncio.to_thread(
+                self.assistant_chat_service.set_message_stream,
+                message_id=message_id,
+                claim_token=claim_token,
+                content=pending_stream,
+            )
+            if accepted:
+                flushed_stream = pending_stream
+                last_stream_write = now
+
+        async def flush_stream() -> None:
+            nonlocal flushed_stream
+            if pending_stream == flushed_stream:
+                return
+            accepted = await asyncio.to_thread(
+                self.assistant_chat_service.set_message_stream,
+                message_id=message_id,
+                claim_token=claim_token,
+                content=pending_stream,
+            )
+            if accepted:
+                flushed_stream = pending_stream
+
         try:
             payload = await asyncio.to_thread(
                 self.assistant_chat_service.build_job_payload, item
@@ -484,7 +590,9 @@ class AnalysisWorker:
             response = await self._reply_assistant_chat(
                 item=item,
                 payload=payload,
+                on_answer_update=update_stream,
             )
+            await flush_stream()
             accepted = await asyncio.to_thread(
                 self.assistant_chat_service.complete_message,
                 message_id=message_id,
@@ -499,6 +607,7 @@ class AnalysisWorker:
             else:
                 await self._queue_assistant_memory(item, message_id)
         except AnalyzerError as exc:
+            await flush_stream()
             logger.warning(
                 "assistant chat failed id=%s: %s", message_id, exc
             )
@@ -511,6 +620,7 @@ class AnalysisWorker:
                 output_tokens=exc.output_tokens,
             )
         except (OSError, UnicodeError, ValueError) as exc:
+            await flush_stream()
             logger.warning(
                 "assistant chat input failed id=%s: %s",
                 message_id,
@@ -2326,19 +2436,64 @@ class AnalysisWorker:
         *,
         item: dict,
         payload: dict,
+        on_answer_update: AnswerUpdateCallback | None = None,
     ):
         user_id = int(item["user_id"])
         provider_user_id = stable_provider_user_id(
             user_id, self.provider_user_secret
         )
         model = self.assistant_chat_model
-        close_model = False
+        routing_model = model
+        role_models: dict[str, BaseAssistantChatModel] = {}
+        owned_models: list[BaseAssistantChatModel] = []
         if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(
-                item, "reasoning"
-            )
-            model = DeepSeekAssistantChatModel(personal_settings)
-            close_model = True
+            if not (item.get("id") and item.get("claim_token")):
+                personal_settings = await self._personal_model_settings(
+                    item, "discussion"
+                )
+                model = DeepSeekAssistantChatModel(personal_settings)
+                routing_model = model
+                owned_models.append(model)
+            else:
+                (
+                    routing_settings,
+                    discussion_settings,
+                    reasoning_settings,
+                    deep_settings,
+                ) = await asyncio.gather(
+                    self._personal_model_settings(item, "fast"),
+                    self._personal_model_settings(item, "discussion"),
+                    self._personal_model_settings(item, "reasoning"),
+                    self._personal_model_settings(item, "deep"),
+                )
+
+                models_by_settings: dict[
+                    Settings, BaseAssistantChatModel
+                ] = {}
+
+                def model_for(
+                    settings: Settings,
+                ) -> BaseAssistantChatModel:
+                    selected = models_by_settings.get(settings)
+                    if selected is None:
+                        selected = DeepSeekAssistantChatModel(settings)
+                        models_by_settings[settings] = selected
+                        owned_models.append(selected)
+                    return selected
+
+                routing_model = model_for(routing_settings)
+                model = model_for(discussion_settings)
+                reasoning_model = model_for(reasoning_settings)
+                deep_model = model_for(deep_settings)
+                role_models = {
+                    "advisor": model,
+                    "analyst": reasoning_model,
+                    "planner": reasoning_model,
+                    "researcher": reasoning_model,
+                    "writer": reasoning_model,
+                    "editor": reasoning_model,
+                    "story_planner": deep_model,
+                }
         elif self.assistant_chat_model is None or (
             str(item["provider"]) != self.assistant_chat_model.provider
         ):
@@ -2349,9 +2504,12 @@ class AnalysisWorker:
             if item.get("id") and item.get("claim_token"):
                 return await self.assistant_agent_orchestrator.run(
                     model=model,
+                    routing_model=routing_model,
+                    role_models=role_models,
                     item=item,
                     payload=payload,
                     provider_user_id=provider_user_id,
+                    on_answer_update=on_answer_update,
                 )
             return await model.reply(
                 context=payload["context"],
@@ -2362,8 +2520,8 @@ class AnalysisWorker:
                 provider_user_id=provider_user_id,
             )
         finally:
-            if close_model:
-                await model.close()
+            for owned_model in owned_models:
+                await owned_model.close()
 
     async def stop(self) -> None:
         self._stopping = True

@@ -4,6 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <style>
+      html[data-theme="day"] { background: #f1efe3; color-scheme: light; }
+      html[data-theme="night"] { background: #101513; color-scheme: dark; }
+    </style>
+    <script>
+      try {
+        document.documentElement.dataset.theme =
+          localStorage.getItem("novel-workbench-theme") === "night"
+            ? "night"
+            : "day";
+      } catch (_) {
+        document.documentElement.dataset.theme = "day";
+      }
+    </script>
     <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}?v=20260727-1" type="image/svg+xml">
     <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20260727-2">
     {% block head %}{% endblock %}
@@ -79,7 +93,7 @@
     {% endblock %}
     {% block scripts %}{% endblock %}
     {% if user and not suppress_model_settings_dialog %}
-      <script src="{{ url_for('static', path='/model-settings-dialog.js') }}?v=20260726-1" defer></script>
+      <script src="{{ url_for('static', path='/model-settings-dialog.js') }}?v=20260728-2" defer></script>
     {% endif %}
   </body>
 </html>

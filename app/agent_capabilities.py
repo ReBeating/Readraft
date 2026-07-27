@@ -10,6 +10,7 @@ SEARCH_PROJECT = "search_project"
 READ_REFERENCE = "read_reference"
 SEARCH_REFERENCE = "search_reference"
 ANALYZE_REFERENCE = "analyze_reference"
+WEB_SEARCH = "web_search"
 PROPOSE_SETTINGS_PATCH = "propose_settings_patch"
 PROPOSE_STORY_PLAN = "propose_story_plan"
 CREATE_CANDIDATE_DRAFT = "create_candidate_draft"
@@ -25,6 +26,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                WEB_SEARCH,
             }
         ),
     },
@@ -36,6 +38,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                WEB_SEARCH,
             }
         ),
     },
@@ -47,6 +50,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                WEB_SEARCH,
                 PROPOSE_SETTINGS_PATCH,
             }
         ),
@@ -59,6 +63,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                WEB_SEARCH,
                 PROPOSE_STORY_PLAN,
             }
         ),
@@ -71,6 +76,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_REFERENCE,
                 SEARCH_REFERENCE,
                 ANALYZE_REFERENCE,
+                WEB_SEARCH,
             }
         ),
     },
@@ -82,6 +88,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                WEB_SEARCH,
                 CREATE_CANDIDATE_DRAFT,
             }
         ),
@@ -94,6 +101,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                WEB_SEARCH,
                 PROPOSE_TEXT_PATCH,
             }
         ),

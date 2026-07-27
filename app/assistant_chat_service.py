@@ -29,6 +29,7 @@ from .assistant_chat_schema import (
 )
 from .context_compiler import build_writing_context_snapshot
 from .db import Database, utc_after, utc_now
+from .model_routing import normalize_quality_mode
 from .text_metrics import effective_char_count
 from .story_planning_service import StoryPlanningService
 
@@ -399,13 +400,26 @@ class AssistantChatService:
                 else:
                     reference_chapter_id = None
                     fallback = f"拆解《{document['title']}》"
+            preference = connection.execute(
+                """
+                SELECT default_quality_mode
+                FROM user_model_preferences
+                WHERE user_id=?
+                """,
+                (user_id,),
+            ).fetchone()
+            quality_mode = normalize_quality_mode(
+                preference["default_quality_mode"]
+                if preference
+                else "standard"
+            )
             connection.execute(
                 """
                 INSERT INTO assistant_conversations(
                     id, user_id, scope_type, project_id, document_id,
                     novel_chapter_id, reference_chapter_id, title,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    quality_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation_id,
@@ -416,6 +430,7 @@ class AssistantChatService:
                     novel_chapter_id,
                     reference_chapter_id,
                     _clean_title(title, fallback),
+                    quality_mode,
                     now,
                     now,
                 ),
@@ -547,7 +562,7 @@ class AssistantChatService:
                        c.id AS source_conversation_id,
                        c.scope_type, c.project_id, c.document_id,
                        c.novel_chapter_id, c.reference_chapter_id,
-                       c.title
+                       c.title, c.quality_mode
                 FROM assistant_messages m
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
@@ -646,8 +661,8 @@ class AssistantChatService:
                 INSERT INTO assistant_conversations(
                     id, user_id, scope_type, project_id, document_id,
                     novel_chapter_id, reference_chapter_id, title,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    quality_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation_id,
@@ -658,6 +673,7 @@ class AssistantChatService:
                     source["novel_chapter_id"],
                     source["reference_chapter_id"],
                     branch_title,
+                    normalize_quality_mode(source["quality_mode"]),
                     now,
                     now,
                 ),
@@ -690,9 +706,9 @@ class AssistantChatService:
                     INSERT INTO assistant_messages(
                         id, conversation_id, role, content,
                         parent_user_message_id, status, provider, model,
-                        credential_source, response_json, input_tokens,
+                        credential_source, quality_mode, response_json, input_tokens,
                         output_tokens, created_at, started_at, finished_at
-                    ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, 0, 0,
+                    ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, 0, 0,
                               ?, NULL, ?)
                     """,
                     (
@@ -704,6 +720,7 @@ class AssistantChatService:
                         original["provider"],
                         original["model"],
                         original["credential_source"],
+                        normalize_quality_mode(original["quality_mode"]),
                         response_json,
                         original["created_at"],
                         original["finished_at"] or original["created_at"],
@@ -877,6 +894,61 @@ class AssistantChatService:
         )
         return result
 
+    def set_conversation_quality_mode(
+        self,
+        *,
+        user_id: int,
+        conversation_id: str,
+        quality_mode: str,
+    ) -> str:
+        clean_quality_mode = normalize_quality_mode(quality_mode)
+        if str(quality_mode or "").strip().lower() != clean_quality_mode:
+            raise ValueError("不支持的模型强度")
+        now = utc_now()
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                """
+                SELECT 1 FROM assistant_messages
+                WHERE conversation_id=? AND role='assistant'
+                  AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if active:
+                connection.rollback()
+                raise ValueError("AI 正在回复，请完成后再切换模型强度")
+            cursor = connection.execute(
+                """
+                UPDATE assistant_conversations
+                SET quality_mode=?, updated_at=?
+                WHERE id=? AND user_id=?
+                """,
+                (
+                    clean_quality_mode,
+                    now,
+                    conversation_id,
+                    user_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise ValueError("对话不存在")
+            connection.execute(
+                """
+                INSERT INTO user_model_preferences(
+                    user_id, default_quality_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    default_quality_mode=excluded.default_quality_mode,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, clean_quality_mode, now, now),
+            )
+            connection.commit()
+        return clean_quality_mode
+
     def queue_message(
         self,
         *,
@@ -890,6 +962,7 @@ class AssistantChatService:
         agent_role: str = "auto",
         ui_surface: str = "",
         auto_commit: bool = False,
+        quality_mode: str = "",
     ) -> str:
         clean_question = question.strip()
         if not clean_question:
@@ -904,6 +977,14 @@ class AssistantChatService:
         )
         if not conversation:
             raise ValueError("对话不存在")
+        clean_quality_mode = normalize_quality_mode(
+            quality_mode or conversation.get("quality_mode")
+        )
+        if (
+            quality_mode
+            and str(quality_mode).strip().lower() != clean_quality_mode
+        ):
+            raise ValueError("不支持的模型强度")
         clean_ui_surface = str(ui_surface or "").strip().lower()
         if clean_ui_surface not in {
             "project",
@@ -1039,15 +1120,17 @@ class AssistantChatService:
                 """
                 INSERT INTO assistant_messages(
                     id, conversation_id, role, content, status,
-                    provider, model, credential_source, created_at,
+                    provider, model, credential_source, quality_mode,
+                    created_at,
                     finished_at
                 ) VALUES (?, ?, 'user', ?, 'completed', '', '', 'default',
-                          ?, ?)
+                          ?, ?, ?)
                 """,
                 (
                     user_message_id,
                     conversation_id,
                     clean_question,
+                    clean_quality_mode,
                     now,
                     now,
                 ),
@@ -1084,8 +1167,8 @@ class AssistantChatService:
                 INSERT INTO assistant_messages(
                     id, conversation_id, role, parent_user_message_id,
                     status, provider, model, credential_source,
-                    context_snapshot_json, created_at
-                ) VALUES (?, ?, 'assistant', ?, 'queued', ?, ?, ?, ?, ?)
+                    quality_mode, context_snapshot_json, created_at
+                ) VALUES (?, ?, 'assistant', ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     assistant_message_id,
@@ -1094,6 +1177,7 @@ class AssistantChatService:
                     provider,
                     model,
                     credential_source,
+                    clean_quality_mode,
                     _json(snapshot),
                     now,
                 ),
@@ -1113,18 +1197,34 @@ class AssistantChatService:
                 connection.execute(
                     """
                     UPDATE assistant_conversations
-                    SET title=?, updated_at=? WHERE id=?
+                    SET title=?, quality_mode=?, updated_at=? WHERE id=?
                     """,
-                    (generated_title, now, conversation_id),
+                    (
+                        generated_title,
+                        clean_quality_mode,
+                        now,
+                        conversation_id,
+                    ),
                 )
             else:
                 connection.execute(
                     """
                     UPDATE assistant_conversations
-                    SET updated_at=? WHERE id=?
+                    SET quality_mode=?, updated_at=? WHERE id=?
                     """,
-                    (now, conversation_id),
+                    (clean_quality_mode, now, conversation_id),
                 )
+            connection.execute(
+                """
+                INSERT INTO user_model_preferences(
+                    user_id, default_quality_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    default_quality_mode=excluded.default_quality_mode,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, clean_quality_mode, now, now),
+            )
             connection.commit()
         return assistant_message_id
 
@@ -1607,7 +1707,9 @@ class AssistantChatService:
                 """
                 UPDATE assistant_messages
                 SET status='completed', content=?, response_json=?,
+                    stream_content=?, stream_sequence=stream_sequence+1,
                     raw_response=?, input_tokens=?, output_tokens=?,
+                    provider=?, model=?,
                     finished_at=?, claim_token=NULL, lease_expires_at=NULL,
                     error=NULL
                 WHERE id=? AND role='assistant' AND status='running'
@@ -1616,9 +1718,12 @@ class AssistantChatService:
                 (
                     normalized["answer"],
                     _json(normalized),
+                    normalized["answer"],
                     response.raw_response,
                     response.input_tokens,
                     response.output_tokens,
+                    response.provider,
+                    response.model,
                     utc_now(),
                     message_id,
                     claim_token,
@@ -1634,6 +1739,73 @@ class AssistantChatService:
                 context=dict(snapshot.get("context") or {}),
             )
         return accepted
+
+    def set_message_stream(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        content: str,
+    ) -> bool:
+        bounded = str(content or "")[:30_000]
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE assistant_messages
+                SET stream_content=?, stream_sequence=stream_sequence+1
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=? AND stream_content<>?
+                """,
+                (
+                    bounded,
+                    message_id,
+                    claim_token,
+                    bounded,
+                ),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def get_message_stream_state(
+        self,
+        *,
+        user_id: int,
+        message_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT m.id, m.conversation_id, m.status, m.content,
+                       m.stream_content, m.stream_sequence, m.error,
+                       m.response_json, m.provider, m.model
+                FROM assistant_messages m
+                JOIN assistant_conversations c
+                  ON c.id=m.conversation_id
+                WHERE m.id=? AND m.role='assistant' AND c.user_id=?
+                """,
+                (message_id, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        response = _load_json(result.pop("response_json"), {})
+        auto_commit_status = str(
+            (response.get("auto_commit") or {}).get("status") or ""
+        )
+        message_status = str(result["status"])
+        result["content"] = str(
+            result.get("stream_content")
+            or result.get("content")
+            or ""
+        )
+        result["terminal"] = (
+            message_status == "failed"
+            or (
+                message_status == "completed"
+                and auto_commit_status != "pending"
+            )
+        )
+        return result
 
     def _auto_commit_completed_message(
         self,
@@ -1738,7 +1910,8 @@ class AssistantChatService:
                 UPDATE assistant_messages
                 SET status='failed', error=?, input_tokens=?,
                     output_tokens=?, finished_at=?, claim_token=NULL,
-                    lease_expires_at=NULL
+                    lease_expires_at=NULL,
+                    stream_sequence=stream_sequence+1
                 WHERE id=? AND role='assistant' AND status='running'
                   AND claim_token=?
                 """,
@@ -2839,6 +3012,10 @@ class AssistantChatService:
         manifest = agent_manifest(agent_role)
         capabilities = agent_capabilities(agent_role)
         context["ui_surface"] = str(ui_surface or "")
+        search_settings = self.database.get_web_search_summary(user_id)
+        context["web_search_available"] = bool(
+            search_settings is None or search_settings.get("enabled")
+        )
         context["agent"] = manifest
         context["assistant_boundaries"] = {
             "may_modify_canon": False,
@@ -3491,8 +3668,9 @@ class AssistantChatService:
             absolute_start = int(source.get("base_offset") or 0) + local_start
             absolute_end = absolute_start + len(proposal.quote)
             url = str(source.get("url") or "")
+            external = str(source.get("kind") or "") == "web"
             separator = "&" if "?" in url else "?"
-            if url:
+            if url and not external:
                 url = (
                     f"{url}{separator}start={absolute_start}"
                     f"&end={absolute_end}"
@@ -3504,6 +3682,7 @@ class AssistantChatService:
                     "quote": proposal.quote,
                     "note": proposal.note,
                     "url": url,
+                    "external": external,
                     "start_offset": absolute_start,
                     "end_offset": absolute_end,
                 }

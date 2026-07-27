@@ -41,6 +41,89 @@ def make_settings(tmp_path: Path) -> Settings:
     )
 
 
+def test_personal_model_strategy_routes_two_models_and_three_modes(tmp_path):
+    settings = make_settings(tmp_path)
+    database = Database(settings.database_path)
+    database.initialize()
+    user_id = database.create_user(
+        "strategy-user", hash_password("password-123")
+    )
+    cipher = CredentialCipher(settings.credential_secret)
+    database.upsert_api_credential(
+        user_id=user_id,
+        encrypted_key=cipher.encrypt("sk-strategy-user-2468"),
+        key_hint="sk-••••2468",
+        model="deepseek-v4-flash",
+        models=["deepseek-v4-flash", "deepseek-v4-pro"],
+    )
+    database.upsert_model_routing_preferences(
+        user_id=user_id,
+        fast_provider="deepseek",
+        fast_model="deepseek-v4-flash",
+        quality_provider="deepseek",
+        quality_model="deepseek-v4-pro",
+        default_quality_mode="standard",
+    )
+    worker = AnalysisWorker(
+        database,
+        MockAnalyzer(),
+        MockWriter(),
+        settings.secret_key,
+        settings,
+        cipher,
+        poll_seconds=0.01,
+    )
+    base_item = {
+        "user_id": user_id,
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "credential_source": "personal",
+    }
+
+    async def settings_for(mode, task):
+        return await worker._personal_model_settings(
+            {**base_item, "quality_mode": mode},
+            task,
+        )
+
+    low = asyncio.run(settings_for("low", "deep"))
+    standard_discussion = asyncio.run(
+        settings_for("standard", "discussion")
+    )
+    standard_writing = asyncio.run(
+        settings_for("standard", "reasoning")
+    )
+    standard_planning = asyncio.run(
+        settings_for("standard", "deep")
+    )
+    maximum = asyncio.run(settings_for("max", "fast"))
+
+    assert (
+        low.deepseek_model,
+        low.deepseek_thinking,
+    ) == ("deepseek-v4-flash", False)
+    assert (
+        standard_discussion.deepseek_model,
+        standard_discussion.deepseek_thinking,
+        standard_discussion.deepseek_reasoning_effort,
+    ) == ("deepseek-v4-flash", True, "high")
+    assert (
+        standard_writing.deepseek_model,
+        standard_writing.deepseek_thinking,
+        standard_writing.deepseek_reasoning_effort,
+    ) == ("deepseek-v4-pro", True, "high")
+    assert (
+        standard_planning.deepseek_model,
+        standard_planning.deepseek_thinking,
+        standard_planning.deepseek_reasoning_effort,
+    ) == ("deepseek-v4-pro", True, "max")
+    assert (
+        maximum.deepseek_model,
+        maximum.deepseek_thinking,
+        maximum.deepseek_reasoning_effort,
+    ) == ("deepseek-v4-pro", True, "max")
+
+
 def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
     database = Database(settings.database_path)

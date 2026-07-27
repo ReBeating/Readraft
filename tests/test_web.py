@@ -1147,7 +1147,7 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
         )
 
 
-def test_workbench_model_picker_controls_queued_chat_model(
+def test_workbench_quality_mode_uses_saved_two_model_strategy(
     tmp_path, monkeypatch
 ):
     queued = {}
@@ -1189,6 +1189,20 @@ def test_workbench_model_picker_controls_queued_chat_model(
         )
         assert response.status_code == 303
 
+        routing_page = client.get("/settings/api?tab=routing")
+        response = client.post(
+            "/settings/model-routing",
+            data={
+                "fast_model_choice": "deepseek|deepseek-chat",
+                "quality_model_choice": "deepseek|deepseek-reasoner",
+                "default_quality_mode": "standard",
+                "provider": "deepseek",
+                "csrf": csrf_from(routing_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
         dashboard = client.get("/dashboard")
         created = client.post(
             "/novels/new/blank",
@@ -1197,10 +1211,10 @@ def test_workbench_model_picker_controls_queued_chat_model(
         )
         workbench = client.get(created.headers["location"])
         project_id = project_id_from_workbench(created.headers["location"])
-        assert 'name="model_choice"' in workbench.text
-        assert "data-model-choice" in workbench.text
-        assert 'value="deepseek|deepseek-chat"' in workbench.text
-        assert 'value="deepseek|deepseek-reasoner"' in workbench.text
+        assert 'name="quality_mode"' in workbench.text
+        assert "data-quality-mode" in workbench.text
+        assert 'value="standard"' in workbench.text
+        assert "Standard · 自动" in workbench.text
         model_choices = client.get("/api/settings/chat-models")
         assert model_choices.status_code == 200
         assert model_choices.json()["default"] == (
@@ -1213,13 +1227,34 @@ def test_workbench_model_picker_controls_queued_chat_model(
             "deepseek|deepseek-chat",
             "deepseek|deepseek-reasoner",
         ]
+        assert model_choices.json()["default_quality_mode"] == "standard"
+        assert [
+            mode["value"]
+            for mode in model_choices.json()["quality_modes"]
+        ] == ["low", "standard", "max"]
+
+        remembered = client.post(
+            "/api/settings/quality-mode",
+            data={
+                "csrf": csrf_from(workbench.text),
+                "quality_mode": "low",
+            },
+        )
+        assert remembered.status_code == 200
+        assert remembered.json()["quality_mode"] == "low"
+        refreshed_workbench = client.get(created.headers["location"])
+        assert re.search(
+            r'<option(?=[^>]*value="low")(?=[^>]*selected)[^>]*>',
+            refreshed_workbench.text,
+            re.DOTALL,
+        )
 
         response = client.post(
             f"/novels/{project_id}/assistant/messages",
             data={
-                "csrf": csrf_from(workbench.text),
+                "csrf": csrf_from(refreshed_workbench.text),
                 "question": "先讨论这一章的悬念推进。",
-                "model_choice": "deepseek|deepseek-reasoner",
+                "quality_mode": "max",
                 "return_view": "settings",
             },
             follow_redirects=False,
@@ -1228,6 +1263,7 @@ def test_workbench_model_picker_controls_queued_chat_model(
         assert queued["provider"] == "deepseek"
         assert queued["model"] == "deepseek-reasoner"
         assert queued["credential_source"] == "personal"
+        assert queued["quality_mode"] == "max"
 
 
 def test_remote_provider_rejects_missing_key_and_ignores_legacy_thinking(

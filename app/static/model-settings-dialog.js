@@ -31,10 +31,13 @@
   }
 
   async function refreshModelChoices() {
-    const selects = [
+    const modelSelects = [
       ...document.querySelectorAll("select[data-model-choice]"),
     ];
-    if (!selects.length) return;
+    const qualitySelects = [
+      ...document.querySelectorAll("select[data-quality-mode]"),
+    ];
+    if (!modelSelects.length && !qualitySelects.length) return;
 
     try {
       const response = await fetch("/api/settings/chat-models", {
@@ -46,7 +49,7 @@
       const payload = await response.json();
       const groups = Array.isArray(payload.groups) ? payload.groups : [];
 
-      selects.forEach((select) => {
+      modelSelects.forEach((select) => {
         const previousValue = select.value;
         select.replaceChildren();
         groups.forEach((group) => {
@@ -74,6 +77,32 @@
           option.value = "";
           option.textContent = "尚未配置模型";
           select.append(option);
+        }
+        select.disabled = groups.length === 0;
+      });
+
+      const qualityModes = Array.isArray(payload.quality_modes)
+        ? payload.quality_modes
+        : [];
+      qualitySelects.forEach((select) => {
+        const previousValue = select.value;
+        select.replaceChildren();
+        qualityModes.forEach((mode) => {
+          const option = document.createElement("option");
+          option.value = mode.value;
+          option.textContent = `${mode.label} · ${mode.detail}`;
+          option.title = mode.description;
+          select.append(option);
+        });
+        const availableValues = new Set(
+          [...select.options].map((option) => option.value),
+        );
+        if (availableValues.has(previousValue)) {
+          select.value = previousValue;
+        } else if (
+          availableValues.has(payload.default_quality_mode)
+        ) {
+          select.value = payload.default_quality_mode;
         }
         select.disabled = groups.length === 0;
       });

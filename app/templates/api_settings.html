@@ -2,7 +2,7 @@
 {% block title %}模型配置 · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-settings-page{% if embedded %} studio-settings-embedded{% endif %}{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-15">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260728-2">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -37,10 +37,20 @@
         {% if active_settings_tab == 'providers' %}aria-current="page"{% endif %}
       >模型供应商</a>
       <a
+        href="{{ routing_tab_url }}"
+        class="{% if active_settings_tab == 'routing' %}active{% endif %}"
+        {% if active_settings_tab == 'routing' %}aria-current="page"{% endif %}
+      >模型策略</a>
+      <a
         href="{{ prompt_tab_url }}"
         class="{% if active_settings_tab == 'prompts' %}active{% endif %}"
         {% if active_settings_tab == 'prompts' %}aria-current="page"{% endif %}
       >提示词</a>
+      <a
+        href="{{ search_tab_url }}"
+        class="{% if active_settings_tab == 'search' %}active{% endif %}"
+        {% if active_settings_tab == 'search' %}aria-current="page"{% endif %}
+      >联网</a>
     </nav>
 
     {% if active_settings_tab == "providers" %}
@@ -235,6 +245,108 @@
 
       </aside>
       </div>
+    {% elif active_settings_tab == "routing" %}
+      <div class="studio-prompt-settings">
+        <form
+          method="post"
+          action="/settings/model-routing"
+          class="studio-api-form studio-routing-form"
+        >
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="provider" value="{{ selected_provider }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <input type="hidden" name="embedded" value="{{ 'true' if embedded else 'false' }}">
+
+          {% if routing_error %}<div class="studio-alert error">{{ routing_error }}</div>{% endif %}
+          {% if routing_saved %}<div class="studio-alert success">模型策略已保存。</div>{% endif %}
+
+          <header class="studio-adapter-heading">
+            <h2>模型策略</h2>
+          </header>
+
+          <div class="studio-routing-models">
+            <label>
+              <span>快速模型</span>
+              <select name="fast_model_choice" required {% if not routing_model_groups %}disabled{% endif %}>
+                {% for group in routing_model_groups %}
+                  <optgroup label="{{ group.label }}">
+                    {% for model in group.models %}
+                      <option value="{{ model.value }}" {% if model.value == fast_model_choice %}selected{% endif %}>{{ model.id }}</option>
+                    {% endfor %}
+                  </optgroup>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              <span>高质量模型</span>
+              <select name="quality_model_choice" required {% if not routing_model_groups %}disabled{% endif %}>
+                {% for group in routing_model_groups %}
+                  <optgroup label="{{ group.label }}">
+                    {% for model in group.models %}
+                      <option value="{{ model.value }}" {% if model.value == quality_model_choice %}selected{% endif %}>{{ model.id }}</option>
+                    {% endfor %}
+                  </optgroup>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+
+          <fieldset class="studio-quality-modes">
+            <legend>默认强度</legend>
+            <label>
+              <input type="radio" name="default_quality_mode" value="low" {% if default_quality_mode == 'low' %}checked{% endif %}>
+              <span><strong>Low</strong><small>全部使用快速模型，支持时关闭思考</small></span>
+            </label>
+            <label>
+              <input type="radio" name="default_quality_mode" value="standard" {% if default_quality_mode == 'standard' %}checked{% endif %}>
+              <span><strong>Standard</strong><small>快速任务用快速模型，写作分析用高质量模型</small></span>
+            </label>
+            <label>
+              <input type="radio" name="default_quality_mode" value="max" {% if default_quality_mode == 'max' %}checked{% endif %}>
+              <span><strong>Max</strong><small>全部使用高质量模型，支持时使用最大推理强度</small></span>
+            </label>
+          </fieldset>
+
+          <div class="studio-api-actions">
+            <button class="studio-button primary" type="submit" {% if not routing_model_groups %}disabled{% endif %}>保存模型策略</button>
+          </div>
+        </form>
+      </div>
+    {% elif active_settings_tab == "search" %}
+      <div class="studio-prompt-settings">
+        <form
+          method="post"
+          action="/settings/web-search"
+          class="studio-api-form studio-search-form"
+        >
+          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+          <input type="hidden" name="provider" value="{{ selected_provider }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <input type="hidden" name="embedded" value="{{ 'true' if embedded else 'false' }}">
+
+          {% if search_error %}<div class="studio-alert error">{{ search_error }}</div>{% endif %}
+          {% if search_saved %}<div class="studio-alert success">联网搜索设置已保存。</div>{% endif %}
+
+          <header class="studio-adapter-heading">
+            <h2>联网搜索</h2>
+            <p>使用 Exa；无需 API Key。</p>
+          </header>
+
+          <label class="studio-search-toggle">
+            <input
+              type="checkbox"
+              name="enabled"
+              value="true"
+              {% if not web_search_settings or web_search_settings.enabled %}checked{% endif %}
+            >
+            <span>允许 Agent 在需要时联网搜索</span>
+          </label>
+
+          <div class="studio-api-actions">
+            <button class="studio-button primary" type="submit">保存联网设置</button>
+          </div>
+        </form>
+      </div>
     {% else %}
       <div class="studio-prompt-settings">
         <form
@@ -269,10 +381,10 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260726-4" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260728-2" defer></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
-      {% if embedded and (saved or removed or adapter_saved) %}
+      {% if embedded and (saved or removed or adapter_saved or routing_saved or search_saved) %}
         window.parent.postMessage(
           {type: "readraft:model-settings-updated"},
           window.location.origin,

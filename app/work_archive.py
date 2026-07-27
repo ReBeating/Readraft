@@ -46,6 +46,7 @@ WORK_EXCLUDED_TABLES = {
     "api_credentials",
     "api_models",
     "user_model_preferences",
+    "user_web_search_settings",
     "schema_migrations",
     "story_memory_fts",
     "story_memory_fts_config",

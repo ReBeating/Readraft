@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS api_credentials (
 CREATE TABLE IF NOT EXISTS user_model_preferences (
     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     adapter_prompt TEXT NOT NULL DEFAULT '',
+    fast_provider TEXT NOT NULL DEFAULT '',
+    fast_model TEXT NOT NULL DEFAULT '',
+    quality_provider TEXT NOT NULL DEFAULT '',
+    quality_model TEXT NOT NULL DEFAULT '',
+    default_quality_mode TEXT NOT NULL DEFAULT 'standard'
+        CHECK(default_quality_mode IN ('low', 'standard', 'max')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -713,6 +719,57 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_web_search_settings(
+        self, user_id: int
+    ) -> Optional[Dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT user_id, enabled, created_at, updated_at
+                FROM user_web_search_settings
+                WHERE user_id=?
+                """,
+                (user_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_web_search_summary(
+        self, user_id: int
+    ) -> Optional[Dict[str, Any]]:
+        return self.get_web_search_settings(user_id)
+
+    def upsert_web_search_settings(
+        self,
+        *,
+        user_id: int,
+        enabled: bool,
+    ) -> None:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if has_active_user_ai_task(connection, user_id):
+                connection.rollback()
+                raise ValueError(
+                    "有 AI 任务正在运行，请在任务结束后再修改联网搜索配置"
+                )
+            connection.execute(
+                """
+                INSERT INTO user_web_search_settings(
+                    user_id, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    user_id,
+                    int(bool(enabled)),
+                    now,
+                    now,
+                ),
+            )
+            connection.commit()
+
     def list_api_models(
         self, user_id: int, provider: Optional[str] = None
     ) -> List[str]:
@@ -750,6 +807,106 @@ class Database:
                 (user_id,),
             ).fetchone()
         return str(row["adapter_prompt"]) if row else None
+
+    def get_model_routing_preferences(
+        self, user_id: int
+    ) -> Dict[str, str]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT fast_provider, fast_model,
+                       quality_provider, quality_model,
+                       default_quality_mode
+                FROM user_model_preferences
+                WHERE user_id=?
+                """,
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return {
+                "fast_provider": "",
+                "fast_model": "",
+                "quality_provider": "",
+                "quality_model": "",
+                "default_quality_mode": "standard",
+            }
+        return {
+            "fast_provider": str(row["fast_provider"] or ""),
+            "fast_model": str(row["fast_model"] or ""),
+            "quality_provider": str(row["quality_provider"] or ""),
+            "quality_model": str(row["quality_model"] or ""),
+            "default_quality_mode": str(
+                row["default_quality_mode"] or "standard"
+            ),
+        }
+
+    def upsert_model_routing_preferences(
+        self,
+        *,
+        user_id: int,
+        fast_provider: str,
+        fast_model: str,
+        quality_provider: str,
+        quality_model: str,
+        default_quality_mode: str,
+    ) -> None:
+        if default_quality_mode not in {"low", "standard", "max"}:
+            raise ValueError("不支持的模型强度")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if has_active_user_ai_task(connection, user_id):
+                connection.rollback()
+                raise ValueError(
+                    "有 AI 任务正在运行，请在任务结束后再修改模型策略"
+                )
+            connection.execute(
+                """
+                INSERT INTO user_model_preferences(
+                    user_id, fast_provider, fast_model,
+                    quality_provider, quality_model,
+                    default_quality_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    fast_provider=excluded.fast_provider,
+                    fast_model=excluded.fast_model,
+                    quality_provider=excluded.quality_provider,
+                    quality_model=excluded.quality_model,
+                    default_quality_mode=excluded.default_quality_mode,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    user_id,
+                    fast_provider,
+                    fast_model,
+                    quality_provider,
+                    quality_model,
+                    default_quality_mode,
+                    now,
+                    now,
+                ),
+            )
+            connection.commit()
+
+    def remember_quality_mode(
+        self, user_id: int, quality_mode: str
+    ) -> None:
+        if quality_mode not in {"low", "standard", "max"}:
+            raise ValueError("不支持的模型强度")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_model_preferences(
+                    user_id, default_quality_mode, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    default_quality_mode=excluded.default_quality_mode,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, quality_mode, now, now),
+            )
+            connection.commit()
 
     def upsert_model_adapter_prompt(
         self, user_id: int, adapter_prompt: str

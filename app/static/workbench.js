@@ -363,6 +363,7 @@
     "[data-actual-char-count]",
   );
   const chatForm = workbench.querySelector("[data-chat-form]");
+  let startAssistantStream = null;
   let autosaveTimer = 0;
   let saveStatusHideTimer = 0;
   let savePromise = null;
@@ -555,6 +556,123 @@
 
   if (chatForm) {
     const chatInput = chatForm.querySelector('textarea[name="question"]');
+    const qualityMode = chatForm.querySelector("[data-quality-mode]");
+    const chatScroll = workbench.querySelector("[data-chat-scroll]");
+    const sendButton = chatForm.querySelector('[type="submit"]');
+    let savedQualityMode = qualityMode?.value || "standard";
+    let activeEventSource = null;
+
+    const scrollChatToBottom = () => {
+      if (!chatScroll) return;
+      chatScroll.scrollTop = chatScroll.scrollHeight;
+    };
+
+    const setChatBusy = (busy) => {
+      if (sendButton) sendButton.disabled = busy;
+      if (qualityMode) qualityMode.disabled = busy;
+      chatForm.dataset.submitting = busy ? "true" : "false";
+    };
+
+    const appendPendingMessages = (question, messageId, quotedText) => {
+      if (!chatScroll) return null;
+      chatScroll.querySelector(".studio-chat-empty")?.remove();
+
+      const userMessage = document.createElement("article");
+      userMessage.className = "studio-chat-message user";
+      const userLabel = document.createElement("small");
+      userLabel.textContent = "你";
+      userMessage.append(userLabel);
+      if (quotedText) {
+        const quote = document.createElement("blockquote");
+        quote.textContent = quotedText;
+        userMessage.append(quote);
+      }
+      const userContent = document.createElement("p");
+      userContent.textContent = question;
+      userMessage.append(userContent);
+
+      const assistantMessage = document.createElement("article");
+      assistantMessage.className = "studio-chat-message assistant streaming";
+      assistantMessage.dataset.assistantMessageId = messageId;
+      const assistantLabel = document.createElement("small");
+      assistantLabel.textContent = "AI";
+      const assistantContent = document.createElement("p");
+      assistantContent.dataset.streamContent = "";
+      assistantContent.textContent = "正在判断任务并读取所需资料……";
+      assistantMessage.append(assistantLabel, assistantContent);
+
+      chatScroll.append(userMessage, assistantMessage);
+      scrollChatToBottom();
+      return assistantMessage;
+    };
+
+    const showChatError = (message, assistantMessage = null) => {
+      const target =
+        assistantMessage?.querySelector("[data-stream-content]") ||
+        document.createElement("p");
+      target.classList.add("studio-error-text");
+      target.textContent = message || "回复失败，请重试。";
+      assistantMessage?.classList.remove("streaming");
+      if (!assistantMessage && chatScroll) {
+        const state = document.createElement("p");
+        state.className = "studio-chat-state studio-error-text";
+        state.textContent = target.textContent;
+        chatScroll.append(state);
+      }
+      scrollChatToBottom();
+    };
+
+    startAssistantStream = (
+      messageId,
+      assistantMessage,
+      redirectUrl = window.location.href,
+    ) => {
+      if (!window.EventSource) return false;
+      activeEventSource?.close();
+      const target =
+        assistantMessage ||
+        chatScroll?.querySelector(
+          `[data-assistant-message-id="${messageId}"]`,
+        );
+      const contentNode = target?.querySelector("[data-stream-content]");
+      target?.classList.add("streaming");
+      let finished = false;
+      const source = new EventSource(
+        `/api/assistant/messages/${encodeURIComponent(messageId)}/stream`,
+      );
+      activeEventSource = source;
+      source.addEventListener("snapshot", (event) => {
+        const data = JSON.parse(event.data);
+        if (contentNode && data.content) {
+          contentNode.classList.remove("studio-error-text");
+          contentNode.textContent = data.content;
+          scrollChatToBottom();
+        }
+        if (data.status === "failed" && contentNode) {
+          showChatError(data.error, target);
+        }
+      });
+      source.addEventListener("done", (event) => {
+        finished = true;
+        source.close();
+        const data = JSON.parse(event.data);
+        target?.classList.remove("streaming");
+        if (data.status === "failed") {
+          showChatError(data.error, target);
+          setChatBusy(false);
+          return;
+        }
+        window.setTimeout(() => {
+          window.location.replace(redirectUrl);
+        }, 120);
+      });
+      source.onerror = () => {
+        if (finished) return;
+        // EventSource reconnects automatically. The existing status endpoint
+        // remains available as a fallback after a manual reload.
+      };
+      return true;
+    };
 
     chatInput?.addEventListener("keydown", (event) => {
       if (
@@ -572,6 +690,111 @@
         chatForm.requestSubmit(submit);
       } else {
         submit.click();
+      }
+    });
+
+    chatForm.addEventListener("submit", async (event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      if (
+        chatForm.dataset.submitting === "true" ||
+        !chatInput?.value.trim()
+      ) {
+        return;
+      }
+      const question = chatInput.value.trim();
+      setChatBusy(true);
+      try {
+        if (
+          manuscript &&
+          autosaveForm &&
+          manuscript.value !== lastSavedContent
+        ) {
+          const saved = await saveManuscript(true);
+          if (!saved) throw new Error("正文保存失败，请重试后再发送");
+        }
+        const formData = new FormData(chatForm);
+        formData.set("question", question);
+        const quotedText = String(formData.get("quote_text") || "");
+        const response = await fetch(chatForm.action, {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {"Accept": "application/json"},
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || "消息发送失败");
+        }
+        const conversationField = chatForm.elements.conversation_id;
+        if (conversationField) {
+          conversationField.value = result.conversation_id;
+        }
+        if (qualityMode) {
+          qualityMode.dataset.conversationId = result.conversation_id;
+        }
+        const assistantMessage = appendPendingMessages(
+          question,
+          result.message_id,
+          quotedText,
+        );
+        chatInput.value = "";
+        clearQuote();
+        window.history.replaceState(
+          {},
+          "",
+          result.redirect_url,
+        );
+        if (
+          !startAssistantStream(
+            result.message_id,
+            assistantMessage,
+            result.redirect_url,
+          )
+        ) {
+          window.location.replace(result.redirect_url);
+        }
+      } catch (error) {
+        setChatBusy(false);
+        showChatError(error.message || "消息发送失败");
+      }
+    });
+
+    qualityMode?.addEventListener("change", async () => {
+      const conversationId = qualityMode.dataset.conversationId;
+      const payload = new FormData();
+      payload.set("csrf", chatForm.elements.csrf.value);
+      payload.set("quality_mode", qualityMode.value);
+      qualityMode.disabled = true;
+      try {
+        const endpoint = conversationId
+          ? `/api/assistant/conversations/${encodeURIComponent(conversationId)}/quality-mode`
+          : "/api/settings/quality-mode";
+        const response = await fetch(
+          endpoint,
+          {
+            method: "POST",
+            body: payload,
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: {"Accept": "application/json"},
+          },
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || "模型强度保存失败");
+        }
+        savedQualityMode = result.quality_mode;
+        qualityMode.title = conversationId
+          ? "模型强度已保存到当前对话"
+          : "模型强度已设为新对话默认值";
+      } catch (error) {
+        qualityMode.value = savedQualityMode;
+        qualityMode.title =
+          error.message || "模型强度保存失败，请稍后重试";
+      } finally {
+        qualityMode.disabled = false;
       }
     });
   }
@@ -623,26 +846,6 @@
     workbench
       .querySelector("[data-clear-quote]")
       ?.addEventListener("click", clearQuote);
-  }
-
-  if (chatForm) {
-    chatForm.addEventListener("submit", async (event) => {
-      if (
-        manuscript &&
-        autosaveForm &&
-        manuscript.value !== lastSavedContent
-      ) {
-        event.preventDefault();
-        const submit = chatForm.querySelector('[type="submit"]');
-        if (submit) submit.disabled = true;
-        const saved = await saveManuscript(true);
-        if (saved) {
-          HTMLFormElement.prototype.submit.call(chatForm);
-        } else if (submit) {
-          submit.disabled = false;
-        }
-      }
-    });
   }
 
   const edgeCue = workbench.querySelector("[data-edge-cue]");
@@ -779,6 +982,7 @@
 
   const pendingMessageId = workbench.dataset.pendingMessageId;
   if (pendingMessageId) {
+    if (startAssistantStream?.(pendingMessageId, null)) return;
     let attempts = 0;
     const poll = async () => {
       attempts += 1;

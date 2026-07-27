@@ -3742,6 +3742,124 @@ def _work_version_reading_positions_v37(
     )
 
 
+def _model_quality_profiles_v38(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _add_column(
+        connection,
+        "user_model_preferences",
+        "fast_provider",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "user_model_preferences",
+        "fast_model",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "user_model_preferences",
+        "quality_provider",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "user_model_preferences",
+        "quality_model",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "user_model_preferences",
+        "default_quality_mode",
+        "TEXT NOT NULL DEFAULT 'standard'",
+    )
+    _add_column(
+        connection,
+        "assistant_conversations",
+        "quality_mode",
+        "TEXT NOT NULL DEFAULT 'standard'",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "quality_mode",
+        "TEXT NOT NULL DEFAULT 'standard'",
+    )
+
+
+def _assistant_streaming_and_web_search_v39(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _add_column(
+        connection,
+        "assistant_messages",
+        "stream_content",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "stream_sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_web_search_settings (
+            user_id INTEGER PRIMARY KEY
+                REFERENCES users(id) ON DELETE CASCADE,
+            enabled INTEGER NOT NULL DEFAULT 1
+                CHECK(enabled IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _exa_web_search_v40(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    if not {
+        "provider",
+        "encrypted_key",
+        "key_hint",
+    }.intersection(_columns(connection, "user_web_search_settings")):
+        return
+    connection.execute(
+        """
+        CREATE TABLE user_web_search_settings_v40 (
+            user_id INTEGER PRIMARY KEY
+                REFERENCES users(id) ON DELETE CASCADE,
+            enabled INTEGER NOT NULL DEFAULT 1
+                CHECK(enabled IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO user_web_search_settings_v40(
+            user_id, enabled, created_at, updated_at
+        )
+        SELECT user_id, enabled, created_at, updated_at
+        FROM user_web_search_settings
+        """
+    )
+    connection.execute("DROP TABLE user_web_search_settings")
+    connection.execute(
+        """
+        ALTER TABLE user_web_search_settings_v40
+        RENAME TO user_web_search_settings
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3887,6 +4005,21 @@ MIGRATIONS = (
         37,
         "work_version_reading_positions_v37",
         _work_version_reading_positions_v37,
+    ),
+    Migration(
+        38,
+        "model_quality_profiles_v38",
+        _model_quality_profiles_v38,
+    ),
+    Migration(
+        39,
+        "assistant_streaming_and_web_search_v39",
+        _assistant_streaming_and_web_search_v39,
+    ),
+    Migration(
+        40,
+        "exa_web_search_v40",
+        _exa_web_search_v40,
     ),
 )
 

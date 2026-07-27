@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import random
 import re
@@ -239,6 +240,166 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 await self._sleep(delay)
         raise AnalyzerError(
             f"{self._provider_spec.label} 连接失败，已重试 "
+            f"{self.settings.deepseek_max_retries} 次"
+        ) from last_error
+
+    async def _post_stream(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        on_content_delta: Callable[
+            [str], Awaitable[None] | None
+        ],
+    ) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
+        total_attempts = self.settings.deepseek_max_retries + 1
+        emitted_content = False
+        for attempt in range(total_attempts):
+            try:
+                streaming_payload = dict(payload)
+                streaming_payload["stream"] = True
+                if self._provider_spec.id in {"deepseek", "openai"}:
+                    streaming_payload["stream_options"] = {
+                        "include_usage": True
+                    }
+                content_parts: list[str] = []
+                non_sse_lines: list[str] = []
+                finish_reason = ""
+                usage: Mapping[str, Any] = {}
+                stream_finished = False
+                saw_sse_data = False
+                async with self._client.stream(
+                    "POST",
+                    "chat/completions",
+                    json=streaming_payload,
+                    ) as response:
+                    if response.status_code in self.RETRYABLE_STATUS_CODES:
+                        raise httpx.HTTPStatusError(
+                            (
+                                "模型服务暂时不可用"
+                                f"（HTTP {response.status_code}）"
+                            ),
+                            request=response.request,
+                            response=response,
+                        )
+                    if response.status_code >= 400:
+                        label = self._provider_spec.label
+                        messages = {
+                            400: f"{label} 请求格式不正确",
+                            401: f"{label} API Key 无效",
+                            402: f"{label} 账户余额不足",
+                            403: f"{label} API Key 无权执行此请求",
+                            422: f"{label} 请求参数无效",
+                        }
+                        raise AnalyzerError(
+                            messages.get(
+                                response.status_code,
+                                (
+                                    f"{label} 请求失败"
+                                    f"（HTTP {response.status_code}）"
+                                ),
+                            )
+                        )
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            if line.strip() and not line.lstrip().startswith(
+                                ":"
+                            ):
+                                non_sse_lines.append(line)
+                            continue
+                        saw_sse_data = True
+                        data = line[5:].strip()
+                        if not data:
+                            continue
+                        if data == "[DONE]":
+                            stream_finished = True
+                            break
+                        try:
+                            event = json.loads(data)
+                        except ValueError as exc:
+                            raise AnalyzerError(
+                                "模型流式响应包含无法解析的数据"
+                            ) from exc
+                        if not isinstance(event, Mapping):
+                            continue
+                        if isinstance(event.get("usage"), Mapping):
+                            usage = event["usage"]
+                        choices = event.get("choices") or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        if not isinstance(choice, Mapping):
+                            continue
+                        reason = str(
+                            choice.get("finish_reason") or ""
+                        )
+                        if reason:
+                            finish_reason = reason
+                        delta = choice.get("delta") or {}
+                        chunk = (
+                            delta.get("content")
+                            if isinstance(delta, Mapping)
+                            else None
+                        )
+                        if isinstance(chunk, str) and chunk:
+                            emitted_content = True
+                            content_parts.append(chunk)
+                            callback_result = on_content_delta(chunk)
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
+                if not saw_sse_data:
+                    try:
+                        fallback_body = json.loads(
+                            "\n".join(non_sse_lines)
+                        )
+                    except ValueError as exc:
+                        raise AnalyzerError(
+                            "模型服务没有返回可解析的流式响应"
+                        ) from exc
+                    if not isinstance(fallback_body, dict):
+                        raise AnalyzerError("模型服务返回结构不正确")
+                    try:
+                        fallback_content = fallback_body["choices"][0][
+                            "message"
+                        ]["content"]
+                    except (KeyError, IndexError, TypeError):
+                        fallback_content = ""
+                    if isinstance(fallback_content, str) and fallback_content:
+                        emitted_content = True
+                        callback_result = on_content_delta(
+                            fallback_content
+                        )
+                        if inspect.isawaitable(callback_result):
+                            await callback_result
+                    return fallback_body
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "".join(content_parts)
+                            },
+                            "finish_reason": (
+                                finish_reason
+                                or ("stop" if stream_finished else "")
+                            ),
+                        }
+                    ],
+                    "usage": dict(usage),
+                }
+            except AnalyzerError:
+                raise
+            except (
+                httpx.TimeoutException,
+                httpx.RequestError,
+                httpx.HTTPStatusError,
+            ) as exc:
+                last_error = exc
+                if emitted_content or attempt + 1 >= total_attempts:
+                    break
+                delay = min(8.0, 2**attempt) + random.uniform(0, 0.25)
+                await self._sleep(delay)
+        raise AnalyzerError(
+            f"{self._provider_spec.label} 流式连接失败，已重试 "
             f"{self.settings.deepseek_max_retries} 次"
         ) from last_error
 

@@ -24,6 +24,7 @@ from fastapi.responses import (
     JSONResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -73,6 +74,11 @@ from .model_provider import (
     list_providers,
     normalize_provider_base_url,
     settings_for_reasoning_policy,
+)
+from .model_routing import (
+    ModelTaskPolicy,
+    normalize_quality_mode,
+    route_model_task,
 )
 from .planning_schema import ChapterTaskCard, SceneBeat
 from .planning_ai import build_chapter_planner
@@ -285,6 +291,10 @@ def _request_relative_url(request: Request) -> str:
     if request.url.query:
         path = f"{path}?{request.url.query}"
     return _safe_next(path, "/dashboard")
+
+
+def _wants_json(request: Request) -> bool:
+    return "application/json" in request.headers.get("accept", "")
 
 
 def _api_settings_path(
@@ -1282,6 +1292,101 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return str(group["models"][0]["value"])
         return ""
 
+    def model_routing_configuration(
+        user_id: int,
+    ) -> Dict[str, Any]:
+        groups = chat_model_groups(user_id)
+        available = {
+            str(model["value"])
+            for group in groups
+            for model in group["models"]
+        }
+        preferences = database.get_model_routing_preferences(user_id)
+        fallback = selected_chat_model(groups)
+
+        def configured_choice(role: str) -> str:
+            value = (
+                f"{preferences[f'{role}_provider']}|"
+                f"{preferences[f'{role}_model']}"
+            )
+            return value if value in available else fallback
+
+        return {
+            "groups": groups,
+            "available": available,
+            "fast_model_choice": configured_choice("fast"),
+            "quality_model_choice": configured_choice("quality"),
+            "default_quality_mode": normalize_quality_mode(
+                preferences["default_quality_mode"]
+            ),
+        }
+
+    def routed_api_profile(
+        user_id: int,
+        *,
+        quality_mode: str,
+        task_policy: ModelTaskPolicy,
+        model_choice: str = "",
+    ) -> Optional[Dict[str, str]]:
+        if str(model_choice or "").strip():
+            return api_profile(user_id, model_choice)
+        configuration = model_routing_configuration(user_id)
+        decision = route_model_task(
+            normalize_quality_mode(quality_mode),
+            task_policy,
+        )
+        choice = str(
+            configuration[f"{decision.model_role}_model_choice"]
+        )
+        return api_profile(user_id, choice) if choice else api_profile(user_id)
+
+    def selected_quality_mode(
+        user_id: int,
+        conversation: Optional[Mapping[str, Any]] = None,
+    ) -> str:
+        if conversation and conversation.get("quality_mode"):
+            return normalize_quality_mode(conversation["quality_mode"])
+        return str(
+            model_routing_configuration(user_id)[
+                "default_quality_mode"
+            ]
+        )
+
+    def quality_mode_options(user_id: int) -> list[Dict[str, str]]:
+        configuration = model_routing_configuration(user_id)
+        fast_model = str(
+            configuration["fast_model_choice"]
+        ).partition("|")[2]
+        quality_model = str(
+            configuration["quality_model_choice"]
+        ).partition("|")[2]
+        return [
+            {
+                "value": "low",
+                "label": "Low",
+                "detail": fast_model or "快速模型",
+                "description": (
+                    "全部使用快速模型；服务商支持时关闭思考。"
+                ),
+            },
+            {
+                "value": "standard",
+                "label": "Standard",
+                "detail": "自动",
+                "description": (
+                    "轻量步骤使用快速模型，写作与分析使用高质量模型。"
+                ),
+            },
+            {
+                "value": "max",
+                "label": "Max",
+                "detail": quality_model or "高质量模型",
+                "description": (
+                    "全部使用高质量模型，并在服务商支持时使用最高推理强度。"
+                ),
+            },
+        ]
+
     def queue_background_memory(
         request: Request,
         *,
@@ -1678,6 +1783,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         removed: bool = False,
         adapter_saved: bool = False,
         adapter_error: Optional[str] = None,
+        routing_saved: bool = False,
+        routing_error: Optional[str] = None,
+        search_saved: bool = False,
+        search_error: Optional[str] = None,
         model_adapter_prompt: Optional[str] = None,
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -1691,7 +1800,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user_id = int(user["id"])
         safe_return_to = _safe_next(return_to, "/dashboard")
         active_settings_tab = (
-            "prompts" if settings_tab == "prompts" else "providers"
+            settings_tab
+            if settings_tab
+            in {"providers", "routing", "search", "prompts"}
+            else "providers"
         )
         default_credential = database.get_api_credential_summary(user_id)
         current_provider = provider or (
@@ -1769,6 +1881,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 else app_settings.model_adapter_prompt
             )
         )
+        routing_configuration = model_routing_configuration(user_id)
+        web_search_settings = database.get_web_search_summary(user_id)
         return render_template(
             "api_settings.html",
             _template_context(
@@ -1787,9 +1901,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 removed=removed,
                 adapter_saved=adapter_saved,
                 adapter_error=adapter_error,
+                routing_saved=routing_saved,
+                routing_error=routing_error,
+                search_saved=search_saved,
+                search_error=search_error,
+                web_search_settings=web_search_settings,
                 selected_model=current_model,
                 selected_models=current_models,
                 model_adapter_prompt=current_adapter_prompt,
+                routing_model_groups=routing_configuration["groups"],
+                fast_model_choice=routing_configuration[
+                    "fast_model_choice"
+                ],
+                quality_model_choice=routing_configuration[
+                    "quality_model_choice"
+                ],
+                default_quality_mode=routing_configuration[
+                    "default_quality_mode"
+                ],
                 server_api_available=bool(app_settings.deepseek_api_key),
                 settings_back_url=safe_return_to,
                 return_to=safe_return_to,
@@ -1806,6 +1935,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     embedded="true" if embedded else None,
                     return_to=safe_return_to,
                 ),
+                routing_tab_url=_api_settings_path(
+                    provider=current_provider,
+                    tab="routing",
+                    embedded="true" if embedded else None,
+                    return_to=safe_return_to,
+                ),
+                search_tab_url=_api_settings_path(
+                    provider=current_provider,
+                    tab="search",
+                    embedded="true" if embedded else None,
+                    return_to=safe_return_to,
+                ),
                 suppress_model_settings_dialog=True,
             ),
             status_code=status_code,
@@ -1817,6 +1958,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         saved: bool = False,
         removed: bool = False,
         adapter_saved: bool = False,
+        routing_saved: bool = False,
+        search_saved: bool = False,
         error: Optional[str] = None,
         provider: Optional[str] = None,
         return_to: str = "/dashboard",
@@ -1833,6 +1976,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             saved=saved,
             removed=removed,
             adapter_saved=adapter_saved,
+            routing_saved=routing_saved,
+            search_saved=search_saved,
             provider=provider,
             return_to=return_to,
             embedded=embedded,
@@ -1973,6 +2118,171 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
+
+    @application.post(
+        "/settings/model-routing",
+        response_class=HTMLResponse,
+    )
+    async def save_model_routing(
+        request: Request,
+        fast_model_choice: str = Form(""),
+        quality_model_choice: str = Form(""),
+        default_quality_mode: str = Form("standard"),
+        provider: str = Form("deepseek"),
+        return_to: str = Form("/dashboard"),
+        embedded: bool = Form(False),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        try:
+            configuration = model_routing_configuration(user_id)
+            available = set(configuration["available"])
+            if (
+                fast_model_choice not in available
+                or quality_model_choice not in available
+            ):
+                raise ValueError(
+                    "快速模型和高质量模型都必须来自“我的模型”"
+                )
+            fast_provider, fast_model = fast_model_choice.split("|", 1)
+            quality_provider, quality_model = (
+                quality_model_choice.split("|", 1)
+            )
+            clean_mode = normalize_quality_mode(default_quality_mode)
+            if clean_mode != str(default_quality_mode).strip().lower():
+                raise ValueError("不支持的默认模型强度")
+            database.upsert_model_routing_preferences(
+                user_id=user_id,
+                fast_provider=fast_provider,
+                fast_model=fast_model,
+                quality_provider=quality_provider,
+                quality_model=quality_model,
+                default_quality_mode=clean_mode,
+            )
+            current_provider = get_provider(provider).id
+        except ValueError as exc:
+            return render_api_settings(
+                request,
+                user,
+                routing_error=str(exc),
+                provider=provider,
+                return_to=return_to,
+                embedded=embedded,
+                settings_tab="routing",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        return RedirectResponse(
+            _api_settings_path(
+                provider=current_provider,
+                tab="routing",
+                routing_saved="true",
+                embedded="true" if embedded else None,
+                return_to=return_to,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/settings/web-search",
+        response_class=HTMLResponse,
+    )
+    async def save_web_search_settings(
+        request: Request,
+        enabled: bool = Form(False),
+        provider: str = Form("deepseek"),
+        return_to: str = Form("/dashboard"),
+        embedded: bool = Form(False),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        try:
+            current_provider = get_provider(provider).id
+            database.upsert_web_search_settings(
+                user_id=user_id,
+                enabled=enabled,
+            )
+        except ValueError as exc:
+            return render_api_settings(
+                request,
+                user,
+                search_error=str(exc),
+                provider=provider,
+                return_to=return_to,
+                embedded=embedded,
+                settings_tab="search",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        return RedirectResponse(
+            _api_settings_path(
+                provider=current_provider,
+                tab="search",
+                search_saved="true",
+                embedded="true" if embedded else None,
+                return_to=return_to,
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/api/assistant/conversations/{conversation_id}/quality-mode"
+    )
+    async def set_assistant_conversation_quality_mode(
+        request: Request,
+        conversation_id: str,
+        quality_mode: str = Form(...),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        verify_csrf(request, csrf)
+        try:
+            selected = (
+                assistant_chat_service.set_conversation_quality_mode(
+                    user_id=int(user["id"]),
+                    conversation_id=conversation_id,
+                    quality_mode=quality_mode,
+                )
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        return JSONResponse({"quality_mode": selected})
+
+    @application.post("/api/settings/quality-mode")
+    async def remember_default_quality_mode(
+        request: Request,
+        quality_mode: str = Form(...),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        verify_csrf(request, csrf)
+        selected = normalize_quality_mode(quality_mode)
+        if str(quality_mode or "").strip().lower() != selected:
+            return JSONResponse(
+                {"error": "不支持的模型强度"},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        database.remember_quality_mode(int(user["id"]), selected)
+        return JSONResponse({"quality_mode": selected})
 
     @application.post("/api/settings/models")
     async def api_model_catalog(
@@ -2140,11 +2450,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 {"error": "unauthorized"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
-        groups = chat_model_groups(int(user["id"]))
+        user_id = int(user["id"])
+        groups = chat_model_groups(user_id)
         return JSONResponse(
             {
                 "groups": groups,
                 "default": selected_chat_model(groups),
+                "quality_modes": quality_mode_options(user_id),
+                "default_quality_mode": selected_quality_mode(user_id),
             }
         )
 
@@ -3143,6 +3456,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
                     available_chat_models, active_conversation
+                ),
+                quality_modes=quality_mode_options(user_id),
+                selected_quality_mode=selected_quality_mode(
+                    user_id, active_conversation
                 ),
                 pov_options=POV_OPTIONS,
                 world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
@@ -9071,6 +9388,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         quote_text: str = Form(""),
         source_hash: str = Form(""),
         model_choice: str = Form(""),
+        quality_mode: str = Form("standard"),
         return_view: str = Form(""),
         return_archive_tab: str = Form("creative"),
         return_settings_tab: str = Form(""),
@@ -9078,6 +9396,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ):
         user = _current_user(request)
         if not user:
+            if _wants_json(request):
+                return JSONResponse(
+                    {"error": "请先登录"},
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                )
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
@@ -9122,8 +9445,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         ),
                     )
                 )
-            profile = api_profile(user_id, model_choice)
+            profile = routed_api_profile(
+                user_id,
+                quality_mode=quality_mode,
+                task_policy="discussion",
+                model_choice=model_choice,
+            )
             if not profile:
+                if _wants_json(request):
+                    return JSONResponse(
+                        {"error": "开始创作对话前，请先配置模型服务"},
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
                 return RedirectResponse(
                     "/settings/api?error="
                     + quote(
@@ -9143,7 +9476,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "quote_text": quote_text,
                     "content_hash": source_hash,
                 }
-            assistant_chat_service.queue_message(
+            message_id = assistant_chat_service.queue_message(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 question=question,
@@ -9163,6 +9496,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     )
                 ),
                 auto_commit=True,
+                quality_mode=quality_mode,
             )
             prepared_conversation = (
                 assistant_chat_service.get_conversation(
@@ -9180,6 +9514,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 novel_chapter_id = prepared_chapter_id
                 return_view = "body"
         except ValueError as exc:
+            if _wants_json(request):
+                return JSONResponse(
+                    {"error": str(exc)},
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
             suffix = (
                 f"?conversation_id={quote(conversation_id)}"
                 if conversation_id
@@ -9218,8 +9557,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"&archive_tab={clean_return_archive_tab}"
                 f"&settings_tab={clean_return_settings_tab}"
             )
+        destination = return_path + query
+        if _wants_json(request):
+            return JSONResponse(
+                {
+                    "message_id": message_id,
+                    "conversation_id": conversation_id,
+                    "stream_url": (
+                        f"/api/assistant/messages/{message_id}/stream"
+                    ),
+                    "redirect_url": destination,
+                },
+                status_code=status.HTTP_202_ACCEPTED,
+            )
         return RedirectResponse(
-            return_path + query,
+            destination,
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -9513,12 +9865,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         quote_text: str = Form(""),
         source_hash: str = Form(""),
         model_choice: str = Form(""),
+        quality_mode: str = Form("standard"),
         return_view: str = Form(""),
         return_archive_tab: str = Form("analysis"),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
         if not user:
+            if _wants_json(request):
+                return JSONResponse(
+                    {"error": "请先登录"},
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                )
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
@@ -9562,8 +9920,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         ),
                     )
                 )
-            profile = api_profile(user_id, model_choice)
+            profile = routed_api_profile(
+                user_id,
+                quality_mode=quality_mode,
+                task_policy="discussion",
+                model_choice=model_choice,
+            )
             if not profile:
+                if _wants_json(request):
+                    return JSONResponse(
+                        {"error": "开始拆书对话前，请先配置模型服务"},
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
                 return RedirectResponse(
                     "/settings/api?error="
                     + quote(
@@ -9582,7 +9950,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "quote_text": quote_text,
                     "content_hash": source_hash,
                 }
-            assistant_chat_service.queue_message(
+            message_id = assistant_chat_service.queue_message(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 question=question,
@@ -9591,8 +9959,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 credential_source=profile["credential_source"],
                 quote=quote_payload,
                 agent_role="researcher",
+                quality_mode=quality_mode,
             )
         except ValueError as exc:
+            if _wants_json(request):
+                return JSONResponse(
+                    {"error": str(exc)},
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
             return RedirectResponse(
                 _document_workbench_path(
                     document_id,
@@ -9605,16 +9979,121 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
+        destination = _document_workbench_path(
+            document_id,
+            chapter_id=reference_chapter_id or None,
+            conversation_id=conversation_id,
+            view="archive" if return_archive else None,
+            archive_tab=clean_archive_tab if return_archive else None,
+            sent="true",
+        )
+        if _wants_json(request):
+            return JSONResponse(
+                {
+                    "message_id": message_id,
+                    "conversation_id": conversation_id,
+                    "stream_url": (
+                        f"/api/assistant/messages/{message_id}/stream"
+                    ),
+                    "redirect_url": destination,
+                },
+                status_code=status.HTTP_202_ACCEPTED,
+            )
         return RedirectResponse(
-            _document_workbench_path(
-                document_id,
-                chapter_id=reference_chapter_id or None,
-                conversation_id=conversation_id,
-                view="archive" if return_archive else None,
-                archive_tab=clean_archive_tab if return_archive else None,
-                sent="true",
-            ),
+            destination,
             status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.get("/api/assistant/messages/{message_id}/stream")
+    async def assistant_message_stream(
+        request: Request,
+        message_id: str,
+    ):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        user_id = int(user["id"])
+        initial = assistant_chat_service.get_message_stream_state(
+            user_id=user_id,
+            message_id=message_id,
+        )
+        if not initial:
+            return JSONResponse(
+                {"error": "not_found"},
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        async def events():
+            previous_sequence = -1
+            previous_status = ""
+            last_keepalive = time.monotonic()
+            for _attempt in range(7_200):
+                if await request.is_disconnected():
+                    return
+                state = await asyncio.to_thread(
+                    assistant_chat_service.get_message_stream_state,
+                    user_id=user_id,
+                    message_id=message_id,
+                )
+                if not state:
+                    yield (
+                        "event: failed\n"
+                        'data: {"error":"消息不存在"}\n\n'
+                    )
+                    return
+                sequence = int(state.get("stream_sequence") or 0)
+                message_status = str(state.get("status") or "")
+                if (
+                    sequence != previous_sequence
+                    or message_status != previous_status
+                ):
+                    payload = {
+                        "id": state["id"],
+                        "conversation_id": state["conversation_id"],
+                        "status": message_status,
+                        "content": state.get("content") or "",
+                        "sequence": sequence,
+                        "model": state.get("model") or "",
+                        "error": state.get("error"),
+                        "terminal": bool(state.get("terminal")),
+                    }
+                    yield (
+                        "event: snapshot\n"
+                        "data: "
+                        + json.dumps(payload, ensure_ascii=False)
+                        + "\n\n"
+                    )
+                    previous_sequence = sequence
+                    previous_status = message_status
+                if state.get("terminal"):
+                    yield (
+                        "event: done\n"
+                        "data: "
+                        + json.dumps(
+                            {
+                                "status": message_status,
+                                "error": state.get("error"),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    return
+                if time.monotonic() - last_keepalive >= 12:
+                    yield ": keepalive\n\n"
+                    last_keepalive = time.monotonic()
+                await asyncio.sleep(0.25)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-store",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @application.get("/api/assistant/messages/{message_id}")
@@ -9655,6 +10134,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     )
                 ),
                 "error": message.get("error"),
+                "content": message.get("stream_content")
+                or message.get("content")
+                or "",
+                "sequence": int(message.get("stream_sequence") or 0),
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -10322,6 +10805,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 model_groups=available_chat_models,
                 selected_model_choice=selected_chat_model(
                     available_chat_models, active_conversation
+                ),
+                quality_modes=quality_mode_options(user_id),
+                selected_quality_mode=selected_quality_mode(
+                    user_id, active_conversation
                 ),
                 pov_options=POV_OPTIONS,
                 world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,

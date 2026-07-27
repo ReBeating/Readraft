@@ -67,6 +67,7 @@ class Settings:
     model_provider: str = "deepseek"
     max_work_archive_bytes: int = 256 * 1024 * 1024
     allow_private_model_base_urls: bool = False
+    exa_api_key: str | None = None
 
     @property
     def documents_dir(self) -> Path:
@@ -156,6 +157,7 @@ class Settings:
                 "APP_ALLOW_PRIVATE_MODEL_BASE_URLS",
                 os.getenv("APP_ENV", "development").lower() != "production",
             ),
+            exa_api_key=os.getenv("EXA_API_KEY") or None,
         )
 
     def validate(self) -> None:

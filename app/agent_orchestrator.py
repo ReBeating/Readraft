@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Mapping
@@ -8,9 +9,10 @@ from .agent_tools import (
     AGENT_TOOL_SPECS,
     MUTATING_PROPOSAL_TOOLS,
     AgentToolExecutor,
+    WebSearchCallable,
     available_agent_tools,
 )
-from .assistant_chat import BaseAssistantChatModel
+from .assistant_chat import AnswerUpdateCallback, BaseAssistantChatModel
 from .agent_loop_schema import AssistantIntentDecision
 from .assistant_chat_schema import (
     AssistantChatResponse,
@@ -25,9 +27,11 @@ class AssistantAgentOrchestrator:
         self,
         service: AssistantChatService,
         *,
+        web_search: WebSearchCallable | None = None,
         max_model_turns: int = 10,
         max_successful_tools: int = 6,
         max_invalid_tool_calls: int = 2,
+        max_web_searches: int = 2,
     ):
         if not 2 <= max_model_turns <= 20:
             raise ValueError("Agent Loop 模型轮次必须在 2–20 之间")
@@ -35,19 +39,28 @@ class AssistantAgentOrchestrator:
             raise ValueError("Agent Loop 成功工具预算必须在 1–12 之间")
         if not 1 <= max_invalid_tool_calls <= 6:
             raise ValueError("Agent Loop 无效调用预算必须在 1–6 之间")
+        if not 1 <= max_web_searches <= 4:
+            raise ValueError("Agent Loop 联网搜索预算必须在 1–4 之间")
         self.service = service
         self.max_model_turns = max_model_turns
         self.max_successful_tools = max_successful_tools
         self.max_invalid_tool_calls = max_invalid_tool_calls
-        self.executor = AgentToolExecutor(service.database)
+        self.max_web_searches = max_web_searches
+        self.executor = AgentToolExecutor(
+            service.database,
+            web_search=web_search,
+        )
 
     async def run(
         self,
         *,
         model: BaseAssistantChatModel,
+        routing_model: BaseAssistantChatModel | None = None,
+        role_models: Mapping[str, BaseAssistantChatModel] | None = None,
         item: Mapping[str, Any],
         payload: Mapping[str, Any],
         provider_user_id: str,
+        on_answer_update: AnswerUpdateCallback | None = None,
     ) -> AssistantChatResponse:
         context = dict(payload.get("context") or {})
         sources = [dict(item) for item in payload.get("sources") or []]
@@ -63,7 +76,9 @@ class AssistantAgentOrchestrator:
             and str(dispatch_context.get("resolved_role") or "") == "pending"
         ):
             try:
-                intent_response = await model.classify_intent(
+                intent_response = await (
+                    routing_model or model
+                ).classify_intent(
                     context=context,
                     history=list(payload.get("history") or []),
                     question=str(payload.get("question") or ""),
@@ -112,6 +127,8 @@ class AssistantAgentOrchestrator:
             ]
 
         role = str((context.get("agent") or {}).get("role") or "advisor")
+        if role_models:
+            model = role_models.get(role, model)
         tool_specs = available_agent_tools(context)
         public_tools = [spec.public_schema() for spec in tool_specs]
         allowed_names = {spec.name for spec in tool_specs}
@@ -123,6 +140,7 @@ class AssistantAgentOrchestrator:
         call_fingerprints: dict[str, int] = {}
         successful_tool_calls = 0
         invalid_tool_calls = 0
+        web_search_attempts = 0
         model_turns = 0
         stop_reason = "model_turn_budget_exhausted"
         goal = str(
@@ -207,6 +225,11 @@ class AssistantAgentOrchestrator:
                     observations=observations,
                     step=step,
                     provider_user_id=provider_user_id,
+                    on_answer_update=(
+                        on_answer_update
+                        if required_tool is None
+                        else None
+                    ),
                 )
             except AnalyzerError as exc:
                 record_step(
@@ -323,6 +346,14 @@ class AssistantAgentOrchestrator:
                     "同一轮只能创建一个写入候选，已有工具："
                     + completed_mutation
                 )
+            elif (
+                name == "search_web"
+                and web_search_attempts >= self.max_web_searches
+            ):
+                status = "denied"
+                denied_error = (
+                    "本轮联网搜索次数已达到上限，请根据已有来源回答"
+                )
             elif call_fingerprints[fingerprint] > 1:
                 status = "denied"
                 denied_error = "相同工具调用已经执行过，请根据结果继续"
@@ -378,8 +409,11 @@ class AssistantAgentOrchestrator:
                     break
                 continue
 
+            if name == "search_web":
+                web_search_attempts += 1
             try:
-                execution = self.executor.execute(
+                execution = await asyncio.to_thread(
+                    self.executor.execute,
                     user_id=int(item["user_id"]),
                     tool_name=name,
                     arguments=arguments,
@@ -503,6 +537,7 @@ class AssistantAgentOrchestrator:
                     "model_turns": model_turns,
                     "successful_tool_calls": successful_tool_calls,
                     "invalid_tool_calls": invalid_tool_calls,
+                    "web_search_attempts": web_search_attempts,
                     "instruction": (
                         "不得再调用工具；请根据已有观察立即给出最终回答。"
                     ),
@@ -525,6 +560,7 @@ class AssistantAgentOrchestrator:
                 observations=finalization_observations,
                 step=final_step,
                 provider_user_id=provider_user_id,
+                on_answer_update=on_answer_update,
             )
             final_latency_ms = round(
                 (time.monotonic() - final_started) * 1000

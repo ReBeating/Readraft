@@ -29,6 +29,7 @@ from app.agent_loop_schema import (
 from app.agent_orchestrator import AssistantAgentOrchestrator
 from app.assistant_chat import (
     DeepSeekAssistantChatModel,
+    JsonAnswerStream,
     MockAssistantChatModel,
     compose_agent_loop_system_prompt,
     compose_assistant_system_prompt,
@@ -115,6 +116,190 @@ def test_assistant_system_prompt_combines_agent_and_book_instructions():
     assert "create_chapter_draft" in agent_prompt
     assert "本书先行动后解释" in agent_prompt
     assert "不能覆盖服务端工具权限" in agent_prompt
+    assert "作者明确要求搜索、核实、最新信息或来源" in agent_prompt
+    assert "纯构思、创作或改写" in agent_prompt
+    assert "查询作品内部设定、章节和故事记忆" in agent_prompt
+
+
+def test_json_answer_stream_exposes_only_finished_answer_text():
+    stream = JsonAnswerStream()
+    assert stream.feed('{"action":"call_tool","tool_call":{') is None
+    assert (
+        stream.feed(
+            '"name":"search_web","arguments":{"query":"天气"}},'
+            '"answer":null,"citations":[]}'
+        )
+        is None
+    )
+
+    stream = JsonAnswerStream()
+    assert stream.feed(
+        '{"action":"finish","tool_call":null,"answer":"第一段'
+    ) == "第一段"
+    assert stream.feed('\\n第二段和一个字：\\u4e2d') == "第一段\n第二段和一个字：中"
+    assert stream.feed('","citations":[]}') is None
+
+
+def test_deepseek_agent_step_streams_sse_answer(tmp_path: Path):
+    seen = {}
+    decision = json.dumps(
+        {
+            "action": "finish",
+            "tool_call": None,
+            "answer": "先核对人物动机。\n再决定是否改写。",
+            "citations": [],
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    chunks = [
+        decision[:35],
+        decision[35:68],
+        decision[68:],
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content.decode("utf-8"))
+        events = [
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {"content": chunk},
+                            "finish_reason": (
+                                "stop" if index == len(chunks) - 1 else None
+                            ),
+                        }
+                    ]
+                }
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+        events.append(
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 17,
+                        "completion_tokens": 11,
+                    },
+                }
+            )
+        )
+        events.append("data: [DONE]")
+        return httpx.Response(
+            200,
+            content=("\n\n".join(events) + "\n\n").encode(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    settings = replace(
+        make_settings(tmp_path),
+        deepseek_api_key="sk-stream-test",  # pragma: allowlist secret
+    )
+    model = DeepSeekAssistantChatModel(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+    updates: list[str] = []
+
+    async def scenario():
+        try:
+            return await model.next_action(
+                context={
+                    "scope": "novel_project",
+                    "project": {"id": "p1", "title": "测试小说"},
+                    "agent": agent_manifest("advisor"),
+                },
+                history=[],
+                question="讨论人物动机",
+                selected_quote="",
+                available_tools=[],
+                observations=[],
+                step=1,
+                provider_user_id="u_test",
+                on_answer_update=updates.append,
+            )
+        finally:
+            await model.close()
+
+    response = asyncio.run(scenario())
+    assert response.decision.answer == "先核对人物动机。\n再决定是否改写。"
+    assert response.input_tokens == 17
+    assert response.output_tokens == 11
+    assert updates
+    assert updates[-1] == response.decision.answer
+    assert seen["payload"]["stream"] is True
+    assert seen["payload"]["stream_options"] == {"include_usage": True}
+
+
+def test_streaming_chat_accepts_provider_json_fallback(tmp_path: Path):
+    decision = {
+        "action": "finish",
+        "tool_call": None,
+        "answer": "兼容接口没有返回 SSE，但回复仍可用。",
+        "citations": [],
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                decision,
+                                ensure_ascii=False,
+                            )
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 9,
+                    "completion_tokens": 7,
+                },
+            },
+        )
+
+    settings = replace(
+        make_settings(tmp_path),
+        deepseek_api_key="sk-json-fallback",  # pragma: allowlist secret
+    )
+    model = DeepSeekAssistantChatModel(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+    updates: list[str] = []
+
+    async def scenario():
+        try:
+            return await model.next_action(
+                context={
+                    "scope": "novel_project",
+                    "project": {"id": "p1", "title": "测试小说"},
+                    "agent": agent_manifest("advisor"),
+                },
+                history=[],
+                question="测试兼容接口",
+                selected_quote="",
+                available_tools=[],
+                observations=[],
+                step=1,
+                provider_user_id="u_test",
+                on_answer_update=updates.append,
+            )
+        finally:
+            await model.close()
+
+    response = asyncio.run(scenario())
+    assert response.decision.answer == decision["answer"]
+    assert updates == [decision["answer"]]
+    assert response.input_tokens == 9
+    assert response.output_tokens == 7
 
 
 def test_structured_intent_dispatch_enforces_scope_and_permissions():
@@ -460,6 +645,91 @@ def seed_novel(
         )
         connection.commit()
     return user_id, project_id, chapter_id, version_id, content
+
+
+def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id = database.create_user(
+        "quality-mode-user", hash_password("password-123")
+    )
+    project_id = "q" * 32
+    database.create_novel_project(
+        user_id=user_id,
+        project_id=project_id,
+        title="模式测试",
+        genre="悬疑",
+        premise="测试模型模式能否可靠记忆。",
+        world_setting="",
+        style_guide="",
+        point_of_view="第三人称限知",
+        target_chapter_chars=3000,
+    )
+    database.upsert_model_routing_preferences(
+        user_id=user_id,
+        fast_provider="deepseek",
+        fast_model="deepseek-v4-flash",
+        quality_provider="deepseek",
+        quality_model="deepseek-v4-pro",
+        default_quality_mode="max",
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="模式测试",
+        project_id=project_id,
+    )
+    conversation = service.get_conversation(
+        user_id=user_id, conversation_id=conversation_id
+    )
+    assert conversation and conversation["quality_mode"] == "max"
+
+    assert (
+        service.set_conversation_quality_mode(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            quality_mode="standard",
+        )
+        == "standard"
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="讨论开场。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        quality_mode="low",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    assert claimed["quality_mode"] == "low"
+    conversation = service.get_conversation(
+        user_id=user_id, conversation_id=conversation_id
+    )
+    assert conversation and conversation["quality_mode"] == "low"
+    assert (
+        database.get_model_routing_preferences(user_id)[
+            "default_quality_mode"
+        ]
+        == "low"
+    )
+
+    inherited_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="新对话",
+        project_id=project_id,
+    )
+    inherited = service.get_conversation(
+        user_id=user_id, conversation_id=inherited_id
+    )
+    assert inherited and inherited["quality_mode"] == "low"
 
 
 def test_project_writing_request_creates_blank_chapter_and_draft(
@@ -918,6 +1188,108 @@ def test_agent_loop_records_and_blocks_forbidden_tool_call(
     assert message["tool_calls"][0]["status"] == "denied"
     assert message["tool_calls"][0]["tool_name"] == "create_chapter_draft"
     assert message["applied_version_id"] is None
+
+
+def test_agent_loop_limits_web_search_to_two_attempts(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="联网预算",
+        project_id=project_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="请联网核实三项外部资料。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="advisor",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    payload = service.build_job_payload(claimed)
+    assert payload["context"]["web_search_available"] is True
+    searches = []
+
+    class OverSearchingModel(MockAssistantChatModel):
+        def __init__(self):
+            self.turn = 0
+
+        async def next_action(self, **kwargs):
+            self.turn += 1
+            if self.turn <= 3 and kwargs["available_tools"]:
+                raw = {
+                    "action": "call_tool",
+                    "tool_call": {
+                        "name": "search_web",
+                        "arguments": {
+                            "query": f"外部资料 {self.turn}",
+                            "max_results": 2,
+                        },
+                    },
+                    "answer": None,
+                    "citations": [],
+                }
+            else:
+                raw = {
+                    "action": "finish",
+                    "tool_call": None,
+                    "answer": "已根据两次搜索取得的资料完成回答。",
+                    "citations": [],
+                }
+            decision = AgentLoopDecision.model_validate(raw)
+            return AgentDecisionResponse(
+                decision=decision,
+                raw_response=decision.model_dump_json(),
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(
+            service,
+            web_search=lambda _user_id, query, _limit: searches.append(
+                query
+            )
+            or [
+                {
+                    "title": query,
+                    "url": "https://example.com/" + str(len(searches)),
+                    "snippet": "外部资料摘要。",
+                }
+            ],
+        ).run(
+            model=OverSearchingModel(),
+            item=claimed,
+            payload=payload,
+            provider_user_id="u_test",
+        )
+    )
+    assert searches == ["外部资料 1", "外部资料 2"]
+    assert response.result.answer == "已根据两次搜索取得的资料完成回答。"
+    running_message = service.get_message(
+        user_id=user_id, message_id=message_id
+    )
+    assert [
+        (item["tool_name"], item["status"])
+        for item in running_message["tool_calls"]
+    ] == [
+        ("search_web", "completed"),
+        ("search_web", "completed"),
+        ("search_web", "denied"),
+    ]
+    assert "联网搜索次数已达到上限" in (
+        running_message["tool_calls"][-1]["error"]
+    )
 
 
 def test_agent_loop_stops_repeated_call_and_forces_final_answer(
