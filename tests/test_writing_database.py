@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,52 @@ def test_novel_project_and_generation_lifecycle(tmp_path: Path):
     assert chapter["char_count"] == 16
     assert len(database.list_chapter_versions(user_id, project_id, chapter_id)) == 1
 
+    canonical_job_id = database.create_generation_job(
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        operation="rewrite",
+        instruction="直接采用新正文",
+        provider="mock",
+        model="mock-novel-writer",
+        credential_source="default",
+    )
+    canonical_claim = database.claim_next_generation()
+    assert canonical_claim["id"] == canonical_job_id
+    canonical_path = (
+        chapter_dir / "versions" / f"{canonical_job_id}.txt"
+    )
+    canonical_path.write_text("林岚收起信，买下了回雾港的车票。", encoding="utf-8")
+    canonical_version_id = database.complete_generation(
+        job_id=canonical_job_id,
+        claim_token=canonical_claim["claim_token"],
+        version_path=canonical_path,
+        result_char_count=18,
+        input_tokens=120,
+        output_tokens=90,
+        accept_as_canonical=True,
+    )
+    assert canonical_version_id
+    canonical_job = database.get_generation_job(
+        user_id, canonical_job_id
+    )
+    assert canonical_job["status"] == "completed"
+    assert json.loads(canonical_job["result_json"]) == {
+        "version_id": canonical_version_id,
+        "canonical": True,
+    }
+    canonical_chapter = database.get_novel_chapter(
+        user_id, project_id, chapter_id
+    )
+    assert canonical_chapter["canonical_version_id"] == canonical_version_id
+    canonical_version = database.get_chapter_version(
+        user_id,
+        project_id,
+        chapter_id,
+        canonical_version_id,
+    )
+    assert canonical_version["status"] == "canonical"
+
     for index in range(12):
         extra_job_id = database.create_generation_job(
             user_id=user_id,
@@ -105,7 +152,7 @@ def test_novel_project_and_generation_lifecycle(tmp_path: Path):
         assert connection.execute(
             "SELECT COUNT(*) FROM generation_jobs WHERE user_id=?",
             (user_id,),
-        ).fetchone()[0] == 13
+        ).fetchone()[0] == 14
 
     assert database.delete_novel_project(user_id, project_id) is True
     assert database.get_novel_project(user_id, project_id) is None

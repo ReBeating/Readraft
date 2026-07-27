@@ -3306,167 +3306,201 @@ class Database:
         now = utc_now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """
-                SELECT v.id, v.content_path, v.char_count, v.quality_status,
-                       v.job_id,
-                       ch.canonical_version_id, ch.position,
-                       p.canonical_branch_id
-                FROM novel_chapter_versions v
-                JOIN novel_chapters ch ON ch.id=v.chapter_id
-                JOIN novel_projects p ON p.id=ch.project_id
-                WHERE v.id=? AND v.chapter_id=? AND ch.project_id=?
-                    AND p.user_id=?
-                """,
-                (version_id, chapter_id, project_id, user_id),
-            ).fetchone()
-            if not row:
+            result = self._accept_chapter_version_in_transaction(
+                connection,
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                version_id=version_id,
+                override_reason=override_reason,
+                expected_old_canonical_version_id=(
+                    expected_old_canonical_version_id
+                ),
+                now=now,
+            )
+            if not result:
                 connection.rollback()
                 return None
-            if (
-                expected_old_canonical_version_id is not None
-                and str(row["canonical_version_id"] or "")
-                != expected_old_canonical_version_id
-            ):
-                connection.rollback()
-                raise ValueError(
-                    "正史版本已在别处发生变化，请重新生成影响报告"
-                )
-            active = connection.execute(
+            connection.commit()
+        return result
+
+    def _accept_chapter_version_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        user_id: int,
+        project_id: str,
+        chapter_id: str,
+        version_id: str,
+        override_reason: str = "",
+        expected_old_canonical_version_id: Optional[str] = None,
+        ignored_active_job_id: Optional[str] = None,
+        now: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        del override_reason
+        accepted_at = now or utc_now()
+        row = connection.execute(
+            """
+            SELECT v.id, v.content_path, v.char_count, v.quality_status,
+                   v.job_id,
+                   ch.canonical_version_id, ch.position,
+                   p.canonical_branch_id
+            FROM novel_chapter_versions v
+            JOIN novel_chapters ch ON ch.id=v.chapter_id
+            JOIN novel_projects p ON p.id=ch.project_id
+            WHERE v.id=? AND v.chapter_id=? AND ch.project_id=?
+                AND p.user_id=?
+            """,
+            (version_id, chapter_id, project_id, user_id),
+        ).fetchone()
+        if not row:
+            return None
+        if (
+            expected_old_canonical_version_id is not None
+            and str(row["canonical_version_id"] or "")
+            != expected_old_canonical_version_id
+        ):
+            raise ValueError(
+                "正史版本已在别处发生变化，请重新生成影响报告"
+            )
+        active = connection.execute(
+            """
+            SELECT 1 FROM generation_jobs
+            WHERE chapter_id=? AND status IN ('queued', 'running')
+                AND operation<>'extract_story_delta'
+                AND (? IS NULL OR id<>?)
+            LIMIT 1
+            """,
+            (
+                chapter_id,
+                ignored_active_job_id,
+                ignored_active_job_id,
+            ),
+        ).fetchone()
+        if active:
+            raise ValueError(
+                "AI 正在处理本章，请等待任务完成后再切换正史版本"
+            )
+        old_canonical = row["canonical_version_id"]
+        changed = old_canonical != version_id
+        downstream_count = 0
+        if changed:
+            connection.execute(
                 """
-                SELECT 1 FROM generation_jobs
-                WHERE chapter_id=? AND status IN ('queued', 'running')
-                    AND operation<>'extract_story_delta'
-                LIMIT 1
+                UPDATE novel_chapter_versions
+                SET status='archived'
+                WHERE chapter_id=? AND status='canonical' AND id<>?
                 """,
-                (chapter_id,),
-            ).fetchone()
-            if active:
-                connection.rollback()
-                raise ValueError(
-                    "AI 正在处理本章，请等待任务完成后再切换正史版本"
+                (chapter_id, version_id),
+            )
+            connection.execute(
+                """
+                UPDATE novel_chapter_versions
+                SET status='canonical', quality_status='pass',
+                    hard_issue_count=0, quality_override_reason='',
+                    quality_overridden_at=NULL
+                WHERE id=?
+                """,
+                (version_id,),
+            )
+            cursor = connection.execute(
+                """
+                UPDATE novel_chapters
+                SET needs_recheck=1, updated_at=?
+                WHERE project_id=? AND position>?
+                    AND canonical_version_id IS NOT NULL
+                """,
+                (accepted_at, project_id, row["position"]),
+            )
+            downstream_count = int(cursor.rowcount)
+            if old_canonical:
+                delete_chapter_search_documents(
+                    connection, chapter_id=chapter_id
                 )
-            old_canonical = row["canonical_version_id"]
-            changed = old_canonical != version_id
-            downstream_count = 0
-            if changed:
-                connection.execute(
-                    """
-                    UPDATE novel_chapter_versions
-                    SET status='archived'
-                    WHERE chapter_id=? AND status='canonical' AND id<>?
-                    """,
-                    (chapter_id, version_id),
-                )
-                connection.execute(
-                    """
-                    UPDATE novel_chapter_versions
-                    SET status='canonical', quality_status='pass',
-                        hard_issue_count=0, quality_override_reason='',
-                        quality_overridden_at=NULL
-                    WHERE id=?
-                    """,
-                    (version_id,),
-                )
-                cursor = connection.execute(
-                    """
-                    UPDATE novel_chapters
-                    SET needs_recheck=1, updated_at=?
-                    WHERE project_id=? AND position>?
-                        AND canonical_version_id IS NOT NULL
-                    """,
-                    (now, project_id, row["position"]),
-                )
-                downstream_count = int(cursor.rowcount)
-                if old_canonical:
-                    delete_chapter_search_documents(
-                        connection, chapter_id=chapter_id
-                    )
-                    for table in (
-                        "chapter_memory",
-                        "story_events",
-                        "character_knowledge",
-                        "plot_threads",
-                        "foreshadowing",
-                    ):
-                        connection.execute(
-                            f"""
-                            UPDATE {table}
-                            SET record_status='retracted'
-                            WHERE chapter_id=? AND record_status='canon'
-                            """,
-                            (chapter_id,),
-                        )
+                for table in (
+                    "chapter_memory",
+                    "story_events",
+                    "character_knowledge",
+                    "plot_threads",
+                    "foreshadowing",
+                ):
                     connection.execute(
-                        """
-                        UPDATE story_facts
-                        SET fact_status='retracted'
-                        WHERE chapter_id=? AND fact_status='canon'
+                        f"""
+                        UPDATE {table}
+                        SET record_status='retracted'
+                        WHERE chapter_id=? AND record_status='canon'
                         """,
                         (chapter_id,),
                     )
-                    connection.execute(
-                        """
-                        UPDATE story_deltas
-                        SET status='superseded', updated_at=?
-                        WHERE chapter_id=? AND status='projected'
-                        """,
-                        (now, chapter_id),
-                    )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET canonical_version_id=?, working_version_id=?,
-                    char_count=?, status='canonical', needs_recheck=0,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (
-                    version_id,
-                    version_id,
-                    int(row["char_count"]),
-                    now,
-                    chapter_id,
-                ),
-            )
-            connection.execute(
-                "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                (now, project_id),
-            )
-            if row["job_id"]:
-                generation = connection.execute(
-                    "SELECT result_json FROM generation_jobs WHERE id=?",
-                    (row["job_id"],),
-                ).fetchone()
-                if generation:
-                    try:
-                        result_payload = json.loads(
-                            str(generation["result_json"] or "{}")
-                        )
-                    except json.JSONDecodeError:
-                        result_payload = {}
-                    result_payload["canonical"] = True
-                    connection.execute(
-                        """
-                        UPDATE generation_jobs
-                        SET result_json=?
-                        WHERE id=?
-                        """,
-                        (
-                            json.dumps(result_payload, ensure_ascii=False),
-                            row["job_id"],
-                        ),
-                    )
-            if changed:
-                replay_canonical_state(
-                    connection,
-                    project_id=project_id,
-                    branch_id=str(row["canonical_branch_id"] or "main"),
-                    trigger_type="canon_version_changed",
-                    trigger_chapter_id=chapter_id,
-                    created_at=now,
+                connection.execute(
+                    """
+                    UPDATE story_facts
+                    SET fact_status='retracted'
+                    WHERE chapter_id=? AND fact_status='canon'
+                    """,
+                    (chapter_id,),
                 )
-            connection.commit()
+                connection.execute(
+                    """
+                    UPDATE story_deltas
+                    SET status='superseded', updated_at=?
+                    WHERE chapter_id=? AND status='projected'
+                    """,
+                    (accepted_at, chapter_id),
+                )
+        connection.execute(
+            """
+            UPDATE novel_chapters
+            SET canonical_version_id=?, working_version_id=?,
+                char_count=?, status='canonical', needs_recheck=0,
+                updated_at=?
+            WHERE id=?
+            """,
+            (
+                version_id,
+                version_id,
+                int(row["char_count"]),
+                accepted_at,
+                chapter_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE novel_projects SET updated_at=? WHERE id=?",
+            (accepted_at, project_id),
+        )
+        if row["job_id"]:
+            generation = connection.execute(
+                "SELECT result_json FROM generation_jobs WHERE id=?",
+                (row["job_id"],),
+            ).fetchone()
+            if generation:
+                try:
+                    result_payload = json.loads(
+                        str(generation["result_json"] or "{}")
+                    )
+                except json.JSONDecodeError:
+                    result_payload = {}
+                result_payload["canonical"] = True
+                connection.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET result_json=?
+                    WHERE id=?
+                    """,
+                    (
+                        json.dumps(result_payload, ensure_ascii=False),
+                        row["job_id"],
+                    ),
+                )
+        if changed:
+            replay_canonical_state(
+                connection,
+                project_id=project_id,
+                branch_id=str(row["canonical_branch_id"] or "main"),
+                trigger_type="canon_version_changed",
+                trigger_chapter_id=chapter_id,
+                created_at=accepted_at,
+            )
         return {
             "version_id": version_id,
             "content_path": str(row["content_path"]),
@@ -4807,6 +4841,7 @@ class Database:
         output_tokens: int,
         warning: str = "",
         content_hash: str = "",
+        accept_as_canonical: bool = False,
     ) -> Optional[str]:
         now = utc_now()
         version_id = uuid.uuid4().hex
@@ -4814,7 +4849,8 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             job = connection.execute(
                 """
-                SELECT j.id, j.project_id, j.chapter_id, j.operation,
+                SELECT j.id, j.project_id, j.chapter_id, j.user_id,
+                       j.operation,
                        ch.working_version_id
                 FROM generation_jobs j
                 JOIN novel_chapters ch ON ch.id=j.chapter_id
@@ -4848,6 +4884,19 @@ class Database:
                     result_char_count,
                 ),
             )
+            if accept_as_canonical:
+                accepted = self._accept_chapter_version_in_transaction(
+                    connection,
+                    user_id=int(job["user_id"]),
+                    project_id=str(job["project_id"]),
+                    chapter_id=str(job["chapter_id"]),
+                    version_id=version_id,
+                    ignored_active_job_id=job_id,
+                    now=now,
+                )
+                if not accepted:
+                    connection.rollback()
+                    return None
             connection.execute(
                 """
                 UPDATE generation_jobs
@@ -4867,26 +4916,32 @@ class Database:
                     json.dumps(
                         {
                             "version_id": version_id,
-                            "canonical": False,
+                            "canonical": accept_as_canonical,
                         },
                         ensure_ascii=False,
                     ),
                     job_id,
                 ),
             )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET char_count=?, status='draft', working_version_id=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (result_char_count, version_id, now, job["chapter_id"]),
-            )
-            connection.execute(
-                "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                (now, job["project_id"]),
-            )
+            if not accept_as_canonical:
+                connection.execute(
+                    """
+                    UPDATE novel_chapters
+                    SET char_count=?, status='draft', working_version_id=?,
+                        updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        result_char_count,
+                        version_id,
+                        now,
+                        job["chapter_id"],
+                    ),
+                )
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, job["project_id"]),
+                )
             connection.commit()
         return version_id
 

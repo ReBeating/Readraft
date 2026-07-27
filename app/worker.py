@@ -1073,23 +1073,10 @@ class AnalysisWorker:
                     final_content.encode("utf-8")
                 ).hexdigest(),
                 warning="；".join(warnings),
+                accept_as_canonical=True,
             )
             if not version_id:
                 logger.warning("discarded stale generation result id=%s", job_id)
-                return
-            promoted = await asyncio.to_thread(
-                self.database.accept_chapter_version,
-                user_id=int(item["user_id"]),
-                project_id=str(item["project_id"]),
-                chapter_id=str(item["chapter_id"]),
-                version_id=version_id,
-            )
-            if not promoted:
-                logger.warning(
-                    "generated version was not promoted id=%s version=%s",
-                    job_id,
-                    version_id,
-                )
                 return
             try:
                 await asyncio.to_thread(
