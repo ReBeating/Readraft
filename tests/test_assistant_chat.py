@@ -1914,7 +1914,9 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
         )
         assert response.status_code == 303
         saved_page = client.get(chapter_url)
-        assert "引用正文问 AI" in saved_page.text
+        assert "共创对话" in saved_page.text
+        assert 'class="studio-manuscript-view"' in saved_page.text
+        assert "引用正文问 AI" not in saved_page.text
 
         assistant_url = (
             f"{project_url}/assistant?new=true&chapter_id={chapter_id}"

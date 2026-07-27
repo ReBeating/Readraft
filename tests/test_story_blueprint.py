@@ -630,9 +630,9 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
         chapter_id = chapter_location.split("chapter_id=", 1)[1]
         chapter_url = f"{project_url}/chapters/{chapter_id}"
         task_url = f"{chapter_url}/task-card"
-        task_page = client.get(task_url)
-        assert 'value="父亲失踪之谜"' in task_page.text
-        assert "本次将读取确认版全书规划" in task_page.text
+        task_page = client.get(chapter_location)
+        assert 'class="studio-manuscript-view"' in task_page.text
+        assert "本次将读取确认版全书规划" not in task_page.text
 
         response = client.post(
             task_url,

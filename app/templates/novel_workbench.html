@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260726-19">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-1">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -126,71 +126,6 @@
               <small>第{{ chapter.position }}章</small>
               <h1>{{ chapter.title or '未命名章节' }}</h1>
             </div>
-            {% if chapter_workflow %}
-              <section
-                class="studio-workflow-strip stage-{{ chapter_workflow.stage }}"
-                data-chapter-workflow
-              >
-                <div class="studio-workflow-progress" aria-label="章节创作流程进度">
-                  <strong>{{ chapter_workflow.completed_count }}/{{ chapter_workflow.step_count }}</strong>
-                  <span>
-                    <i style="width: {{ chapter_workflow.progress_percent }}%"></i>
-                  </span>
-                </div>
-                <div class="studio-workflow-copy">
-                  <small>{% if chapter_workflow.complete %}创作闭环{% else %}建议下一步{% endif %}</small>
-                  <strong>{{ chapter_workflow.headline }}</strong>
-                  <span>{{ chapter_workflow.explanation }}</span>
-                </div>
-                <div class="studio-workflow-actions">
-                  {% if chapter_workflow.primary_action.method == 'post' %}
-                    <form
-                      method="post"
-                      action="{{ chapter_workflow.primary_action.url }}"
-                      data-save-before-submit
-                    >
-                      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                      <button class="studio-button primary" type="submit">
-                        {{ chapter_workflow.primary_action.label }}
-                      </button>
-                    </form>
-                  {% else %}
-                    <a
-                      class="studio-button primary"
-                      href="{{ chapter_workflow.primary_action.url }}"
-                      data-save-before-navigation
-                    >{{ chapter_workflow.primary_action.label }}</a>
-                  {% endif %}
-                  <details class="studio-workflow-menu">
-                    <summary aria-label="查看全部章节流程" title="全部流程">•••</summary>
-                    <div>
-                      <header>
-                        <strong>章节创作流程</strong>
-                        <span>{{ chapter_workflow.progress_percent }}%</span>
-                      </header>
-                      <nav class="studio-workflow-shortcuts" aria-label="章节工具">
-                        <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}/task-card" data-save-before-navigation>任务卡</a>
-                        <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}/scenes" data-save-before-navigation>场景工坊</a>
-                        <a href="/novels/{{ project.id }}/chapters/{{ chapter.id }}" data-save-before-navigation>完整章节页</a>
-                      </nav>
-                      {% for step in chapter_workflow.steps %}
-                        <a
-                          class="status-{{ step.status }}"
-                          href="{{ step.url }}"
-                          data-save-before-navigation
-                        >
-                          <span>{{ loop.index }}</span>
-                          <div>
-                            <strong>{{ step.label }}</strong>
-                            <small>{{ step.detail }}</small>
-                          </div>
-                        </a>
-                      {% endfor %}
-                    </div>
-                  </details>
-                </div>
-              </section>
-            {% endif %}
             <form
               method="post"
               action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/save"

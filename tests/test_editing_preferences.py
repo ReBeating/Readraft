@@ -1336,8 +1336,11 @@ def test_edit_preference_web_flow_requires_author_confirmation(tmp_path):
         )
 
         chapter_url = f"{project_url}/chapters/chapter-one"
-        page = client.get(chapter_url)
-        assert "从这次改稿学习" in page.text
+        page = client.get(
+            f"{project_url}/workbench?chapter_id=chapter-one"
+        )
+        assert 'class="studio-manuscript-view"' in page.text
+        assert "从这次改稿学习" not in page.text
         response = client.post(
             f"{chapter_url}/versions/{after_id}/learn-edit-preferences",
             data={"csrf": _csrf(page.text)},

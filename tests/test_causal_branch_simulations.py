@@ -1130,5 +1130,5 @@ def test_branch_adoption_web_flow_reviews_then_updates_task_card_drafts(
         assert response.status_code == 303
         applied_page = client.get(response.headers["location"])
         assert "已写入 1 个未来章节" in applied_page.text
-        assert "打开已更新的任务卡" in applied_page.text
+        assert "打开已更新的章节" in applied_page.text
         assert "安全撤销这次任务卡落地" in applied_page.text

@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}#versions">← 返回章节版本</a>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/workbench?view=archive&archive_tab=versions&chapter_id={{ chapter.id }}">← 返回版本</a>
       <span class="eyebrow">CHAPTER VERSION DIFF · {{ "%03d"|format(chapter.position) }}</span>
       <h1>{{ chapter.title or '未命名章节' }}</h1>
       <p>比较完整章节版本，确认 AI 生成、手工修改或定点改写到底改变了什么。</p>
@@ -34,7 +34,7 @@
     <section class="card empty-style-state">
       <h2>还没有可比较的另一个版本</h2>
       <p>保存下一次手工修改、生成结果或定点改写后，就能在这里查看完整差异。</p>
-      <a class="button primary" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}">返回正文编辑器</a>
+      <a class="button primary" href="/novels/{{ chapter.project_id }}/workbench?chapter_id={{ chapter.id }}">返回正文</a>
     </section>
   {% elif comparison %}
     <section class="card chapter-version-summary">

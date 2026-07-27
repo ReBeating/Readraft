@@ -73,9 +73,7 @@ def _application_option_label(raw: Any, option_index: int) -> str:
 
 
 def _chapter_action(project_id: str, chapter_id: str) -> str:
-    return (
-        f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-    )
+    return f"/novels/{project_id}/workbench?chapter_id={chapter_id}"
 
 
 def _volume_action(project_id: str, volume_id: str) -> str:

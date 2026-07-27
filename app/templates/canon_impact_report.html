@@ -2,7 +2,7 @@
 {% block title %}旧章正史影响报告 · {{ report.chapter_title }}{% endblock %}
 {% block content %}
   <section class="page-heading">
-    <a class="back-link" href="/novels/{{ report.project_id }}/chapters/{{ report.chapter_id }}">← 返回章节编辑器</a>
+    <a class="back-link" href="/novels/{{ report.project_id }}/workbench?chapter_id={{ report.chapter_id }}">← 返回作品工作台</a>
     <span class="eyebrow">CANON CHANGE IMPACT</span>
     <h1>第 {{ report.chapter_position }} 章正史替换影响报告</h1>
     <p>{{ report.summary }}</p>

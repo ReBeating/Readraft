@@ -3,7 +3,7 @@
 {% block content %}
   <section class="page-heading split-heading">
     <div>
-      <a class="back-link" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}">← 返回章节编辑器</a>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/workbench?chapter_id={{ chapter.id }}">← 返回作品工作台</a>
       <span class="eyebrow">STYLE AUDIT</span>
       <h1>{{ chapter.title or '未命名章节' }}</h1>
       <p>版本 {{ version.id[:8] }} · 软质量审校不会自动修改正文，也不会替代作者判断。</p>
@@ -24,9 +24,6 @@
       作品声纹尚未确认。<a href="/novels/{{ chapter.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style"><strong>先填写可执行声纹规则</strong></a>，再让审校器判断偏离。
     </div>
   {% endif %}
-
-  {% set workflow_context = 'style' %}
-  {% include "_chapter_workflow.html" %}
 
   <section class="style-audit-summary">
     <div>

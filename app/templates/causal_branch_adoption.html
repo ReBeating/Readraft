@@ -225,8 +225,8 @@
                 <button class="button primary" type="submit">保存本项决定</button>
                 <a
                   class="button secondary"
-                  href="/novels/{{ adoption.project_id }}/chapters/{{ item.chapter_id }}/task-card"
-                >查看当前任务卡</a>
+                  href="/novels/{{ adoption.project_id }}/workbench?chapter_id={{ item.chapter_id }}"
+                >查看当前章节</a>
               </div>
             </form>
           {% else %}
@@ -245,8 +245,8 @@
               {% if item.decision == 'accepted' %}
                 <a
                   class="button secondary"
-                  href="/novels/{{ adoption.project_id }}/chapters/{{ item.chapter_id }}/task-card"
-                >打开已更新的任务卡</a>
+                  href="/novels/{{ adoption.project_id }}/workbench?chapter_id={{ item.chapter_id }}"
+                >打开已更新的章节</a>
               {% endif %}
             </div>
           {% endif %}

@@ -118,10 +118,10 @@
       <span class="section-kicker">APPLIED TO ROLLING PLAN</span>
       <h2>已写入的未来章节</h2>
       {% for item in reader_request.applications %}
-        <a href="/novels/{{ reader_request.project_id }}/chapters/{{ item.chapter_id }}/task-card">
+        <a href="/novels/{{ reader_request.project_id }}/workbench?chapter_id={{ item.chapter_id }}">
           <span>{{ "%03d"|format(item.chapter_position) }}</span>
           <strong>{{ item.chapter_title }}</strong>
-          <small>{{ '新建章节骨架' if item.action == 'created' else '更新章节骨架，任务卡待重新确认' }}</small>
+          <small>{{ '新建章节骨架' if item.action == 'created' else '已更新章节骨架' }}</small>
         </a>
       {% endfor %}
     </section>

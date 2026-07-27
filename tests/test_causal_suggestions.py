@@ -1320,15 +1320,15 @@ def test_causal_suggestion_web_flow_is_read_only_until_acceptance(
         assert response.status_code == 303
         accepted_page = client.get(response.headers["location"])
         assert "候选已由你确认并建立为未来因果链接" in accepted_page.text
-        assert len(
-            StructureLinkService(database).list_links(
-                user_id=user_id,
-                project_id=project_id,
-            )
-        ) == 1
-        task_page = client.get(
-            f"/novels/{project_id}/chapters/"
-            f"{proposal['target_chapter_id']}/task-card"
+        links = StructureLinkService(database).list_links(
+            user_id=user_id,
+            project_id=project_id,
         )
-        assert task_page.status_code == 200
-        assert "作者判断：</b>网页确认。" in task_page.text
+        assert len(links) == 1
+        assert links[0]["author_note"] == "网页确认。"
+        target_page = client.get(
+            f"/novels/{project_id}/workbench"
+            f"?chapter_id={proposal['target_chapter_id']}"
+        )
+        assert target_page.status_code == 200
+        assert 'class="studio-manuscript-view"' in target_page.text

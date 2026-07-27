@@ -513,20 +513,22 @@ def test_structure_link_web_flow_and_task_card_summary(tmp_path: Path):
             "view=archive&archive_tab=creative&settings_tab=structure&saved=true"
             in response.headers["location"]
         )
-        target_page = client.get(
-            f"/novels/{project_id}/chapters/{chapters[2]}/task-card"
-        )
-        assert target_page.status_code == 200
-        assert "本章承接的原因与留下的后果" in target_page.text
-        assert "设备日志暴露档案员参与了投递链" in target_page.text
-        assert "本章必须承接" in target_page.text
-
         link = StructureLinkService(database).list_links(
             user_id=user_id, project_id=project_id
         )[0]
+        assert link["effect_text"] == (
+            "设备日志暴露档案员参与了投递链。"
+        )
+        assert link["author_note"] == "跨线推进。"
+        target_page = client.get(
+            f"/novels/{project_id}/workbench"
+            f"?chapter_id={chapters[2]}"
+        )
+        assert target_page.status_code == 200
+        assert 'class="studio-manuscript-view"' in target_page.text
         response = client.post(
             f"/novels/{project_id}/structure-links/{link['id']}/archive",
-            data={"csrf": _csrf(target_page.text)},
+            data={"csrf": _csrf(page.text)},
             follow_redirects=False,
         )
         assert response.status_code == 303

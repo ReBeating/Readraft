@@ -1065,19 +1065,21 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
             for chapter in chapters
         )
         assert all(chapter["plan_status"] == "draft" for chapter in chapters)
+        first_chapter_id = str(chapters[0]["id"])
         chapter_page = client.get(
-            f"/novels/{project_id}/chapters/{chapters[0]['id']}"
+            f"/novels/{project_id}/workbench"
+            f"?chapter_id={first_chapter_id}"
         )
-        assert "任务卡草稿" in chapter_page.text
-        assert "检查任务卡草稿" in chapter_page.text
-        assert "父亲失踪主线" in chapter_page.text
-        task_page = client.get(
-            f"/novels/{project_id}/chapters/{chapters[0]['id']}/task-card"
+        assert 'class="studio-manuscript-view"' in chapter_page.text
+        task_before_edit = PlanningService(database).get_task_card(
+            user_id=int(user["id"]),
+            project_id=project_id,
+            chapter_id=first_chapter_id,
         )
-        assert "本章在长篇结构中的职责" in task_page.text
-        assert "按作者判断修订这章骨架" in task_page.text
+        assert task_before_edit["status"] == "draft"
+        assert "父亲失踪主线" in task_before_edit["plot_threads"]
         response = client.post(
-            f"/novels/{project_id}/chapters/{chapters[0]['id']}/skeleton",
+            f"/novels/{project_id}/chapters/{first_chapter_id}/skeleton",
             data={
                 "title": "第一章 作者修订的潮线",
                 "volume_id": chapters[0]["volume_id"],
@@ -1086,7 +1088,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
                 "key_points": "确认邮戳来源\n锁定第一位经手人",
                 "arc_titles": "父亲失踪主线",
                 "ending_hook": "经手人的记录显示父亲失踪后仍签收过文件。",
-                "csrf": _csrf(task_page.text),
+                "csrf": _csrf(chapter_page.text),
             },
             follow_redirects=False,
         )

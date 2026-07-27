@@ -344,8 +344,8 @@ def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
             chapter_id=chapter_id,
         )
         task_page = client.get(task_url)
-        assert "只拆场景，不改章节要求" in task_page.text
-        assert "锁定 2 项必做事件" in task_page.text
+        assert 'class="studio-manuscript-view"' in task_page.text
+        assert "只拆场景，不改章节要求" not in task_page.text
         response = client.post(
             f"{task_url}/generate-scenes",
             data={
@@ -364,7 +364,9 @@ def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
                 break
             time.sleep(0.03)
         assert payload["status"] == "completed"
-        assert payload["redirect_url"] == f"{task_url}#scene-beats"
+        assert payload["redirect_url"] == (
+            f"{project_url}/workbench?chapter_id={chapter_id}"
+        )
 
         after = planning.get_task_card(
             user_id=int(user["id"]),
@@ -412,8 +414,8 @@ def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
         assert snapshot["task_card_fingerprint"]
 
         task_page = client.get(payload["redirect_url"])
-        assert "这个场景负责落实哪些任务要求" in task_page.text
-        assert 'value="must_happen:0"' in task_page.text
+        assert 'class="studio-manuscript-view"' in task_page.text
+        assert "这个场景负责落实哪些任务要求" not in task_page.text
         requirement_sources = {
             "plot_thread": after["plot_threads"],
             "must_happen": after["must_happen"],
@@ -609,11 +611,10 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
         )
         chapter_url = f"{project_url}/chapters/{chapter_id}"
         chapter_page = client.get(chapter_url)
-        assert "本章实际使用的技法" in chapter_page.text
-        assert "先让一项信息改变人物的目标或代价" in chapter_page.text
+        assert 'class="studio-manuscript-view"' in chapter_page.text
 
         task_page = client.get(f"{chapter_url}/task-card")
-        assert "本次将使用 1 张技法卡" in task_page.text
+        assert "本次将使用 1 张技法卡" not in task_page.text
         response = client.post(
             f"{chapter_url}/task-card/generate",
             data={"instruction": "", "csrf": csrf_from(task_page.text)},
@@ -1385,17 +1386,17 @@ def test_unified_workbench_uses_five_material_sections(tmp_path):
 
         chapter_page = client.get(response.headers["location"])
         assert "第1章 · 未命名章节" in chapter_page.text
-        assert "data-chapter-workflow" in chapter_page.text
-        assert "章节创作流程" in chapter_page.text
-        assert "规划本章" in chapter_page.text
-        assert "当前正文" in chapter_page.text
+        assert 'class="studio-manuscript-view"' in chapter_page.text
+        assert "data-chapter-workflow" not in chapter_page.text
+        assert "章节创作流程" not in chapter_page.text
+        assert "规划本章" not in chapter_page.text
         assert (
             f'href="/novels/{project_id}/chapters/{chapter_id}/task-card"'
-            in chapter_page.text
+            not in chapter_page.text
         )
         assert (
             f'href="/novels/{project_id}/chapters/{chapter_id}/scenes"'
-            in chapter_page.text
+            not in chapter_page.text
         )
         assert "data-save-before-navigation" in chapter_page.text
         assert "data-save-before-submit" in chapter_page.text
@@ -2462,7 +2463,8 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         chapter_url = f"{project_url}/chapters/{chapter_id}"
 
         task_page = client.get(f"{chapter_url}/task-card")
-        assert "章节职责与边界" in task_page.text
+        assert 'class="studio-manuscript-view"' in task_page.text
+        assert "章节职责与边界" not in task_page.text
         response = client.post(
             f"{chapter_url}/task-card/generate",
             data={
@@ -2483,11 +2485,25 @@ def test_full_mock_novel_writing_workflow(tmp_path):
                 break
             time.sleep(0.03)
         assert planning_payload["status"] == "completed"
-        assert planning_payload["redirect_url"] == f"{chapter_url}/task-card"
+        assert planning_payload["redirect_url"] == (
+            f"{project_url}/workbench?chapter_id={chapter_id}"
+        )
         task_page = client.get(planning_payload["redirect_url"])
-        assert "Planner 提出任务卡草稿" in task_page.text
-        assert "人物做出不可轻易撤回的选择" in task_page.text
-        assert f'action="{chapter_url}/task-card"' in task_page.text
+        generated_task = PlanningService(
+            application.state.database
+        ).get_task_card(
+            user_id=int(
+                application.state.database.get_user_by_username(
+                    "小说作者"
+                )["id"]
+            ),
+            project_id=project_id,
+            chapter_id=chapter_id,
+        )
+        assert generated_task["status"] == "draft"
+        assert generated_task["end_state"] == (
+            "人物做出不可轻易撤回的选择，局面发生变化。"
+        )
 
         response = client.post(
             f"{chapter_url}/task-card",
@@ -2533,8 +2549,20 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         assert "confirmed=true" in response.headers["location"]
 
         page = client.get(chapter_url)
-        assert "AI 创作助手" in page.text
-        assert "任务卡已确认" in page.text
+        assert "共创对话" in page.text
+        assert "AI 创作助手" not in page.text
+        confirmed_task = PlanningService(
+            application.state.database
+        ).get_task_card(
+            user_id=int(
+                application.state.database.get_user_by_username(
+                    "小说作者"
+                )["id"]
+            ),
+            project_id=project_id,
+            chapter_id=chapter_id,
+        )
+        assert confirmed_task["status"] == "confirmed"
         response = client.post(
             f"{chapter_url}/generate",
             data={
@@ -2581,8 +2609,8 @@ def test_full_mock_novel_writing_workflow(tmp_path):
 
         chapter_page = client.get(chapter_url)
         assert "本地演示草稿" in chapter_page.text
-        assert "最近版本" in chapter_page.text
-        assert "当前版本" in chapter_page.text
+        assert 'class="studio-manuscript-view"' in chapter_page.text
+        assert "最近版本" not in chapter_page.text
         assert "候选稿" not in chapter_page.text
         assert "硬审计" not in chapter_page.text
         generated_version = application.state.database.get_chapter_version(
@@ -2669,7 +2697,7 @@ def test_full_mock_novel_writing_workflow(tmp_path):
         assert response.headers["location"].startswith(chapter_url)
 
         revised_page = client.get(response.headers["location"])
-        assert "正文已保存并成为当前版本" in revised_page.text
+        assert 'class="studio-manuscript-view"' in revised_page.text
         assert "待硬审计" not in revised_page.text
         chapter_record = application.state.database.get_novel_chapter(
             int(user["id"]),
@@ -3030,7 +3058,8 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
         compare_url = f"{chapter_url}/versions/{target_id}/compare"
 
         chapter_page = client.get(chapter_url)
-        assert f'href="{compare_url}"' in chapter_page.text
+        assert 'class="studio-manuscript-view"' in chapter_page.text
+        assert f'href="{compare_url}"' not in chapter_page.text
 
         comparison = client.get(compare_url)
         assert comparison.status_code == 200

@@ -420,10 +420,15 @@ def test_scene_workbench_web_flow(tmp_path: Path):
         scene_url = (
             f"/novels/{project_id}/chapters/{chapter_id}/scenes"
         )
+        legacy = client.get(scene_url, follow_redirects=False)
+        assert legacy.status_code == 303
+        assert legacy.headers["location"].startswith(
+            f"/novels/{project_id}/workbench?chapter_id={chapter_id}"
+        )
         page = client.get(scene_url)
         assert page.status_code == 200
-        assert "场景工作台" in page.text
-        assert "0 / 2" in page.text
+        assert 'class="studio-manuscript-view"' in page.text
+        assert "SCENE WORKBENCH" not in page.text
         csrf = page.text.split('name="csrf" value="', 1)[1].split('"', 1)[0]
         workbench = SceneService(database).get_workbench(
             user_id=user_id,
@@ -452,15 +457,22 @@ def test_scene_workbench_web_flow(tmp_path: Path):
                     break
                 time.sleep(0.03)
             assert payload["status"] == "completed"
-            assert payload["redirect_url"] == scene_url
+            assert payload["redirect_url"] == (
+                f"/novels/{project_id}/workbench"
+                f"?chapter_id={chapter_id}"
+            )
             page = client.get(scene_url)
             csrf = page.text.split(
                 'name="csrf" value="', 1
             )[1].split('"', 1)[0]
 
         page = client.get(scene_url)
-        assert "2 / 2" in page.text
-        assert "按顺序组装 2 个场景" in page.text
+        completed = SceneService(database).get_workbench(
+            user_id=user_id,
+            project_id=project_id,
+            chapter_id=chapter_id,
+        )
+        assert all(scene["ready"] for scene in completed["scenes"])
         response = client.post(
             f"{scene_url}/assemble",
             data={
@@ -473,6 +485,10 @@ def test_scene_workbench_web_flow(tmp_path: Path):
         assert response.status_code == 303
         assert response.headers["location"].endswith("?saved=true")
         chapter_page = client.get(response.headers["location"])
-        assert "正文已保存并成为当前版本" in chapter_page.text
+        assert 'class="studio-manuscript-view"' in chapter_page.text
         assert "硬审计" not in chapter_page.text
-        assert "场景组装" in chapter_page.text
+        chapter = database.get_novel_chapter(
+            user_id, project_id, chapter_id
+        )
+        assert chapter["canonical_version_id"]
+        assert content_path.read_text(encoding="utf-8").strip()

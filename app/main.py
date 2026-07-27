@@ -117,7 +117,6 @@ from .technique_schema import TechniqueObservation
 from .technique_service import TechniqueService
 from .voice_extraction import build_voice_profile_extractor
 from .version_diff import build_version_diff
-from .workflow import ChapterWorkflowService
 from .writing import build_default_writer
 from .work_library import (
     create_main_from_version,
@@ -1026,12 +1025,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     impact_service = CanonImpactService(database)
     technique_service = TechniqueService(database)
     scene_service = SceneService(database)
-    workflow_service = ChapterWorkflowService(
-        database,
-        planning_service=planning_service,
-        scene_service=scene_service,
-        memory_service=memory_service,
-    )
     continuity_service = ContinuityService(database)
     identity_service = MemoryIdentityService(database)
     credential_cipher = CredentialCipher(app_settings.credential_secret)
@@ -1436,7 +1429,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     )
     application.state.settings = app_settings
     application.state.database = database
-    application.state.workflow_service = workflow_service
     application.state.structure_link_service = structure_link_service
     application.state.causal_suggestion_service = causal_suggestion_service
     application.state.causal_branch_service = causal_branch_service
@@ -2811,7 +2803,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapter_target_chars = int(
             project.get("target_chapter_chars") or 3000
         )
-        chapter_workflow = None
         if selected_chapter:
             selected_index = next(
                 index
@@ -2867,11 +2858,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     ).hexdigest()
                 else:
                     working_version = None
-            chapter_workflow = workflow_service.get_state(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=str(selected_chapter["id"]),
-            )
 
         conversations = assistant_chat_service.list_project_conversations(
             user_id=user_id,
@@ -2993,7 +2979,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 working_version_hash=working_version_hash,
                 chapter_effective_chars=chapter_effective_chars,
                 chapter_target_chars=chapter_target_chars,
-                chapter_workflow=chapter_workflow,
                 view=effective_view,
                 archive_tabs=WORK_ARCHIVE_TABS,
                 active_archive_tab=active_archive_tab,
@@ -6791,87 +6776,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             int(user["id"]), project_id, chapter_id
         )
         if not chapter:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        content = _read_optional_text(Path(str(chapter["content_path"])))
-        versions = database.list_chapter_versions(
-            int(user["id"]), project_id, chapter_id
-        )
-        task_card = planning_service.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        voice_profile = style_service.get_voice_profile(
-            user_id=int(user["id"]), project_id=project_id
-        )
-        working_version = next(
-            (
-                version
-                for version in versions
-                if str(version["id"])
-                == str(chapter.get("working_version_id") or "")
-            ),
-            None,
-        )
-        working_version_hash = ""
-        working_version_matches_editor = False
-        if working_version:
-            working_version_content = _read_optional_text(
-                Path(str(working_version["content_path"]))
-            )
-            working_version_matches_editor = (
-                working_version_content == content
-            )
-            if working_version_matches_editor:
-                working_version_hash = hashlib.sha256(
-                    working_version_content.encode("utf-8")
-                ).hexdigest()
-        writing_context = database.get_writing_context(
-            int(user["id"]), chapter_id
-        )
-        technique_cards = (
-            writing_context.get("technique_cards") or []
-            if writing_context
-            else []
-        )
-        writing_techniques = compile_active_techniques(
-            technique_cards, usage="write"
-        )
-        audit_techniques = compile_active_techniques(
-            technique_cards, usage="audit"
-        )
-        chapter_workflow = workflow_service.get_state(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        return render_template(
-            "novel_chapter.html",
-            _template_context(
-                request,
-                user=user,
-                chapter=chapter,
-                content=content,
-                versions=versions,
-                task_card=task_card,
-                voice_profile=voice_profile,
-                working_version=working_version,
-                working_version_hash=working_version_hash,
-                working_version_matches_editor=(
-                    working_version_matches_editor
-                ),
-                writing_techniques=writing_techniques,
-                audit_techniques=audit_techniques,
-                chapter_workflow=chapter_workflow,
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(
+                project_id,
+                chapter_id=chapter_id,
                 error=error,
-                saved=saved,
-                canonical=canonical,
-                assistant_rewrite=assistant_rewrite,
+                saved=(
+                    "true"
+                    if saved or canonical or assistant_rewrite
+                    else None
+                ),
             ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.get(
@@ -6890,49 +6807,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        user_id = int(user["id"])
-        workbench = scene_service.get_workbench(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
+        chapter = database.get_novel_chapter(
+            int(user["id"]), project_id, chapter_id
         )
-        if not workbench:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        for scene in workbench["scenes"]:
-            writing_context = database.get_writing_context(
-                user_id, chapter_id, str(scene["id"])
-            )
-            scene["writing_techniques"] = compile_active_techniques(
-                (
-                    writing_context.get("technique_cards") or []
-                    if writing_context
-                    else []
-                ),
-                usage="write",
-            )
-        chapter_workflow = workflow_service.get_state(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        return render_template(
-            "scene_workbench.html",
-            _template_context(
-                request,
-                user=user,
-                workbench=workbench,
-                chapter=workbench["chapter"],
-                scenes=workbench["scenes"],
-                chapter_workflow=chapter_workflow,
+        if not chapter:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(
+                project_id,
+                chapter_id=chapter_id,
                 error=error,
-                saved=saved,
-                overridden=overridden,
-                restored=restored,
+                saved=(
+                    "true"
+                    if saved or overridden or restored
+                    else None
+                ),
             ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post(
@@ -7274,89 +7165,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        user_id = int(user["id"])
-        task_card = planning_service.get_task_card(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
+        chapter = database.get_novel_chapter(
+            int(user["id"]), project_id, chapter_id
         )
-        if not task_card:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        volumes = planning_service.list_volumes(
-            user_id=user_id, project_id=project_id
-        )
-        characters = database.list_novel_characters(user_id, project_id)
-        scene_slots = [dict(scene) for scene in task_card["scenes"]]
-        while len(scene_slots) < 5:
-            scene_slots.append({})
-        writing_context = database.get_writing_context(user_id, chapter_id)
-        planning_techniques = compile_active_techniques(
-            (
-                writing_context.get("technique_cards") or []
-                if writing_context
-                else []
-            ),
-            usage="plan",
-        )
-        planning_story_plan = compile_story_plan_context(
-            writing_context or {}, usage="plan"
-        )
-        planning_causal_links = compile_planned_causal_links(
-            writing_context or {}, usage="plan"
-        )
-        structure_arc_options = [
-            item
-            for item in planning_story_plan["plot_arcs"]
-            if str(item.get("lifecycle_status") or "")
-            in {"planned", "active"}
-        ]
-        confirmed_arc_titles = {
-            str(item.get("title") or "")
-            for item in planning_story_plan["plot_arcs"]
-        }
-        custom_plot_threads = [
-            item
-            for item in task_card["plot_threads"]
-            if item not in confirmed_arc_titles
-        ]
-        form_plot_threads = [
-            str(item.get("title") or "")
-            for item in planning_story_plan["plot_arcs"]
-            if str(item.get("title") or "") in task_card["plot_threads"]
-        ] + custom_plot_threads
-        chapter_workflow = workflow_service.get_state(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        return render_template(
-            "chapter_task_card.html",
-            _template_context(
-                request,
-                user=user,
-                task_card=task_card,
-                volumes=volumes,
-                characters=characters,
-                scene_slots=scene_slots,
-                planning_techniques=planning_techniques,
-                planning_story_plan=planning_story_plan,
-                planning_causal_links=planning_causal_links,
-                structure_arc_options=structure_arc_options,
-                chapter_structure_role_options=(
-                    CHAPTER_STRUCTURE_ROLE_OPTIONS
-                ),
-                custom_plot_threads=custom_plot_threads,
-                form_plot_threads=form_plot_threads,
-                chapter_workflow=chapter_workflow,
+        if not chapter:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(
+                project_id,
+                chapter_id=chapter_id,
                 error=error,
-                saved=saved,
-                confirmed=confirmed,
-                skeleton_saved=skeleton_saved,
+                saved=(
+                    "true"
+                    if saved or confirmed or skeleton_saved
+                    else None
+                ),
             ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post(
@@ -7868,11 +7693,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             chapter_id=chapter_id,
             version_id=version_id,
         )
-        chapter_workflow = workflow_service.get_state(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
         return render_template(
             "chapter_style.html",
             _template_context(
@@ -7883,7 +7703,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 voice_profile=profile,
                 audit=audit,
                 issues=(audit or {}).get("issues") or [],
-                chapter_workflow=chapter_workflow,
                 error=error,
             ),
         )
@@ -8797,20 +8616,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         redirect_url = None
         if job["status"] == "completed":
-            if str(job["operation"]) in {
-                "plan_chapter",
-                "plan_scene_beats",
-            }:
-                redirect_url = (
-                    f"/novels/{job['project_id']}/chapters/"
-                    f"{job['chapter_id']}/task-card"
-                    + (
-                        "#scene-beats"
-                        if str(job["operation"]) == "plan_scene_beats"
-                        else ""
-                    )
-                )
-            elif (
+            if (
                 str(job["operation"]) == "propose_reader_branches"
                 and job.get("subject_id")
             ):
@@ -8828,18 +8634,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 and job.get("subject_id")
             ):
                 redirect_url = f"/style-issues/{job['subject_id']}"
-            elif str(job["operation"]) in {
-                "generate_scene",
-                "rewrite_scene",
-            }:
-                redirect_url = (
-                    f"/novels/{job['project_id']}/chapters/"
-                    f"{job['chapter_id']}/scenes"
-                )
             if not redirect_url:
-                redirect_url = (
-                    f"/novels/{job['project_id']}/chapters/"
-                    f"{job['chapter_id']}"
+                redirect_url = _workbench_path(
+                    str(job["project_id"]),
+                    chapter_id=str(job["chapter_id"]),
                 )
         return {
             "id": job_id,
