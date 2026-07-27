@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import re
 import time
@@ -197,7 +198,7 @@ def test_full_mock_workflow(tmp_path):
             f"/documents/{document_id}"
             "?view=archive&archive_tab=analysis"
         )
-        assert "章节分析" in archive.text
+        assert "深度分析" in archive.text
         analysis_id = analysis_match.group(1)
         assert (
             f"/works/{work['id']}/archive/analyses/{analysis_id}/adopt"
@@ -1463,6 +1464,10 @@ def test_unified_workbench_uses_five_material_sections(tmp_path):
         assert "/ 约 3000 字" not in saved_page.text
         assert "data-char-count" not in saved_page.text
         assert (
+            f'data-actual-char-count>{len("录音带转到第三圈时，海面仍旧平静。")} 字'
+            in saved_page.text
+        )
+        assert (
             '<span data-save-status aria-live="polite" hidden></span>'
             in saved_page.text
         )
@@ -2445,6 +2450,276 @@ def test_imported_source_can_create_main_and_fixed_tag(tmp_path):
             unchanged_tag["creative_snapshot"]["project"]["premise"]
             == "录音中的失踪者留下了第一版线索。"
         )
+        versions_page = client.get(
+            f"/novels/{work['main_version']['project_id']}/workbench"
+            "?view=archive&archive_tab=versions"
+        )
+        source_version_id = str(refreshed["source_version"]["id"])
+        assert (
+            f"/works/{work['id']}/versions/{source_version_id}/delete"
+            not in versions_page.text
+        )
+        protected_source = client.post(
+            f"/works/{work['id']}/versions/{source_version_id}/delete",
+            data={"csrf": csrf_from(versions_page.text)},
+            follow_redirects=False,
+        )
+        assert protected_source.status_code == 303
+        assert "error=" in protected_source.headers["location"]
+        assert application.state.database.get_work_version(
+            int(user["id"]), source_version_id
+        )
+
+
+def test_tag_reuses_exact_main_analysis_and_can_be_deleted(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "版本分析作者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        dashboard = client.get("/dashboard")
+        created = client.post(
+            "/novels/new/blank",
+            data={"csrf": csrf_from(dashboard.text)},
+            follow_redirects=False,
+        )
+        project_id = project_id_from_workbench(
+            created.headers["location"]
+        )
+        workbench = client.get(created.headers["location"])
+        chapter = client.post(
+            f"/novels/{project_id}/chapters",
+            data={
+                "title": "精确快照",
+                "return_to_workbench": "1",
+                "csrf": csrf_from(workbench.text),
+            },
+            follow_redirects=False,
+        )
+        chapter_id = chapter_id_from_workbench(
+            chapter.headers["location"]
+        )
+        chapter_page = client.get(chapter.headers["location"])
+        content = "潮声停下以后，林岚在灯塔门口找到了失踪者的录音。"
+        saved = client.post(
+            f"/novels/{project_id}/chapters/{chapter_id}/save",
+            data={
+                "content": content,
+                "change_summary": "完成第一稿",
+                "return_to_workbench": "1",
+                "csrf": csrf_from(chapter_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert saved.status_code == 303
+        user = application.state.database.get_user_by_username(
+            "版本分析作者"
+        )
+        user_id = int(user["id"])
+        deadline = time.monotonic() + 3
+        memory = None
+        while time.monotonic() < deadline:
+            memory = MemoryService(
+                application.state.database
+            ).get_chapter_memory(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+            )
+            if memory:
+                break
+            time.sleep(0.03)
+        assert memory
+
+        main_page = client.get(saved.headers["location"])
+        assert "查看分析" in main_page.text
+        assert (
+            f"data-actual-char-count>{len(content)} 字"
+            in main_page.text
+        )
+        work = application.state.database.get_work_for_project(
+            user_id, project_id
+        )
+        tagged = client.post(
+            f"/works/{work['id']}/tags",
+            data={
+                "label": "分析快照",
+                "csrf": csrf_from(main_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert tagged.status_code == 303
+        document_id = tagged.headers["location"].split(
+            "/documents/", 1
+        )[1].split("?", 1)[0]
+        tag_page = client.get(f"/documents/{document_id}")
+        source_match = re.search(
+            r'<textarea[^>]+aria-label="章节原文"[^>]*>(.*?)</textarea>',
+            tag_page.text,
+            re.DOTALL,
+        )
+        assert source_match
+        assert html.unescape(source_match.group(1)) == content
+        assert f"<span>{len(content)} 字</span>" in tag_page.text
+        assert "补充深度分析" in tag_page.text
+        assert "未分析" not in tag_page.text
+
+        refreshed = application.state.database.get_work(
+            user_id, str(work["id"])
+        )
+        tag_version = next(
+            item
+            for item in refreshed["tag_versions"]
+            if item["label"] == "分析快照"
+        )
+        snapshot_records = (
+            application.state.database
+            .list_work_version_story_memory_records(
+                user_id, str(tag_version["id"])
+            )
+        )
+        assert len(snapshot_records) == 1
+        assert snapshot_records[0]["memory_status"] == "ready"
+        assert snapshot_records[0]["summary"] == memory["summary"]
+
+        analysis_page = client.get(
+            f"/documents/{document_id}"
+            "?view=archive&archive_tab=analysis"
+        )
+        assert "从相同正文的 main 分析中冻结" in analysis_page.text
+        assert memory["summary"] in analysis_page.text
+        assert (
+            f'id="story-memory-{snapshot_records[0]["chapter_id"]}"'
+            in analysis_page.text
+        )
+
+        exported = client.get(
+            f"/works/{work['id']}/export.novelai.zip"
+        )
+        assert exported.status_code == 200
+        import_page = client.get("/import")
+        imported = client.post(
+            "/import",
+            data={"csrf": csrf_from(import_page.text)},
+            files={
+                "work_file": (
+                    "analysis-snapshot.novelai.zip",
+                    exported.content,
+                    "application/zip",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert imported.status_code == 303
+        imported_work = next(
+            item
+            for item in application.state.database.list_works(user_id)
+            if str(item["id"]) != str(work["id"])
+        )
+        imported_tag = next(
+            item
+            for item in imported_work["tag_versions"]
+            if item["label"] == "分析快照"
+        )
+        imported_memories = (
+            application.state.database
+            .list_work_version_story_memory_records(
+                user_id, str(imported_tag["id"])
+            )
+        )
+        assert imported_memories[0]["memory_status"] == "ready"
+        assert imported_memories[0]["summary"] == memory["summary"]
+
+        document_chapter = application.state.database.list_chapters(
+            user_id, document_id
+        )[0]
+        legacy_path = Path(str(document_chapter["content_path"]))
+        legacy_path.write_text(
+            f"精确快照\n{content}", encoding="utf-8"
+        )
+        with application.state.database.connection() as connection:
+            connection.execute(
+                "DELETE FROM work_version_story_memories "
+                "WHERE work_version_id=?",
+                (str(tag_version["id"]),),
+            )
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version=36"
+            )
+            connection.commit()
+        application.state.database.initialize()
+        backfilled = (
+            application.state.database
+            .list_work_version_story_memory_records(
+                user_id, str(tag_version["id"])
+            )
+        )
+        assert backfilled[0]["memory_status"] == "ready"
+        assert backfilled[0]["summary"] == memory["summary"]
+        assert legacy_path.read_text(encoding="utf-8") == content
+        normalized_chapter = (
+            application.state.database.list_chapters(
+                user_id, document_id
+            )[0]
+        )
+        assert normalized_chapter["char_count"] == len(content)
+
+        versions_page = client.get(
+            f"/documents/{document_id}"
+            "?view=archive&archive_tab=versions"
+        )
+        protected_main = client.post(
+            f"/works/{work['id']}/versions/"
+            f"{work['main_version']['id']}/delete",
+            data={"csrf": csrf_from(versions_page.text)},
+            follow_redirects=False,
+        )
+        assert protected_main.status_code == 303
+        assert "error=" in protected_main.headers["location"]
+        assert application.state.database.get_work_version(
+            user_id, str(work["main_version"]["id"])
+        )
+        delete_action = (
+            f"/works/{work['id']}/versions/{tag_version['id']}/delete"
+        )
+        assert delete_action in versions_page.text
+        document_dir = Path(
+            str(
+                application.state.database.get_document(
+                    user_id, document_id
+                )["source_path"]
+            )
+        ).parent
+        deleted = client.post(
+            delete_action,
+            data={"csrf": csrf_from(versions_page.text)},
+            follow_redirects=False,
+        )
+        assert deleted.status_code == 303
+        assert f"/novels/{project_id}/workbench" in (
+            deleted.headers["location"]
+        )
+        assert "archive_tab=versions" in deleted.headers["location"]
+        assert "removed=true" in deleted.headers["location"]
+        assert (
+            application.state.database.get_work_version(
+                user_id, str(tag_version["id"])
+            )
+            is None
+        )
+        assert application.state.database.get_novel_project(
+            user_id, project_id
+        )
+        assert not document_dir.exists()
 
 
 def test_full_mock_novel_writing_workflow(tmp_path):

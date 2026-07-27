@@ -136,6 +136,9 @@ def create_reading_document_from_chunks(
     version_label: str = "原始版本",
     intent: str = "original",
     creative_snapshot: Optional[Mapping[str, Any]] = None,
+    story_memory_snapshots: Optional[
+        Iterable[Mapping[str, Any]]
+    ] = None,
 ) -> str:
     chunk_list = list(chunks)
     document_id = uuid.uuid4().hex
@@ -174,6 +177,7 @@ def create_reading_document_from_chunks(
                 source_text.encode("utf-8")
             ).hexdigest(),
             creative_snapshot=creative_snapshot,
+            story_memory_snapshots=story_memory_snapshots,
         )
     except Exception:
         shutil.rmtree(document_dir, ignore_errors=True)
@@ -242,36 +246,36 @@ def create_main_from_version(
 
 def _snapshot_chunks(
     chapters: Iterable[Mapping[str, object]],
-) -> tuple[str, list[ChapterChunk]]:
+) -> tuple[str, list[ChapterChunk], list[str]]:
     pieces: list[str] = []
     chunks: list[ChapterChunk] = []
+    source_chapter_ids: list[str] = []
     cursor = 0
     for chapter in chapters:
         content = Path(str(chapter["content_path"])).read_text(
             encoding="utf-8"
         )
-        if not content.strip():
-            continue
         position = int(chapter.get("position") or len(chunks) + 1)
         title = str(chapter.get("title") or "").strip()
         title = title or f"第{position}章"
-        piece = f"{title}\n{content.strip()}"
+        piece = f"{title}\n{content}"
         if pieces:
             cursor += 2
-        start = cursor
-        end = start + len(piece)
+        start = cursor + len(title) + 1
+        end = start + len(content)
         pieces.append(piece)
         chunks.append(
             ChapterChunk(
                 title=title,
-                text=piece,
+                text=content,
                 kind="chapter",
                 source_start=start,
                 source_end=end,
             )
         )
-        cursor = end
-    return "\n\n".join(pieces), chunks
+        source_chapter_ids.append(str(chapter["id"]))
+        cursor += len(piece)
+    return "\n\n".join(pieces), chunks, source_chapter_ids
 
 
 def _default_tag_label(number: int) -> str:
@@ -313,10 +317,10 @@ def create_version_tag(
         or not bool(main_version.get("is_editable"))
     ):
         raise ValueError("只有 main 分支可以创建固定版本")
-    source_text, chunks = _snapshot_chunks(
+    source_text, chunks, source_chapter_ids = _snapshot_chunks(
         database.list_novel_chapters(user_id, project_id)
     )
-    if not source_text.strip() or not chunks:
+    if not chunks or not any(chunk.text.strip() for chunk in chunks):
         raise ValueError("main 还没有可固定为 Tag 的正文")
 
     title = str(project.get("title") or "未命名作品").strip()
@@ -334,6 +338,33 @@ def create_version_tag(
     creative_snapshot = database.build_project_creative_snapshot(
         user_id, project_id
     )
+    memory_by_chapter = {
+        str(item["source_chapter_id"]): item
+        for item in database.build_project_story_memory_snapshots(
+            user_id, project_id
+        )
+    }
+    story_memory_snapshots: list[dict[str, Any]] = []
+    for document_position, (source_chapter_id, chunk) in enumerate(
+        zip(source_chapter_ids, chunks), start=1
+    ):
+        memory = memory_by_chapter.get(source_chapter_id)
+        if not memory:
+            continue
+        chunk_hash = hashlib.sha256(
+            chunk.text.encode("utf-8")
+        ).hexdigest()
+        if str(memory.get("content_hash") or "") != chunk_hash:
+            continue
+        story_memory_snapshots.append(
+            {
+                "chapter_position": document_position,
+                "content_hash": chunk_hash,
+                "summary": memory["summary"],
+                "keywords": memory["keywords"],
+                "payload": memory["payload"],
+            }
+        )
     return create_reading_document_from_chunks(
         database=database,
         documents_dir=documents_dir,
@@ -351,4 +382,5 @@ def create_version_tag(
         version_label=clean_label,
         intent="snapshot",
         creative_snapshot=creative_snapshot,
+        story_memory_snapshots=story_memory_snapshots,
     )

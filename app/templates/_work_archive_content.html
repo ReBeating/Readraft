@@ -155,15 +155,15 @@
       {% endif %}
     </section>
 
-    <section class="studio-archive-section">
-      <div class="studio-archive-section-heading">
-        <div>
-          <h2>章节分析</h2>
-          <p>分析结论保留原文位置；可编辑后采纳为创作设定。</p>
+    {% if archive_analyses %}
+      <section class="studio-archive-section">
+        <div class="studio-archive-section-heading">
+          <div>
+            <h2>深度分析</h2>
+            <p>在故事记忆之外补充场景、冲突和技法拆解。</p>
+          </div>
+          <span>{{ archive_analyses|length }}</span>
         </div>
-        <span>{{ archive_analyses|length }}</span>
-      </div>
-      {% if archive_analyses %}
         <div class="studio-analysis-list">
           {% for analysis in archive_analyses %}
             <article>
@@ -205,13 +205,8 @@
             </article>
           {% endfor %}
         </div>
-      {% else %}
-        <div class="studio-settings-empty">
-          <strong>还没有章节分析</strong>
-          <p>对当前固定版本运行全书分析后，结果会按章节汇总到这里。</p>
-        </div>
-      {% endif %}
-    </section>
+      </section>
+    {% endif %}
   {% else %}
     <section class="studio-archive-section">
       <div class="studio-archive-section-heading">
@@ -290,6 +285,16 @@
                     <input type="hidden" name="base_version_id" value="{{ version.id }}">
                     <input type="hidden" name="intent" value="sequel">
                     <button class="studio-button primary" type="submit">创建 main 并续写</button>
+                  </form>
+                {% endif %}
+                {% if version.ref_type == 'tag' and version.ref_name != 'source' %}
+                  <form
+                    method="post"
+                    action="/works/{{ work.id }}/versions/{{ version.id }}/delete"
+                    data-delete-version-form
+                  >
+                    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                    <button class="studio-button danger" type="submit">删除 Tag</button>
                   </form>
                 {% endif %}
               </footer>

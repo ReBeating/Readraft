@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterable
 
 from .continuity import replay_canonical_state
@@ -3546,6 +3548,186 @@ def _background_memory_jobs_v35(
     )
 
 
+def _version_story_memory_snapshots_v36(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS work_version_story_memories (
+                id TEXT PRIMARY KEY,
+                work_version_id TEXT NOT NULL
+                    REFERENCES work_versions(id) ON DELETE CASCADE,
+                document_chapter_id TEXT NOT NULL
+                    REFERENCES chapters(id) ON DELETE CASCADE,
+                content_hash TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                keywords_json TEXT NOT NULL DEFAULT '[]',
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(work_version_id, document_chapter_id)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_version_story_memories_version
+            ON work_version_story_memories(
+                work_version_id, document_chapter_id
+            )
+            """,
+        ),
+    )
+
+    tags = connection.execute(
+        """
+        SELECT tag.id AS work_version_id,
+               tag.document_id,
+               tag.created_at,
+               base.project_id
+        FROM work_versions tag
+        JOIN work_versions base ON base.id=tag.base_version_id
+        WHERE tag.ref_type='tag'
+          AND tag.intent='snapshot'
+          AND tag.document_id IS NOT NULL
+          AND base.project_id IS NOT NULL
+        """
+    ).fetchall()
+    candidates_by_project: dict[str, list[dict[str, object]]] = {}
+    for tag in tags:
+        project_id = str(tag["project_id"])
+        candidates = candidates_by_project.get(project_id)
+        if candidates is None:
+            rows = connection.execute(
+                """
+                SELECT ch.position,
+                       ch.title,
+                       version.content_path,
+                       memory.summary,
+                       memory.keywords_json,
+                       delta.payload_json,
+                       memory.created_at
+                FROM chapter_memory memory
+                JOIN novel_chapter_versions version
+                  ON version.id=memory.version_id
+                JOIN novel_chapters ch ON ch.id=memory.chapter_id
+                JOIN story_deltas delta ON delta.id=memory.delta_id
+                WHERE memory.project_id=?
+                ORDER BY
+                    CASE memory.record_status
+                        WHEN 'canon' THEN 0 ELSE 1
+                    END,
+                    memory.created_at DESC
+                """,
+                (project_id,),
+            ).fetchall()
+            candidates = []
+            for row in rows:
+                try:
+                    body = Path(str(row["content_path"])).read_text(
+                        encoding="utf-8"
+                    )
+                    payload = json.loads(str(row["payload_json"]))
+                    keywords = json.loads(str(row["keywords_json"]))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict) or not isinstance(
+                    keywords, list
+                ):
+                    continue
+                candidates.append(
+                    {
+                        "position": int(row["position"]),
+                        "title": str(row["title"] or ""),
+                        "normalized_body": body.strip(),
+                        "summary": str(row["summary"] or ""),
+                        "keywords_json": json.dumps(
+                            keywords, ensure_ascii=False
+                        ),
+                        "payload_json": json.dumps(
+                            payload, ensure_ascii=False
+                        ),
+                        "created_at": str(
+                            row["created_at"] or applied_at
+                        ),
+                    }
+                )
+            candidates_by_project[project_id] = candidates
+
+        chapters = connection.execute(
+            """
+            SELECT id, position, title, content_path
+            FROM chapters
+            WHERE document_id=?
+            ORDER BY position
+            """,
+            (str(tag["document_id"]),),
+        ).fetchall()
+        for chapter in chapters:
+            try:
+                body = Path(str(chapter["content_path"])).read_text(
+                    encoding="utf-8"
+                )
+            except (OSError, UnicodeError):
+                continue
+            title = str(chapter["title"] or "")
+            removed_prefix_length = 0
+            for separator in ("\r\n", "\n"):
+                prefix = f"{title}{separator}"
+                if title and body.startswith(prefix):
+                    body = body[len(prefix) :]
+                    removed_prefix_length = len(prefix)
+                    break
+            if removed_prefix_length:
+                try:
+                    Path(str(chapter["content_path"])).write_text(
+                        body, encoding="utf-8"
+                    )
+                except (OSError, UnicodeError):
+                    continue
+                connection.execute(
+                    """
+                    UPDATE chapters
+                    SET char_count=?,
+                        source_start=source_start+?
+                    WHERE id=?
+                    """,
+                    (
+                        len(body),
+                        removed_prefix_length,
+                        str(chapter["id"]),
+                    ),
+                )
+            normalized_body = body.strip()
+            matching = [
+                item
+                for item in candidates
+                if item["position"] == int(chapter["position"])
+                and item["normalized_body"] == normalized_body
+            ]
+            if not matching:
+                continue
+            source = matching[0]
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO work_version_story_memories(
+                    id, work_version_id, document_chapter_id,
+                    content_hash, summary, keywords_json,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex,
+                    str(tag["work_version_id"]),
+                    str(chapter["id"]),
+                    hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                    str(source["summary"]),
+                    str(source["keywords_json"]),
+                    str(source["payload_json"]),
+                    str(tag["created_at"] or source["created_at"]),
+                ),
+            )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3681,6 +3863,11 @@ MIGRATIONS = (
         35,
         "background_memory_jobs_v35",
         _background_memory_jobs_v35,
+    ),
+    Migration(
+        36,
+        "version_story_memory_snapshots_v36",
+        _version_story_memory_snapshots_v36,
     ),
 )
 

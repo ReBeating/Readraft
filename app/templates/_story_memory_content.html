@@ -9,7 +9,13 @@
     <div class="studio-archive-section-heading">
       <div>
         <h2>故事记忆</h2>
-        <p>正文保存后自动更新。</p>
+        <p>
+          {% if archive_readonly %}
+            创建 Tag 时从相同正文的 main 分析中冻结，不会随 main 改变。
+          {% else %}
+            正文保存后自动更新。
+          {% endif %}
+        </p>
       </div>
       <span>
         {{ story_memory_counts.ready }}
@@ -202,7 +208,13 @@
     {% else %}
       <div class="studio-settings-empty">
         <strong>还没有故事记忆</strong>
-        <p>保存章节正文后会自动整理。</p>
+        <p>
+          {% if archive_readonly %}
+            创建 Tag 时，只有与 main 已分析正文完全一致的章节会继承结果。
+          {% else %}
+            保存章节正文后会自动整理。
+          {% endif %}
+        </p>
       </div>
     {% endif %}
   </section>

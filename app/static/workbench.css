@@ -1268,9 +1268,14 @@ body.studio-surface .studio-reader-manuscript {
   grid-column: 1;
 }
 
-.studio-chapter-footer [data-save-status] {
+.studio-chapter-state {
   grid-column: 2;
   text-align: center;
+  white-space: nowrap;
+}
+
+.studio-chapter-state [data-save-status] {
+  color: inherit;
 }
 
 .studio-chapter-footer > :last-child {
@@ -3738,7 +3743,7 @@ body.studio-surface .studio-personal-model input[type="radio"] {
     font-size: 9px;
   }
 
-  .studio-chapter-footer [data-save-status] {
+  .studio-chapter-state {
     text-align: center;
   }
 

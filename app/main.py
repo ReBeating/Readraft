@@ -2741,6 +2741,76 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
+    @application.post(
+        "/works/{work_id}/versions/{version_id}/delete"
+    )
+    async def delete_work_tag(
+        request: Request,
+        work_id: str,
+        version_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        user_id = int(user["id"])
+        work = database.get_work(user_id, work_id)
+        if not work:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        main_version = work.get("main_version")
+        error_destination = (
+            _workbench_path(
+                str(main_version["project_id"]),
+                archive_tab="versions",
+            )
+            if main_version
+            else _work_archive_destination(work)
+        )
+        try:
+            deleted = database.delete_work_tag(
+                user_id=user_id,
+                work_id=work_id,
+                version_id=version_id,
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                _append_query(error_destination, error=str(exc)),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        if deleted is None:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        document_path = Path(str(deleted["document_path"]))
+        cleanup_error = None
+        try:
+            if document_path.exists():
+                shutil.rmtree(document_path)
+        except OSError:
+            logger.exception(
+                "tag database rows deleted but files remain path=%s",
+                document_path,
+            )
+            cleanup_error = "Tag 已删除，但部分本地文件清理失败"
+        if deleted["fallback_project_id"]:
+            destination = _workbench_path(
+                str(deleted["fallback_project_id"]),
+                archive_tab="versions",
+                removed="true" if cleanup_error is None else None,
+                error=cleanup_error,
+            )
+        else:
+            destination = _document_workbench_path(
+                str(deleted["fallback_document_id"]),
+                view="archive",
+                archive_tab="versions",
+                removed="true" if cleanup_error is None else None,
+                error=cleanup_error,
+            )
+        return RedirectResponse(
+            destination,
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
     @application.get(
         "/novels/{project_id}/workbench",
         response_class=HTMLResponse,
@@ -2836,6 +2906,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         next_chapter = None
         working_version = None
         working_version_hash = ""
+        chapter_story_memory = None
+        project_story_memory_records: list[dict[str, Any]] = []
         if selected_chapter:
             selected_index = next(
                 index
@@ -2880,6 +2952,26 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     ).hexdigest()
                 else:
                     working_version = None
+        if selected_chapter or (
+            effective_view == "archive"
+            and active_archive_tab == "analysis"
+        ):
+            project_story_memory_records = (
+                memory_service.list_project_chapter_memory_records(
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+            )
+        if selected_chapter:
+            chapter_story_memory = next(
+                (
+                    item
+                    for item in project_story_memory_records
+                    if str(item["chapter_id"])
+                    == str(selected_chapter["id"])
+                ),
+                None,
+            )
 
         conversations = assistant_chat_service.list_project_conversations(
             user_id=user_id,
@@ -2981,10 +3073,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if active_archive_tab == "analysis":
                 archive_story_memory_records = (
-                    memory_service.list_project_chapter_memory_records(
-                        user_id=user_id,
-                        project_id=project_id,
-                    )
+                    project_story_memory_records
                 )
         available_chat_models = chat_model_groups(user_id)
 
@@ -2999,6 +3088,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 display_title=display_title,
                 chapters=chapters,
                 chapter=selected_chapter,
+                chapter_story_memory=chapter_story_memory,
                 chapter_content=content,
                 chapter_index=selected_index,
                 previous_chapter=previous_chapter,
@@ -9996,6 +10086,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapters = database.list_chapters(
             user_id, document_id, document.get("latest_job_id")
         )
+        version_story_memory_records = (
+            database.list_work_version_story_memory_records(
+                user_id, str(current_version["id"])
+            )
+        )
+        story_memory_by_chapter = {
+            str(item["chapter_id"]): item
+            for item in version_story_memory_records
+        }
+        has_story_memory_snapshots = any(
+            item["memory_status"] == "ready"
+            for item in version_story_memory_records
+        )
         effective_view = "archive" if view == "archive" else "body"
         active_archive_tab = (
             archive_tab
@@ -10008,6 +10111,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             else "core"
         )
         selected_chapter = None
+        chapter_story_memory = None
         if effective_view == "body" and chapter_id:
             selected_chapter = next(
                 (
@@ -10025,6 +10129,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
         elif effective_view == "body" and chapters:
             selected_chapter = chapters[0]
+        if selected_chapter:
+            chapter_story_memory = story_memory_by_chapter.get(
+                str(selected_chapter["id"])
+            )
 
         chapter_content = ""
         chapter_content_hash = ""
@@ -10133,6 +10241,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 document=document,
                 chapters=chapters,
                 chapter=selected_chapter,
+                chapter_story_memory=chapter_story_memory,
                 chapter_content=chapter_content,
                 chapter_content_hash=chapter_content_hash,
                 chapter_index=selected_index,
@@ -10156,8 +10265,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 setting_voice_profile=setting_voice_profile,
                 archive_entries=archive_entries,
                 archive_analyses=archive_analyses,
-                archive_story_memory_records=[],
-                archive_story_memory_enabled=False,
+                archive_story_memory_records=(
+                    version_story_memory_records
+                    if active_archive_tab == "analysis"
+                    else []
+                ),
+                archive_story_memory_enabled=(
+                    has_story_memory_snapshots
+                    or str(current_version.get("intent") or "")
+                    == "snapshot"
+                ),
+                has_story_memory_snapshots=(
+                    has_story_memory_snapshots
+                ),
                 archive_return_to=_document_workbench_path(
                     document_id,
                     view="archive",

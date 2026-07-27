@@ -10,6 +10,7 @@ from app.db import SCHEMA, Database
 from app.memory_schema import StoryDelta
 from app.memory_service import MemoryService
 from app.security import hash_password
+from app.work_library import create_version_tag
 from app.writing import build_writing_messages
 
 
@@ -299,6 +300,92 @@ def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
     assert "<canonical_story_memory>" in prompt
     assert "父亲名下的新信在三天前寄出" in prompt
     assert "author_confirmed_canon_only" in prompt
+
+
+def test_pending_main_analysis_is_frozen_into_matching_tag(tmp_path: Path):
+    database, user_id, project_id, chapters = _build_project(tmp_path)
+    memory = MemoryService(database)
+    content = "林岚拆开了那封信，买下回雾港的车票。"
+    chapter = database.get_novel_chapter(
+        user_id, project_id, chapters[0]
+    )
+    Path(str(chapter["content_path"])).write_text(
+        content, encoding="utf-8"
+    )
+    version_id = _save_candidate(
+        database,
+        tmp_path=tmp_path,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[0],
+        name="pending-analysis",
+        content=content,
+    )
+    accepted = database.accept_chapter_version(
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[0],
+        version_id=version_id,
+        override_reason="测试分析完成前固定正文",
+    )
+    assert accepted and accepted["changed"]
+
+    document_id = create_version_tag(
+        database=database,
+        documents_dir=tmp_path / "documents",
+        user_id=user_id,
+        project_id=project_id,
+        label="分析前快照",
+    )
+    tag_version = database.get_work_version_for_document(
+        user_id, document_id
+    )
+    assert tag_version
+    before = database.list_work_version_story_memory_records(
+        user_id, str(tag_version["id"])
+    )
+    assert [item["memory_status"] for item in before] == [
+        "missing",
+        "missing",
+        "missing",
+    ]
+
+    delta_id = memory.create_proposal(
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[0],
+        version_id=version_id,
+        payload=_story_delta(),
+    )
+    memory.accept_delta(user_id=user_id, delta_id=delta_id)
+
+    after = database.list_work_version_story_memory_records(
+        user_id, str(tag_version["id"])
+    )
+    assert after[0]["memory_status"] == "ready"
+    assert after[0]["summary"].startswith("林岚收到")
+    assert after[0]["payload"]["keywords"] == ["来信", "雾港"]
+    assert [item["memory_status"] for item in after[1:]] == [
+        "missing",
+        "missing",
+    ]
+
+    immediate_document_id = create_version_tag(
+        database=database,
+        documents_dir=tmp_path / "documents",
+        user_id=user_id,
+        project_id=project_id,
+        label="分析后快照",
+    )
+    immediate_version = database.get_work_version_for_document(
+        user_id, immediate_document_id
+    )
+    assert immediate_version
+    immediate = database.list_work_version_story_memory_records(
+        user_id, str(immediate_version["id"])
+    )
+    assert immediate[0]["memory_status"] == "ready"
+    assert immediate[0]["summary"] == after[0]["summary"]
 
 
 def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
@@ -807,11 +894,15 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                         "version": 34,
                                         "name": "five_material_sections_v34",
                                     },
-                                    {
-                                        "version": 35,
-                                        "name": "background_memory_jobs_v35",
-                                    },
-                                ]
+                                        {
+                                            "version": 35,
+                                            "name": "background_memory_jobs_v35",
+                                        },
+                                        {
+                                            "version": 36,
+                                            "name": "version_story_memory_snapshots_v36",
+                                        },
+                                    ]
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1
         assert connection.execute(

@@ -131,6 +131,13 @@
     confirmLabel: "删除对话",
   });
 
+  bindDestructiveConfirmation("[data-delete-version-form]", {
+    title: "删除这个 Tag？",
+    message:
+      "这个固定版本的正文快照、分析与阅读对话都会被永久删除；main 和其他 Tag 不受影响。",
+    confirmLabel: "删除 Tag",
+  });
+
   bindDestructiveConfirmation("[data-delete-provider-form]", {
     title: "删除这个模型配置？",
     message: "保存的凭据、接口地址和模型列表都会被永久删除。",
@@ -351,6 +358,10 @@
   const manuscript = workbench.querySelector("[data-manuscript]");
   const autosaveForm = workbench.querySelector("[data-autosave-form]");
   const saveStatus = workbench.querySelector("[data-save-status]");
+  const analysisState = workbench.querySelector("[data-analysis-state]");
+  const actualCharCount = workbench.querySelector(
+    "[data-actual-char-count]",
+  );
   const chatForm = workbench.querySelector("[data-chat-form]");
   let autosaveTimer = 0;
   let saveStatusHideTimer = 0;
@@ -361,6 +372,7 @@
     if (!saveStatus) return;
     window.clearTimeout(saveStatusHideTimer);
     saveStatus.hidden = !message;
+    if (analysisState) analysisState.hidden = Boolean(message);
     saveStatus.textContent = message;
     saveStatus.dataset.state = state;
     if (!hideAfter) return;
@@ -369,11 +381,12 @@
       saveStatus.hidden = true;
       saveStatus.textContent = "";
       saveStatus.dataset.state = "";
+      if (analysisState) analysisState.hidden = false;
     }, hideAfter);
   }
 
   function refreshVersionReference(html) {
-    if (!chatForm || !html) return;
+    if (!html) return;
     const parsed = new DOMParser().parseFromString(html, "text/html");
     const versionId = parsed.querySelector(
       '[data-chat-form] input[name="source_version_id"]',
@@ -381,9 +394,23 @@
     const sourceHash = parsed.querySelector(
       '[data-chat-form] input[name="source_hash"]',
     );
-    if (versionId && sourceHash) {
+    if (chatForm && versionId && sourceHash) {
       chatForm.elements.source_version_id.value = versionId.value;
       chatForm.elements.source_hash.value = sourceHash.value;
+    }
+    const refreshedAnalysisState = parsed.querySelector(
+      "[data-analysis-state]",
+    );
+    if (analysisState && refreshedAnalysisState) {
+      analysisState.textContent =
+        refreshedAnalysisState.textContent.trim();
+      const refreshedHref =
+        refreshedAnalysisState.getAttribute("href");
+      if (refreshedHref) {
+        analysisState.setAttribute("href", refreshedHref);
+      } else {
+        analysisState.removeAttribute("href");
+      }
     }
   }
 
@@ -435,6 +462,10 @@
 
   if (autosaveForm && manuscript) {
     manuscript.addEventListener("input", () => {
+      if (actualCharCount) {
+        actualCharCount.textContent =
+          `${Array.from(manuscript.value).length} 字`;
+      }
       setSaveStatus("未保存", "dirty");
       window.clearTimeout(autosaveTimer);
       autosaveTimer = window.setTimeout(() => saveManuscript(), 1200);

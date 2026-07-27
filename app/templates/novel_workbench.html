@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-3">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-4">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -146,11 +146,25 @@
             </form>
             <footer class="studio-chapter-footer">
               <span>{{ chapter_index + 1 }} / {{ chapters|length }}</span>
-              <span data-save-status aria-live="polite" hidden></span>
-              <a
-                href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=analysis#story-memory-{{ chapter.id }}"
-                data-save-before-navigation
-              >分析</a>
+              <span class="studio-chapter-state">
+                <a
+                  href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=analysis{% if chapter_story_memory %}#story-memory-{{ chapter.id }}{% endif %}"
+                  data-analysis-state
+                  data-save-before-navigation
+                >
+                  {% if chapter_story_memory and chapter_story_memory.memory_status == 'ready' %}
+                    查看分析
+                  {% elif chapter_story_memory and chapter_story_memory.memory_status in ['queued', 'running'] %}
+                    整理中
+                  {% elif chapter_story_memory and chapter_story_memory.memory_status == 'failed' %}
+                    整理失败
+                  {% else %}
+                    未分析
+                  {% endif %}
+                </a>
+                <span data-save-status aria-live="polite" hidden></span>
+              </span>
+              <span data-actual-char-count>{{ chapter.char_count }} 字</span>
             </footer>
             <span class="studio-edge-cue" data-edge-cue hidden></span>
           </section>
@@ -543,5 +557,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-3" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-4" defer></script>
 {% endblock %}

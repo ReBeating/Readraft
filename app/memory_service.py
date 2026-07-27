@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .continuity import replay_canonical_state
@@ -485,6 +487,13 @@ class MemoryService:
                 created_at,
             ),
         )
+        self._snapshot_matching_work_versions(
+            connection,
+            project_id=project_id,
+            version_id=version_id,
+            delta=delta,
+            created_at=created_at,
+        )
 
         characters = {
             str(row["name"]): str(row["id"])
@@ -811,6 +820,120 @@ class MemoryService:
             "plot_thread_count": len(delta.plot_thread_changes),
             "foreshadowing_count": len(delta.foreshadowing_changes),
         }
+
+    @staticmethod
+    def _snapshot_matching_work_versions(
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        version_id: str,
+        delta: StoryDelta,
+        created_at: str,
+    ) -> None:
+        source = connection.execute(
+            """
+            SELECT version.content_hash, version.content_path,
+                   chapter.position AS chapter_position
+            FROM novel_chapter_versions version
+            JOIN novel_chapters chapter
+              ON chapter.id=version.chapter_id
+            WHERE version.id=?
+            """,
+            (version_id,),
+        ).fetchone()
+        if not source:
+            return
+        try:
+            source_body = Path(str(source["content_path"])).read_text(
+                encoding="utf-8"
+            )
+        except (OSError, UnicodeError):
+            return
+        source_hash = str(source["content_hash"] or "")
+        if not source_hash:
+            source_hash = hashlib.sha256(
+                source_body.encode("utf-8")
+            ).hexdigest()
+        targets = connection.execute(
+            """
+            SELECT tag.id AS work_version_id,
+                   chapter.id AS document_chapter_id,
+                   chapter.title,
+                   chapter.content_path
+            FROM work_versions tag
+            JOIN work_versions base ON base.id=tag.base_version_id
+            JOIN chapters chapter
+              ON chapter.document_id=tag.document_id
+            LEFT JOIN work_version_story_memories snapshot
+              ON snapshot.work_version_id=tag.id
+             AND snapshot.document_chapter_id=chapter.id
+            WHERE base.project_id=?
+              AND tag.ref_type='tag'
+              AND tag.intent='snapshot'
+              AND chapter.position=?
+              AND snapshot.id IS NULL
+            """,
+            (project_id, int(source["chapter_position"])),
+        ).fetchall()
+        payload_json = delta.model_dump_json()
+        keywords_json = _json(delta.keywords)
+        for target in targets:
+            try:
+                body = Path(str(target["content_path"])).read_text(
+                    encoding="utf-8"
+                )
+            except (OSError, UnicodeError):
+                continue
+            variants = [body]
+            title = str(target["title"] or "")
+            for separator in ("\r\n", "\n"):
+                prefix = f"{title}{separator}"
+                if title and body.startswith(prefix):
+                    variants.append(body[len(prefix) :])
+                    break
+            matching_body = next(
+                (
+                    candidate
+                    for candidate in variants
+                    if hashlib.sha256(
+                        candidate.encode("utf-8")
+                    ).hexdigest()
+                    == source_hash
+                ),
+                None,
+            )
+            if matching_body is None:
+                matching_body = next(
+                    (
+                        candidate
+                        for candidate in variants
+                        if candidate.strip() == source_body.strip()
+                    ),
+                    None,
+                )
+            if matching_body is None:
+                continue
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO work_version_story_memories(
+                    id, work_version_id, document_chapter_id,
+                    content_hash, summary, keywords_json,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex,
+                    str(target["work_version_id"]),
+                    str(target["document_chapter_id"]),
+                    hashlib.sha256(
+                        matching_body.encode("utf-8")
+                    ).hexdigest(),
+                    delta.chapter_summary,
+                    keywords_json,
+                    payload_json,
+                    created_at,
+                ),
+            )
 
     @staticmethod
     def _insert_fact(

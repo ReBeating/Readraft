@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -1032,7 +1033,14 @@ class Database:
                     ) AS project_char_count,
                     d.title AS document_title,
                     d.original_filename AS document_filename,
-                    d.char_count AS document_char_count,
+                    CASE
+                        WHEN version.intent='snapshot' THEN (
+                            SELECT COALESCE(SUM(ch.char_count), 0)
+                            FROM chapters ch
+                            WHERE ch.document_id=d.id
+                        )
+                        ELSE d.char_count
+                    END AS document_char_count,
                     d.created_at AS document_created_at,
                     (
                         SELECT COUNT(*) FROM chapters c
@@ -1479,6 +1487,108 @@ class Database:
             "volumes": [dict(row) for row in volumes],
             "confirmed_rules": [dict(row) for row in rules],
         }
+
+    def build_project_story_memory_snapshots(
+        self, user_id: int, project_id: str
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT ch.id AS source_chapter_id,
+                       ch.position AS source_chapter_position,
+                       ch.title AS chapter_title,
+                       version.content_hash,
+                       version.content_path,
+                       memory.summary,
+                       memory.keywords_json,
+                       delta.payload_json
+                FROM novel_chapters ch
+                JOIN novel_projects project ON project.id=ch.project_id
+                JOIN novel_chapter_versions version
+                  ON version.id=ch.canonical_version_id
+                JOIN chapter_memory memory
+                  ON memory.chapter_id=ch.id
+                 AND memory.version_id=version.id
+                 AND memory.record_status='canon'
+                JOIN story_deltas delta
+                  ON delta.id=memory.delta_id
+                 AND delta.status='projected'
+                WHERE ch.project_id=? AND project.user_id=?
+                ORDER BY ch.position
+                """,
+                (project_id, user_id),
+            ).fetchall()
+        snapshots: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            content_path = str(item.pop("content_path") or "")
+            if not str(item.get("content_hash") or ""):
+                try:
+                    body = Path(content_path).read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+                item["content_hash"] = hashlib.sha256(
+                    body.encode("utf-8")
+                ).hexdigest()
+            payload = _load_json(item.pop("payload_json"), {})
+            keywords = _load_json(item.pop("keywords_json"), [])
+            if not isinstance(payload, dict) or not isinstance(
+                keywords, list
+            ):
+                continue
+            item["payload"] = payload
+            item["keywords"] = keywords
+            snapshots.append(item)
+        return snapshots
+
+    def list_work_version_story_memory_records(
+        self, user_id: int, work_version_id: str
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT chapter.id AS chapter_id,
+                       chapter.position AS chapter_position,
+                       chapter.title AS chapter_title,
+                       snapshot.id AS memory_id,
+                       snapshot.summary,
+                       snapshot.keywords_json,
+                       snapshot.payload_json
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                JOIN chapters chapter
+                  ON chapter.document_id=version.document_id
+                LEFT JOIN work_version_story_memories snapshot
+                  ON snapshot.work_version_id=version.id
+                 AND snapshot.document_chapter_id=chapter.id
+                WHERE version.id=? AND work.user_id=?
+                ORDER BY chapter.position
+                """,
+                (work_version_id, user_id),
+            ).fetchall()
+        records: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if not item.get("memory_id"):
+                item["memory_status"] = "missing"
+                item["payload"] = None
+                item["keywords"] = []
+                records.append(item)
+                continue
+            payload = _load_json(item.pop("payload_json"), {})
+            keywords = _load_json(item.pop("keywords_json"), [])
+            if not isinstance(payload, dict) or not isinstance(
+                keywords, list
+            ):
+                item["memory_status"] = "missing"
+                item["payload"] = None
+                item["keywords"] = []
+            else:
+                item["memory_status"] = "ready"
+                item["payload"] = payload
+                item["keywords"] = keywords
+            records.append(item)
+        return records
 
     def ensure_project_work(
         self,
@@ -2028,6 +2138,111 @@ class Database:
                 str(Path(str(row["source_path"])).parent)
                 for row in document_rows
             ],
+        }
+
+    def delete_work_tag(
+        self, *, user_id: int, work_id: str, version_id: str
+    ) -> Optional[Dict[str, Optional[str]]]:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            target = connection.execute(
+                """
+                SELECT version.id, version.ref_type, version.ref_name,
+                       version.document_id, document.source_path
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                LEFT JOIN documents document
+                  ON document.id=version.document_id
+                WHERE version.id=? AND version.work_id=?
+                  AND work.user_id=?
+                """,
+                (version_id, work_id, user_id),
+            ).fetchone()
+            if not target:
+                connection.rollback()
+                return None
+            if (
+                str(target["ref_type"]) != "tag"
+                or str(target["ref_name"]) == "source"
+            ):
+                connection.rollback()
+                raise ValueError("main 和原始版本不能删除")
+            dependent = connection.execute(
+                """
+                SELECT 1 FROM work_versions
+                WHERE base_version_id=? AND id<>?
+                LIMIT 1
+                """,
+                (version_id, version_id),
+            ).fetchone()
+            if dependent:
+                connection.rollback()
+                raise ValueError("这个 Tag 仍是其他版本的基础，不能删除")
+            document_id = str(target["document_id"])
+            if has_active_document_ai_task(
+                connection,
+                user_id=user_id,
+                document_id=document_id,
+            ):
+                connection.rollback()
+                raise ValueError("这个 Tag 正在分析，请完成后再删除")
+            fallback = connection.execute(
+                """
+                SELECT ref_name, project_id, document_id
+                FROM work_versions
+                WHERE work_id=? AND id<>?
+                ORDER BY
+                    CASE
+                        WHEN ref_name='main' THEN 0
+                        WHEN ref_name='source' THEN 1
+                        ELSE 2
+                    END,
+                    created_at DESC,
+                    id
+                LIMIT 1
+                """,
+                (work_id, version_id),
+            ).fetchone()
+            if not fallback:
+                connection.rollback()
+                raise ValueError("作品至少需要保留一个版本")
+            connection.execute(
+                "DELETE FROM documents WHERE id=?",
+                (document_id,),
+            )
+            connection.execute(
+                """
+                UPDATE works
+                SET last_ref_name=CASE
+                        WHEN last_ref_name=? THEN ?
+                        ELSE last_ref_name
+                    END,
+                    updated_at=?
+                WHERE id=? AND user_id=?
+                """,
+                (
+                    str(target["ref_name"]),
+                    str(fallback["ref_name"]),
+                    utc_now(),
+                    work_id,
+                    user_id,
+                ),
+            )
+            connection.commit()
+        return {
+            "document_path": str(
+                Path(str(target["source_path"])).parent
+            ),
+            "fallback_project_id": (
+                str(fallback["project_id"])
+                if fallback["project_id"]
+                else None
+            ),
+            "fallback_document_id": (
+                str(fallback["document_id"])
+                if fallback["document_id"]
+                else None
+            ),
         }
 
     def list_novel_projects(self, user_id: int) -> List[Dict[str, Any]]:
@@ -4826,10 +5041,14 @@ class Database:
         intent: str = "original",
         content_hash: str = "",
         creative_snapshot: Optional[Mapping[str, Any]] = None,
+        story_memory_snapshots: Optional[
+            Iterable[Mapping[str, Any]]
+        ] = None,
     ) -> str:
         document_id = source_path.parent.name
         chunk_list = list(chunks)
         path_list = list(chapter_paths)
+        memory_snapshot_list = list(story_memory_snapshots or [])
         if len(chunk_list) != len(path_list):
             raise ValueError("章节与文件数量不一致")
 
@@ -4876,9 +5095,12 @@ class Database:
                     utc_now(),
                 ),
             )
+            chapter_ids: Dict[int, str] = {}
             for position, (chunk, content_path) in enumerate(
                 zip(chunk_list, path_list), start=1
             ):
+                chapter_id = uuid.uuid4().hex
+                chapter_ids[position] = chapter_id
                 connection.execute(
                     """
                     INSERT INTO chapters(
@@ -4887,7 +5109,7 @@ class Database:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        uuid.uuid4().hex,
+                        chapter_id,
                         document_id,
                         position,
                         chunk.title,
@@ -4900,7 +5122,7 @@ class Database:
                         chunk.part_count,
                     ),
                 )
-            _attach_work_version(
+            _, work_version_id = _attach_work_version(
                 connection,
                 user_id=user_id,
                 title=title,
@@ -4915,6 +5137,50 @@ class Database:
                 creative_snapshot=creative_snapshot,
                 origin="imported",
             )
+            for snapshot in memory_snapshot_list:
+                try:
+                    chapter_position = int(snapshot["chapter_position"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "故事记忆快照缺少有效章节位置"
+                    ) from exc
+                document_chapter_id = chapter_ids.get(chapter_position)
+                if not document_chapter_id:
+                    raise ValueError("故事记忆快照指向不存在的章节")
+                payload = snapshot.get("payload")
+                keywords = snapshot.get("keywords") or []
+                summary = str(snapshot.get("summary") or "").strip()
+                snapshot_hash = str(
+                    snapshot.get("content_hash") or ""
+                ).strip()
+                if (
+                    not isinstance(payload, Mapping)
+                    or not isinstance(keywords, list)
+                    or not summary
+                    or not snapshot_hash
+                ):
+                    raise ValueError("故事记忆快照内容不完整")
+                connection.execute(
+                    """
+                    INSERT INTO work_version_story_memories(
+                        id, work_version_id, document_chapter_id,
+                        content_hash, summary, keywords_json,
+                        payload_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        work_version_id,
+                        document_chapter_id,
+                        snapshot_hash,
+                        summary,
+                        json.dumps(keywords, ensure_ascii=False),
+                        json.dumps(
+                            dict(payload), ensure_ascii=False
+                        ),
+                        utc_now(),
+                    ),
+                )
             connection.commit()
         return document_id
 

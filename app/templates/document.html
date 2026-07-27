@@ -2,7 +2,7 @@
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-3">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-4">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -134,7 +134,13 @@
             <form method="post" action="/documents/{{ document.id }}/analyze">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <button class="studio-button primary" type="submit">
-                {% if document.latest_job_id %}重新分析{% else %}分析全书{% endif %}
+                {% if document.latest_job_id %}
+                  重新深度分析
+                {% elif has_story_memory_snapshots %}
+                  补充深度分析
+                {% else %}
+                  分析全书
+                {% endif %}
               </button>
             </form>
           {% endif %}
@@ -180,16 +186,25 @@
               >{{ chapter_content }}</textarea>
               <footer class="studio-chapter-footer">
                 <span>{{ chapter_index + 1 }} / {{ chapters|length }}</span>
-                <span>
-                  {% if chapter.analysis_id and chapter.analysis_status == 'completed' %}
+                <span class="studio-chapter-state">
+                  {% if chapter_story_memory and chapter_story_memory.memory_status == 'ready' %}
+                    <a
+                      href="/documents/{{ document.id }}?view=archive&archive_tab=analysis#story-memory-{{ chapter.id }}"
+                      data-analysis-state
+                    >查看分析</a>
+                  {% elif chapter.analysis_id and chapter.analysis_status == 'completed' %}
                     <a href="/analyses/{{ chapter.analysis_id }}">查看分析</a>
+                  {% elif chapter_story_memory and chapter_story_memory.memory_status in ['queued', 'running'] %}
+                    <span data-analysis-state>整理中</span>
+                  {% elif chapter_story_memory and chapter_story_memory.memory_status == 'failed' %}
+                    <span data-analysis-state>整理失败</span>
                   {% elif chapter.analysis_status %}
-                    {{ chapter.analysis_status|status_label }}
+                    <span data-analysis-state>{{ chapter.analysis_status|status_label }}</span>
                   {% else %}
-                    未分析
+                    <span data-analysis-state>未分析</span>
                   {% endif %}
                 </span>
-                <span>{{ chapter.char_count|human_size }}</span>
+                <span>{{ chapter.char_count }} 字</span>
               </footer>
               <span class="studio-edge-cue" data-edge-cue hidden></span>
             </section>
@@ -372,5 +387,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-3" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-4" defer></script>
 {% endblock %}
