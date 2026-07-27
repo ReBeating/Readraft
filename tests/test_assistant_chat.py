@@ -34,7 +34,10 @@ from app.assistant_chat import (
     compose_agent_loop_system_prompt,
     compose_assistant_system_prompt,
 )
-from app.assistant_chat_service import AssistantChatService
+from app.assistant_chat_service import (
+    MAX_USER_MESSAGE_CHARS,
+    AssistantChatService,
+)
 from app.chapter_splitter import split_chapters
 from app.config import Settings
 from app.db import Database
@@ -645,6 +648,54 @@ def seed_novel(
         )
         connection.commit()
     return user_id, project_id, chapter_id, version_id, content
+
+
+def test_chat_message_length_uses_only_a_high_server_safety_limit(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="长篇资料讨论",
+        project_id=project_id,
+    )
+
+    long_question = "海" * 8_001
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question=long_question,
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="advisor",
+    )
+    queued = service.get_message(user_id=user_id, message_id=message_id)
+    conversation = service.get_conversation(
+        user_id=user_id, conversation_id=conversation_id
+    )
+    assert queued
+    assert conversation
+    assert conversation["messages"][0]["content"] == long_question
+
+    with pytest.raises(ValueError, match="100,000"):
+        service.queue_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            question="海" * (MAX_USER_MESSAGE_CHARS + 1),
+            provider="mock",
+            model="mock-creative-chat",
+            credential_source="default",
+            agent_role="advisor",
+        )
 
 
 def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(

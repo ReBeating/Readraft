@@ -41,6 +41,8 @@ CONVERSATION_SCOPES = {
     "reference_chapter",
 }
 
+MAX_USER_MESSAGE_CHARS = 100_000
+
 SETTING_FIELD_LABELS = {
     "title": "书名",
     "genre": "题材",
@@ -619,9 +621,12 @@ class AssistantChatService:
             if not clean_question:
                 connection.rollback()
                 raise ValueError("修改后的消息不能为空")
-            if len(clean_question) > 8_000:
+            if len(clean_question) > MAX_USER_MESSAGE_CHARS:
                 connection.rollback()
-                raise ValueError("单条消息不能超过 8,000 个字符")
+                raise ValueError(
+                    "单条消息不能超过 "
+                    f"{MAX_USER_MESSAGE_CHARS:,} 个字符"
+                )
             active = connection.execute(
                 """
                 SELECT 1
@@ -967,8 +972,11 @@ class AssistantChatService:
         clean_question = question.strip()
         if not clean_question:
             raise ValueError("请输入想和 AI 讨论的问题")
-        if len(clean_question) > 8_000:
-            raise ValueError("单条消息不能超过 8,000 个字符")
+        if len(clean_question) > MAX_USER_MESSAGE_CHARS:
+            raise ValueError(
+                "单条消息不能超过 "
+                f"{MAX_USER_MESSAGE_CHARS:,} 个字符"
+            )
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
         requested_agent_role = normalize_requested_agent_role(agent_role)

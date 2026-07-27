@@ -484,7 +484,7 @@
                           <input type="hidden" name="settings_tab" value="{{ active_settings_tab }}">
                           <label>
                             <span>修改这条消息</span>
-                            <textarea name="question" rows="4" maxlength="8000" required>{{ message.content }}</textarea>
+                            <textarea name="question" rows="4" required>{{ message.content }}</textarea>
                           </label>
                           <small>将从这条消息之前建立新分支，原对话和已提交版本仍会保留。</small>
                           <button class="studio-button primary" type="submit">修改并重新发送</button>
@@ -535,7 +535,7 @@
           </div>
           <div class="studio-chat-input">
             <label class="sr-only" for="studio-chat-question">给 AI 的消息</label>
-            <textarea id="studio-chat-question" name="question" rows="5" maxlength="8000" required placeholder="和 AI 讨论剧情、创作或修订……"></textarea>
+            <textarea id="studio-chat-question" name="question" rows="5" required placeholder="和 AI 讨论剧情、创作或修订……"></textarea>
             <label class="studio-chat-quality">
               <span class="sr-only">本轮模型强度</span>
               <select
