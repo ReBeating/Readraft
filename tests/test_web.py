@@ -651,6 +651,45 @@ def test_registration_can_be_closed_even_for_empty_database(tmp_path):
         assert "创建一个" not in login.text
 
 
+def test_auxiliary_pages_use_formal_header(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        login = client.get("/login")
+        assert 'class="brand-symbol"' in login.text
+        assert "brand-mark" not in login.text
+        assert ">写</span>" not in login.text
+
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "统一页头作者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        techniques = client.get("/techniques")
+        header = re.search(
+            r'<header class="site-header">.*?</header>',
+            techniques.text,
+            re.DOTALL,
+        )
+        assert header
+        rendered = header.group(0)
+        assert 'class="brand-symbol"' in rendered
+        assert "brand-mark" not in rendered
+        assert ">写</span>" not in rendered
+        assert 'href="/dashboard">作品库</a>' in rendered
+        assert 'href="/techniques">技法库</a>' in rendered
+        assert 'aria-label="模型配置"' in rendered
+        assert 'aria-label="退出登录"' in rendered
+        assert 'href="/import"' not in rendered
+
+
 def test_production_rejects_default_session_secret(tmp_path):
     settings = replace(
         make_settings(tmp_path),

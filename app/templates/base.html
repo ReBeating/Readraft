@@ -5,27 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ app_name }}{% endblock %}</title>
     <link rel="icon" href="{{ url_for('static', path='/favicon.svg') }}" type="image/svg+xml">
-    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20260727-1">
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}?v=20260727-2">
     {% block head %}{% endblock %}
   </head>
   <body class="{% block body_class %}{% endblock %}">
     {% block site_header %}
     <header class="site-header">
       <div class="shell nav-row">
-        <a class="brand" href="{{ '/dashboard' if user else '/login' }}">
-          <span class="brand-mark">写</span>
+        <a class="brand" href="{{ '/dashboard' if user else '/login' }}" aria-label="{{ app_name }}首页">
+          <svg class="brand-symbol" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 20c4-1 8-5 10-9 1-2 2-4 4-6-4 0-7 1-9 3-3 3-4 7-5 12Z"></path>
+            <path d="M7 17c2-1 5-2 8-2"></path>
+          </svg>
           <span>{{ app_name }}</span>
         </a>
         {% if user %}
           <nav class="nav-actions" aria-label="主导航">
-            <a href="/dashboard">作品库</a>
-            <a href="/techniques">技法库</a>
-            <a href="{{ model_settings_url }}" data-model-settings-open>模型配置</a>
-            <a class="button small" href="/import">导入</a>
-            <form method="post" action="/logout">
-              <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <button class="link-button" type="submit">退出 {{ user.username }}</button>
-            </form>
+            <a class="nav-text-link" href="/dashboard">作品库</a>
+            <a class="nav-text-link" href="/techniques">技法库</a>
+            <a
+              class="nav-icon-button"
+              href="{{ model_settings_url }}"
+              data-model-settings-open
+              aria-label="模型配置"
+              title="模型配置"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M6 15v4"></path>
+              </svg>
+            </a>
+            <div class="nav-account">
+              <span class="nav-account-name">{{ user.username }}</span>
+              <form method="post" action="/logout">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <button
+                  class="nav-icon-button"
+                  type="submit"
+                  aria-label="退出登录"
+                  title="退出登录"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"></path>
+                  </svg>
+                </button>
+              </form>
+            </div>
           </nav>
         {% endif %}
       </div>

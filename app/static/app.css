@@ -658,41 +658,89 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 11px;
-  font-family: Georgia, "Songti SC", serif;
+  color: var(--ink);
   font-size: 19px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 760;
+  letter-spacing: 0.02em;
 }
 
-.brand-mark {
-  display: grid;
-  width: 35px;
-  height: 35px;
-  place-items: center;
-  border-radius: 10px 3px 10px 3px;
-  color: var(--lime);
-  background: var(--green-dark);
-  box-shadow: 5px 5px 0 rgba(198, 239, 74, 0.5);
+.brand-symbol {
+  width: 27px;
+  height: 27px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .nav-actions {
   display: flex;
   align-items: center;
-  gap: 20px;
-  color: #47534c;
-  font-size: 14px;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
-.nav-actions form {
+.nav-text-link {
+  padding: 8px 10px;
+  border-radius: 9px;
+}
+
+.nav-text-link:hover,
+.nav-icon-button:hover {
+  color: var(--green);
+  background: rgba(30, 90, 67, 0.08);
+}
+
+.nav-icon-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+}
+
+.nav-icon-button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.nav-account,
+.nav-account form {
+  display: inline-flex;
+  align-items: center;
+}
+
+.nav-account {
+  gap: 8px;
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.nav-account form {
   margin: 0;
 }
 
-.link-button {
-  padding: 0;
-  border: 0;
-  color: #6d756f;
-  background: transparent;
-  cursor: pointer;
+.nav-account-name {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mock-banner {
@@ -6489,11 +6537,31 @@ select:focus {
 
   .nav-row {
     min-height: 60px;
+    gap: 12px;
   }
 
-  .nav-actions > a:first-child,
-  .link-button {
+  .brand {
+    gap: 8px;
+    font-size: 17px;
+  }
+
+  .brand-symbol {
+    width: 24px;
+    height: 24px;
+  }
+
+  .nav-text-link,
+  .nav-account-name {
     display: none;
+  }
+
+  .nav-actions {
+    gap: 4px;
+  }
+
+  .nav-account {
+    margin-left: 0;
+    padding-left: 7px;
   }
 
   .book-grid,
