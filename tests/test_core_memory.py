@@ -902,6 +902,10 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                             "version": 36,
                                             "name": "version_story_memory_snapshots_v36",
                                         },
+                                        {
+                                            "version": 37,
+                                            "name": "work_version_reading_positions_v37",
+                                        },
                                     ]
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1

@@ -3728,6 +3728,18 @@ def _version_story_memory_snapshots_v36(
             )
 
 
+def _work_version_reading_positions_v37(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _add_column(
+        connection,
+        "work_versions",
+        "last_chapter_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -3868,6 +3880,11 @@ MIGRATIONS = (
         36,
         "version_story_memory_snapshots_v36",
         _version_story_memory_snapshots_v36,
+    ),
+    Migration(
+        37,
+        "work_version_reading_positions_v37",
+        _work_version_reading_positions_v37,
     ),
 )
 

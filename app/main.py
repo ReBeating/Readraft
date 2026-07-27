@@ -2360,29 +2360,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         user_id = int(user["id"])
         work = database.get_work(user_id, work_id)
-        version = database.get_work_version(user_id, version_id)
-        if (
-            not work
-            or not version
-            or str(version["work_id"]) != work_id
-        ):
+        target_version = (
+            next(
+                (
+                    item
+                    for item in work["versions"]
+                    if str(item["id"]) == version_id
+                ),
+                None,
+            )
+            if work
+            else None
+        )
+        if not work or not target_version:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         database.set_work_version(
             user_id=user_id,
             work_id=work_id,
             version_id=version_id,
         )
-        if version.get("project_id"):
-            destination = (
-                f"/novels/{quote(str(version['project_id']), safe='')}"
-                "/workbench"
-            )
-        else:
-            destination = (
-                f"/documents/{quote(str(version['document_id']), safe='')}"
-            )
         return RedirectResponse(
-            destination,
+            str(target_version["open_url"]),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -2860,11 +2858,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "只有 main 分支可以进入创作工作台",
                 status_code=status.HTTP_409_CONFLICT,
             )
-        database.set_work_version(
-            user_id=user_id,
-            work_id=str(work["id"]),
-            version_id=str(current_version["id"]),
-        )
         chapters = database.list_novel_chapters(user_id, project_id)
         effective_view = view if view in {"body", "archive"} else "body"
         if not chapters and effective_view == "body":
@@ -2898,7 +2891,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
         elif effective_view == "body" and chapters:
-            selected_chapter = chapters[0]
+            remembered_chapter_id = str(
+                current_version.get("last_chapter_id") or ""
+            )
+            selected_chapter = next(
+                (
+                    item
+                    for item in chapters
+                    if str(item["id"]) == remembered_chapter_id
+                ),
+                chapters[0],
+            )
+        database.set_work_version(
+            user_id=user_id,
+            work_id=str(work["id"]),
+            version_id=str(current_version["id"]),
+            chapter_id=(
+                str(selected_chapter["id"])
+                if selected_chapter
+                else None
+            ),
+        )
 
         content = ""
         selected_index = -1
@@ -10078,11 +10091,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "固定版本不属于作品版本库",
                 status_code=status.HTTP_409_CONFLICT,
             )
-        database.set_work_version(
-            user_id=user_id,
-            work_id=str(work["id"]),
-            version_id=str(current_version["id"]),
-        )
         chapters = database.list_chapters(
             user_id, document_id, document.get("latest_job_id")
         )
@@ -10128,7 +10136,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
         elif effective_view == "body" and chapters:
-            selected_chapter = chapters[0]
+            remembered_chapter_id = str(
+                current_version.get("last_chapter_id") or ""
+            )
+            selected_chapter = next(
+                (
+                    item
+                    for item in chapters
+                    if str(item["id"]) == remembered_chapter_id
+                ),
+                chapters[0],
+            )
+        database.set_work_version(
+            user_id=user_id,
+            work_id=str(work["id"]),
+            version_id=str(current_version["id"]),
+            chapter_id=(
+                str(selected_chapter["id"])
+                if selected_chapter
+                else None
+            ),
+        )
         if selected_chapter:
             chapter_story_memory = story_memory_by_chapter.get(
                 str(selected_chapter["id"])

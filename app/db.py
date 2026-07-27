@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional
+from urllib.parse import quote
 
 from .chapter_splitter import ChapterChunk
 from .continuity import get_continuity_context, replay_canonical_state
@@ -1050,7 +1051,21 @@ class Database:
                         SELECT COUNT(*) FROM chapter_analyses a
                         JOIN analysis_jobs j ON j.id=a.job_id
                         WHERE j.document_id=d.id AND a.status='completed'
-                    ) AS completed_analysis_count
+                    ) AS completed_analysis_count,
+                    CASE
+                        WHEN TRIM(version.last_chapter_id)='' THEN 0
+                        WHEN version.project_id IS NOT NULL THEN EXISTS(
+                            SELECT 1 FROM novel_chapters remembered
+                            WHERE remembered.project_id=version.project_id
+                              AND remembered.id=version.last_chapter_id
+                        )
+                        WHEN version.document_id IS NOT NULL THEN EXISTS(
+                            SELECT 1 FROM chapters remembered
+                            WHERE remembered.document_id=version.document_id
+                              AND remembered.id=version.last_chapter_id
+                        )
+                        ELSE 0
+                    END AS last_chapter_exists
                 FROM work_versions version
                 LEFT JOIN novel_projects p ON p.id=version.project_id
                 LEFT JOIN documents d ON d.id=version.document_id
@@ -1112,13 +1127,25 @@ class Database:
                 version.get("creative_snapshot_json"), {}
             )
             if version.get("project_id"):
-                version["open_url"] = (
+                open_url = (
                     f"/novels/{version['project_id']}/workbench"
                 )
             elif version.get("document_id"):
-                version["open_url"] = f"/documents/{version['document_id']}"
+                open_url = f"/documents/{version['document_id']}"
             else:
-                version["open_url"] = f"/works/{work['id']}"
+                open_url = f"/works/{work['id']}"
+            remembered_chapter_id = (
+                str(version.get("last_chapter_id") or "")
+                if bool(version.get("last_chapter_exists"))
+                else ""
+            )
+            version["resume_chapter_id"] = remembered_chapter_id
+            version["open_url"] = (
+                f"{open_url}?chapter_id="
+                f"{quote(remembered_chapter_id, safe='')}"
+                if remembered_chapter_id
+                else open_url
+            )
             version["is_current"] = (
                 str(version.get("ref_name") or "")
                 == str(work.get("last_ref_name") or "")
@@ -1635,18 +1662,64 @@ class Database:
             return result
 
     def set_work_version(
-        self, *, user_id: int, work_id: str, version_id: str
+        self,
+        *,
+        user_id: int,
+        work_id: str,
+        version_id: str,
+        chapter_id: Optional[str] = None,
     ) -> bool:
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             version = connection.execute(
                 """
-                SELECT ref_name FROM work_versions
-                WHERE id=? AND work_id=?
+                SELECT version.ref_name, version.project_id,
+                       version.document_id
+                FROM work_versions version
+                JOIN works work ON work.id=version.work_id
+                WHERE version.id=? AND version.work_id=?
+                  AND work.user_id=?
                 """,
-                (version_id, work_id),
+                (version_id, work_id, user_id),
             ).fetchone()
             if not version:
+                connection.rollback()
                 raise ValueError("版本不属于当前作品")
+            remembered_chapter_id = str(chapter_id or "").strip()
+            if remembered_chapter_id:
+                if version["project_id"]:
+                    chapter_exists = connection.execute(
+                        """
+                        SELECT 1 FROM novel_chapters
+                        WHERE id=? AND project_id=?
+                        """,
+                        (
+                            remembered_chapter_id,
+                            str(version["project_id"]),
+                        ),
+                    ).fetchone()
+                else:
+                    chapter_exists = connection.execute(
+                        """
+                        SELECT 1 FROM chapters
+                        WHERE id=? AND document_id=?
+                        """,
+                        (
+                            remembered_chapter_id,
+                            str(version["document_id"]),
+                        ),
+                    ).fetchone()
+                if not chapter_exists:
+                    connection.rollback()
+                    raise ValueError("章节不属于当前版本")
+                connection.execute(
+                    """
+                    UPDATE work_versions
+                    SET last_chapter_id=?
+                    WHERE id=? AND work_id=?
+                    """,
+                    (remembered_chapter_id, version_id, work_id),
+                )
             cursor = connection.execute(
                 """
                 UPDATE works SET last_ref_name=?, updated_at=?

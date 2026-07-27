@@ -2471,6 +2471,156 @@ def test_imported_source_can_create_main_and_fixed_tag(tmp_path):
         )
 
 
+def test_dashboard_resumes_each_version_at_its_last_chapter(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "续读位置用户",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        import_page = client.get("/import")
+        imported = client.post(
+            "/import",
+            data={
+                "title": "三章续读测试",
+                "csrf": csrf_from(import_page.text),
+            },
+            files={
+                "work_file": (
+                    "resume.txt",
+                    (
+                        "第一章 起点\n第一段正文。\n\n"
+                        "第二章 中段\n第二段正文。\n\n"
+                        "第三章 结尾\n第三段正文。"
+                    ).encode(),
+                    "text/plain",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert imported.status_code == 303
+        document_id = imported.headers["location"].split(
+            "/documents/", 1
+        )[1]
+        user = application.state.database.get_user_by_username(
+            "续读位置用户"
+        )
+        user_id = int(user["id"])
+        work = application.state.database.list_works(user_id)[0]
+        work_id = str(work["id"])
+        source_version_id = str(work["source_version"]["id"])
+        source_chapters = application.state.database.list_chapters(
+            user_id, document_id
+        )
+        assert len(source_chapters) == 3
+        source_last_chapter_id = str(source_chapters[2]["id"])
+        source_last_url = (
+            f"/documents/{document_id}"
+            f"?chapter_id={source_last_chapter_id}"
+        )
+        source_last_page = client.get(source_last_url)
+        assert source_last_page.status_code == 200
+        assert "第三段正文。" in source_last_page.text
+
+        remembered_source = application.state.database.get_work(
+            user_id, work_id
+        )
+        assert (
+            remembered_source["source_version"]["last_chapter_id"]
+            == source_last_chapter_id
+        )
+        assert (
+            remembered_source["source_version"]["open_url"]
+            == source_last_url
+        )
+        direct_source = client.get(f"/documents/{document_id}")
+        assert "第三段正文。" in direct_source.text
+        dashboard = client.get("/dashboard")
+        assert f'href="/works/{work_id}"' in dashboard.text
+        resume_source = client.get(
+            f"/works/{work_id}", follow_redirects=False
+        )
+        assert resume_source.headers["location"] == source_last_url
+
+        created_main = client.post(
+            f"/works/{work_id}/main",
+            data={
+                "base_version_id": source_version_id,
+                "intent": "rewrite",
+                "csrf": csrf_from(source_last_page.text),
+            },
+            follow_redirects=False,
+        )
+        assert created_main.status_code == 303
+        project_id = project_id_from_workbench(
+            created_main.headers["location"]
+        )
+        main_chapters = (
+            application.state.database.list_novel_chapters(
+                user_id, project_id
+            )
+        )
+        assert len(main_chapters) == 3
+        main_middle_chapter_id = str(main_chapters[1]["id"])
+        main_middle_url = (
+            f"/novels/{project_id}/workbench"
+            f"?chapter_id={main_middle_chapter_id}"
+        )
+        main_middle_page = client.get(main_middle_url)
+        assert main_middle_page.status_code == 200
+        assert "第二段正文。" in main_middle_page.text
+
+        remembered_main = application.state.database.get_work(
+            user_id, work_id
+        )
+        main_version_id = str(remembered_main["main_version"]["id"])
+        assert (
+            remembered_main["main_version"]["last_chapter_id"]
+            == main_middle_chapter_id
+        )
+        assert (
+            remembered_main["main_version"]["open_url"]
+            == main_middle_url
+        )
+        direct_main = client.get(f"/novels/{project_id}/workbench")
+        assert "第二段正文。" in direct_main.text
+        dashboard = client.get("/dashboard")
+        assert f'href="/works/{work_id}"' in dashboard.text
+        resume_main = client.get(
+            f"/works/{work_id}", follow_redirects=False
+        )
+        assert resume_main.headers["location"] == main_middle_url
+
+        switch_source = client.get(
+            f"/works/{work_id}/versions/{source_version_id}",
+            follow_redirects=False,
+        )
+        assert switch_source.headers["location"] == source_last_url
+        resume_source_again = client.get(
+            f"/works/{work_id}", follow_redirects=False
+        )
+        assert resume_source_again.headers["location"] == source_last_url
+
+        switch_main = client.get(
+            f"/works/{work_id}/versions/{main_version_id}",
+            follow_redirects=False,
+        )
+        assert switch_main.headers["location"] == main_middle_url
+        resume_main_again = client.get(
+            f"/works/{work_id}", follow_redirects=False
+        )
+        assert resume_main_again.headers["location"] == main_middle_url
+
+
 def test_tag_reuses_exact_main_analysis_and_can_be_deleted(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
