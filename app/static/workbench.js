@@ -353,13 +353,23 @@
   const saveStatus = workbench.querySelector("[data-save-status]");
   const chatForm = workbench.querySelector("[data-chat-form]");
   let autosaveTimer = 0;
+  let saveStatusHideTimer = 0;
   let savePromise = null;
   let lastSavedContent = manuscript ? manuscript.value : "";
 
-  function setSaveStatus(message, state = "") {
+  function setSaveStatus(message, state = "", hideAfter = 0) {
     if (!saveStatus) return;
+    window.clearTimeout(saveStatusHideTimer);
+    saveStatus.hidden = !message;
     saveStatus.textContent = message;
     saveStatus.dataset.state = state;
+    if (!hideAfter) return;
+    saveStatusHideTimer = window.setTimeout(() => {
+      if (saveStatus.dataset.state !== state) return;
+      saveStatus.hidden = true;
+      saveStatus.textContent = "";
+      saveStatus.dataset.state = "";
+    }, hideAfter);
   }
 
   function refreshVersionReference(html) {
@@ -379,7 +389,10 @@
 
   async function saveManuscript(force = false) {
     if (!autosaveForm || !manuscript) return true;
-    if (manuscript.value === lastSavedContent) return true;
+    if (manuscript.value === lastSavedContent) {
+      if (force) setSaveStatus("已保存", "saved", 1400);
+      return true;
+    }
     if (savePromise) {
       const saved = await savePromise;
       if (!saved) return false;
@@ -404,9 +417,9 @@
         refreshVersionReference(html);
         lastSavedContent = contentAtStart;
         if (manuscript.value === contentAtStart) {
-          setSaveStatus("已保存", "saved");
+          setSaveStatus("已保存", "saved", 1400);
         } else {
-          setSaveStatus("有未保存修改", "dirty");
+          setSaveStatus("未保存", "dirty");
           autosaveTimer = window.setTimeout(() => saveManuscript(), 900);
         }
         return true;
@@ -422,7 +435,7 @@
 
   if (autosaveForm && manuscript) {
     manuscript.addEventListener("input", () => {
-      setSaveStatus("有未保存修改", "dirty");
+      setSaveStatus("未保存", "dirty");
       window.clearTimeout(autosaveTimer);
       autosaveTimer = window.setTimeout(() => saveManuscript(), 1200);
     });

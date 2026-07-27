@@ -1463,6 +1463,10 @@ def test_unified_workbench_uses_five_material_sections(tmp_path):
         assert "/ 约 3000 字" not in saved_page.text
         assert "data-char-count" not in saved_page.text
         assert (
+            '<span data-save-status aria-live="polite" hidden></span>'
+            in saved_page.text
+        )
+        assert (
             f'href="/novels/{project_id}/workbench?view=archive'
             f'&archive_tab=analysis#story-memory-{chapter_id}"'
             in saved_page.text

@@ -1264,11 +1264,17 @@ body.studio-surface .studio-reader-manuscript {
   font-size: 10px;
 }
 
-.studio-chapter-footer span:nth-child(2) {
+.studio-chapter-footer > :first-child {
+  grid-column: 1;
+}
+
+.studio-chapter-footer [data-save-status] {
+  grid-column: 2;
   text-align: center;
 }
 
 .studio-chapter-footer > :last-child {
+  grid-column: 3;
   text-align: right;
 }
 
@@ -3732,7 +3738,7 @@ body.studio-surface .studio-personal-model input[type="radio"] {
     font-size: 9px;
   }
 
-  .studio-chapter-footer span:nth-child(2) {
+  .studio-chapter-footer [data-save-status] {
     text-align: center;
   }
 

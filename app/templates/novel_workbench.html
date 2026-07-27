@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-2">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260727-3">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -146,7 +146,7 @@
             </form>
             <footer class="studio-chapter-footer">
               <span>{{ chapter_index + 1 }} / {{ chapters|length }}</span>
-              <span data-save-status aria-live="polite">已保存</span>
+              <span data-save-status aria-live="polite" hidden></span>
               <a
                 href="/novels/{{ project.id }}/workbench?view=archive&archive_tab=analysis#story-memory-{{ chapter.id }}"
                 data-save-before-navigation
@@ -543,5 +543,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-2" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260727-3" defer></script>
 {% endblock %}
