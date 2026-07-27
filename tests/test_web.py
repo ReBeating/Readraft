@@ -1460,7 +1460,41 @@ def test_unified_workbench_uses_five_material_sections(tmp_path):
         assert response.status_code == 303
         saved_page = client.get(response.headers["location"])
         assert "录音带转到第三圈时" in saved_page.text
-        assert "/ 约 3000 字" in saved_page.text
+        assert "/ 约 3000 字" not in saved_page.text
+        assert "data-char-count" not in saved_page.text
+        assert (
+            f'href="/novels/{project_id}/workbench?view=archive'
+            f'&archive_tab=analysis#story-memory-{chapter_id}"'
+            in saved_page.text
+        )
+
+        user_id = application.state.database.get_user_by_username(
+            "工作台作者"
+        )["id"]
+        deadline = time.monotonic() + 3
+        chapter_memory = None
+        while time.monotonic() < deadline:
+            chapter_memory = MemoryService(
+                application.state.database
+            ).get_chapter_memory(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+            )
+            if chapter_memory:
+                break
+            time.sleep(0.03)
+        assert chapter_memory
+        analysis_page = client.get(
+            f"/novels/{project_id}/workbench"
+            "?view=archive&archive_tab=analysis"
+        )
+        assert "故事记忆" in analysis_page.text
+        assert "正文保存后自动更新。" in analysis_page.text
+        assert f'id="story-memory-{chapter_id}"' in analysis_page.text
+        assert "录音带转到第三圈时" in analysis_page.text
+        assert "事件" in analysis_page.text
+        assert "依据：" in analysis_page.text
 
         project = application.state.database.get_novel_project(
             application.state.database.get_user_by_username("工作台作者")[

@@ -164,6 +164,22 @@
   const workbench = document.querySelector("[data-workbench]");
   if (!workbench) return;
 
+  if (window.location.hash) {
+    let anchorId = window.location.hash.slice(1);
+    try {
+      anchorId = decodeURIComponent(anchorId);
+    } catch (_) {
+      // Keep the literal fragment if it is not valid percent-encoding.
+    }
+    const memoryCard = document.getElementById(anchorId);
+    if (memoryCard?.matches("details.studio-story-memory-card")) {
+      memoryCard.open = true;
+      window.requestAnimationFrame(() => {
+        memoryCard.scrollIntoView({ block: "start" });
+      });
+    }
+  }
+
   const mobileQuery = window.matchMedia("(max-width: 760px)");
   const mobileAIStateKey =
     `novel-workbench-ai-open:${
@@ -336,19 +352,9 @@
   const autosaveForm = workbench.querySelector("[data-autosave-form]");
   const saveStatus = workbench.querySelector("[data-save-status]");
   const chatForm = workbench.querySelector("[data-chat-form]");
-  const charCount = workbench.querySelector("[data-char-count]");
   let autosaveTimer = 0;
   let savePromise = null;
   let lastSavedContent = manuscript ? manuscript.value : "";
-
-  function updateCharCount() {
-    if (!manuscript || !charCount) return;
-    const count = manuscript.value.replace(/\s+/gu, "").length;
-    const target = Number(charCount.dataset.target || 0);
-    charCount.textContent = target
-      ? `${count} / 约 ${target} 字`
-      : `${count} 字`;
-  }
 
   function setSaveStatus(message, state = "") {
     if (!saveStatus) return;
@@ -416,12 +422,10 @@
 
   if (autosaveForm && manuscript) {
     manuscript.addEventListener("input", () => {
-      updateCharCount();
       setSaveStatus("有未保存修改", "dirty");
       window.clearTimeout(autosaveTimer);
       autosaveTimer = window.setTimeout(() => saveManuscript(), 1200);
     });
-    updateCharCount();
 
     saveStatus?.addEventListener("click", () => {
       if (saveStatus.dataset.state === "error") saveManuscript(true);

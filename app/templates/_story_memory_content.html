@@ -1,0 +1,209 @@
+{% if archive_story_memory_enabled %}
+  {% set story_memory_counts = namespace(ready=0) %}
+  {% for memory in archive_story_memory_records %}
+    {% if memory.memory_status == 'ready' %}
+      {% set story_memory_counts.ready = story_memory_counts.ready + 1 %}
+    {% endif %}
+  {% endfor %}
+  <section class="studio-archive-section">
+    <div class="studio-archive-section-heading">
+      <div>
+        <h2>故事记忆</h2>
+        <p>正文保存后自动更新。</p>
+      </div>
+      <span>
+        {{ story_memory_counts.ready }}
+        {% if archive_story_memory_records|length != story_memory_counts.ready %}
+          / {{ archive_story_memory_records|length }}
+        {% endif %}
+      </span>
+    </div>
+
+    {% if archive_story_memory_records %}
+      <div class="studio-story-memory-list">
+        {% for memory in archive_story_memory_records %}
+          {% if memory.memory_status == 'ready' %}
+            <details
+              class="studio-story-memory-card"
+              id="story-memory-{{ memory.chapter_id }}"
+            >
+            <summary>
+              <span class="studio-story-memory-summary">
+                <small>第{{ memory.chapter_position }}章</small>
+                <strong>{{ memory.chapter_title or '未命名章节' }}</strong>
+                <span>{{ memory.summary }}</span>
+              </span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m9 6 6 6-6 6"></path>
+              </svg>
+            </summary>
+
+            <div class="studio-story-memory-detail">
+              {% if memory.keywords %}
+                <div class="studio-story-memory-tags" aria-label="关键词">
+                  {% for keyword in memory.keywords %}
+                    <span>{{ keyword }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+
+              <section>
+                <h3>章节摘要</h3>
+                <p>{{ memory.payload.chapter_summary }}</p>
+                {% if memory.payload.time_advance and (memory.payload.time_advance.from_time or memory.payload.time_advance.to_time or memory.payload.time_advance.elapsed) %}
+                  <small>
+                    时间：
+                    {{ memory.payload.time_advance.from_time or '未注明' }}
+                    →
+                    {{ memory.payload.time_advance.to_time or '未注明' }}
+                    {% if memory.payload.time_advance.elapsed %}
+                      · {{ memory.payload.time_advance.elapsed }}
+                    {% endif %}
+                  </small>
+                {% endif %}
+              </section>
+
+              {% if memory.payload.events %}
+                <section>
+                  <h3>事件</h3>
+                  <div class="studio-story-memory-items">
+                    {% for event in memory.payload.events %}
+                      <article>
+                        <small>
+                          事件 {{ loop.index }}
+                          {% if event.event_key %} · {{ event.event_key }}{% endif %}
+                        </small>
+                        <strong>{{ event.summary }}</strong>
+                        {% if event.participants or event.location or event.story_time %}
+                          <span>
+                            {% if event.participants %}{{ event.participants|join('、') }}{% endif %}
+                            {% if event.location %}{% if event.participants %} · {% endif %}{{ event.location }}{% endif %}
+                            {% if event.story_time %}{% if event.participants or event.location %} · {% endif %}{{ event.story_time }}{% endif %}
+                          </span>
+                        {% endif %}
+                        {% if event.cause_event_keys %}
+                          <span>直接原因：{{ event.cause_event_keys|join('、') }}</span>
+                        {% endif %}
+                        <p>依据：{{ event.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endif %}
+
+              {% if memory.payload.character_changes or memory.payload.relationship_changes or memory.payload.location_changes or memory.payload.item_changes %}
+                <section>
+                  <h3>状态变化</h3>
+                  <div class="studio-story-memory-items">
+                    {% for change in memory.payload.character_changes %}
+                      <article>
+                        <small>人物 · {{ change.aspect|story_memory_label }}</small>
+                        <strong>{{ change.character_name }}</strong>
+                        <span>{{ change.before or '未记录' }} → {{ change.after }}</span>
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                    {% for change in memory.payload.relationship_changes %}
+                      <article>
+                        <small>关系</small>
+                        <strong>{{ change.character_a }} ↔ {{ change.character_b }}</strong>
+                        <span>{{ change.before or '未记录' }} → {{ change.after }}</span>
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                    {% for change in memory.payload.location_changes %}
+                      <article>
+                        <small>位置</small>
+                        <strong>{{ change.subject_name }}</strong>
+                        <span>{{ change.from_location or '未记录' }} → {{ change.to_location }}</span>
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                    {% for change in memory.payload.item_changes %}
+                      <article>
+                        <small>物品 · {{ change.action|story_memory_label }}</small>
+                        <strong>{{ change.item_name }}</strong>
+                        {% if change.state %}<span>{{ change.state }}</span>{% endif %}
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endif %}
+
+              {% if memory.payload.knowledge_changes or memory.payload.plot_thread_changes or memory.payload.foreshadowing_changes %}
+                <section>
+                  <h3>信息与线索</h3>
+                  <div class="studio-story-memory-items">
+                    {% for change in memory.payload.knowledge_changes %}
+                      <article>
+                        <small>知情 · {{ change.state|story_memory_label }}</small>
+                        <strong>{{ change.character_name }}</strong>
+                        <span>{{ change.fact }}</span>
+                        {% if change.learned_via %}<span>获知方式：{{ change.learned_via }}</span>{% endif %}
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                    {% for change in memory.payload.plot_thread_changes %}
+                      <article>
+                        <small>
+                          {{ change.thread_type|story_memory_label }} ·
+                          {{ change.action|story_memory_label }}
+                        </small>
+                        <strong>{{ change.thread_name }}</strong>
+                        <span>{{ change["update"] }}</span>
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                    {% for change in memory.payload.foreshadowing_changes %}
+                      <article>
+                        <small>伏笔 · {{ change.action|story_memory_label }}</small>
+                        <strong>{{ change.hook_name }}</strong>
+                        <span>{{ change.description }}</span>
+                        <p>依据：{{ change.evidence }}</p>
+                      </article>
+                    {% endfor %}
+                  </div>
+                </section>
+              {% endif %}
+
+              {% if memory.payload.unresolved_questions %}
+                <section>
+                  <h3>未决问题</h3>
+                  <ul>
+                    {% for question in memory.payload.unresolved_questions %}
+                      <li>{{ question }}</li>
+                    {% endfor %}
+                  </ul>
+                </section>
+              {% endif %}
+            </div>
+            </details>
+          {% else %}
+            <article
+              class="studio-story-memory-card studio-story-memory-unavailable"
+              id="story-memory-{{ memory.chapter_id }}"
+            >
+              <small>第{{ memory.chapter_position }}章</small>
+              <strong>{{ memory.chapter_title or '未命名章节' }}</strong>
+              <span>
+                {% if memory.memory_status in ['queued', 'running'] %}
+                  正在整理
+                {% elif memory.memory_status == 'failed' %}
+                  整理失败
+                {% else %}
+                  尚未整理
+                {% endif %}
+              </span>
+            </article>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="studio-settings-empty">
+        <strong>还没有故事记忆</strong>
+        <p>保存章节正文后会自动整理。</p>
+      </div>
+    {% endif %}
+  </section>
+{% endif %}

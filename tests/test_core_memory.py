@@ -245,6 +245,16 @@ def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
     )
     assert chapter_memory["summary"].startswith("林岚收到")
     assert chapter_memory["keywords"] == ["来信", "雾港"]
+    project_memories = memory.list_project_chapter_memory_records(
+        user_id=user_id,
+        project_id=project_id,
+    )
+    assert len(project_memories) == 1
+    assert project_memories[0]["memory_status"] == "ready"
+    assert project_memories[0]["chapter_position"] == 1
+    assert project_memories[0]["payload"]["events"][0]["summary"].startswith(
+        "林岚收到"
+    )
     with database.connection() as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM story_facts WHERE fact_status='canon'"
@@ -589,6 +599,15 @@ def test_replacing_old_canon_retracts_memory_and_marks_downstream(
             chapter_id=chapters[0],
         )
         is None
+    )
+    memory_records = memory.list_project_chapter_memory_records(
+        user_id=user_id,
+        project_id=project_id,
+    )
+    assert len(memory_records) == 3
+    assert all(
+        record["memory_status"] == "missing"
+        for record in memory_records
     )
     assert memory.get_delta(user_id=user_id, delta_id=delta_id)["status"] == (
         "superseded"

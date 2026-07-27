@@ -727,6 +727,42 @@ def _memory_identity_type_label(value: str) -> str:
     return IDENTITY_TYPE_LABELS.get(value, value)
 
 
+def _story_memory_label(value: str) -> str:
+    return {
+        "status": "状态",
+        "location": "位置",
+        "physical": "身体",
+        "emotional": "情绪",
+        "goal": "目标",
+        "ability": "能力",
+        "possession": "持有",
+        "other": "其他",
+        "created": "产生",
+        "acquired": "获得",
+        "lost": "丢失",
+        "transferred": "转移",
+        "used": "使用",
+        "destroyed": "毁坏",
+        "changed": "变化",
+        "knows": "知道",
+        "suspects": "怀疑",
+        "believes_false": "误信",
+        "forgets": "遗忘",
+        "main": "主线",
+        "subplot": "支线",
+        "relationship": "关系线",
+        "mystery": "谜团",
+        "promise": "承诺线",
+        "opened": "建立",
+        "advanced": "推进",
+        "paused": "暂停",
+        "resolved": "解决",
+        "abandoned": "放弃",
+        "setup": "埋设",
+        "payoff": "回收",
+    }.get(value, value)
+
+
 def _knowledge_state_label(value: str) -> str:
     return {
         "knows": "知道",
@@ -1089,6 +1125,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     templates.env.filters[
         "memory_identity_type_label"
     ] = _memory_identity_type_label
+    templates.env.filters["story_memory_label"] = _story_memory_label
 
     def render_template(
         name: str, context: Dict[str, Any], status_code: int = status.HTTP_200_OK
@@ -2799,10 +2836,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         next_chapter = None
         working_version = None
         working_version_hash = ""
-        chapter_effective_chars = 0
-        chapter_target_chars = int(
-            project.get("target_chapter_chars") or 3000
-        )
         if selected_chapter:
             selected_index = next(
                 index
@@ -2822,17 +2855,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             content = _read_optional_text(
                 Path(str(selected_chapter["content_path"]))
             )
-            chapter_effective_chars = effective_char_count(content)
-            task_card = planning_service.get_task_card(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=str(selected_chapter["id"]),
-            )
-            if task_card:
-                chapter_target_chars = int(
-                    task_card.get("target_chars")
-                    or chapter_target_chars
-                )
             versions = database.list_chapter_versions(
                 user_id, project_id, str(selected_chapter["id"])
             )
@@ -2922,6 +2944,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         setting_voice_profile = None
         archive_entries: list[dict[str, Any]] = []
         archive_analyses: list[dict[str, Any]] = []
+        archive_story_memory_records: list[dict[str, Any]] = []
         if effective_view == "archive":
             setting_characters = database.list_novel_characters(
                 user_id, project_id
@@ -2956,6 +2979,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 str(work["id"]),
                 str(current_version["id"]),
             )
+            if active_archive_tab == "analysis":
+                archive_story_memory_records = (
+                    memory_service.list_project_chapter_memory_records(
+                        user_id=user_id,
+                        project_id=project_id,
+                    )
+                )
         available_chat_models = chat_model_groups(user_id)
 
         return render_template(
@@ -2977,8 +3007,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 active_conversation=active_conversation,
                 working_version=working_version,
                 working_version_hash=working_version_hash,
-                chapter_effective_chars=chapter_effective_chars,
-                chapter_target_chars=chapter_target_chars,
                 view=effective_view,
                 archive_tabs=WORK_ARCHIVE_TABS,
                 active_archive_tab=active_archive_tab,
@@ -2998,6 +3026,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 archive_characters=setting_characters,
                 archive_entries=archive_entries,
                 archive_analyses=archive_analyses,
+                archive_story_memory_records=archive_story_memory_records,
+                archive_story_memory_enabled=True,
                 archive_return_to=_workbench_path(
                     project_id, archive_tab=active_archive_tab
                 ),
@@ -10126,6 +10156,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 setting_voice_profile=setting_voice_profile,
                 archive_entries=archive_entries,
                 archive_analyses=archive_analyses,
+                archive_story_memory_records=[],
+                archive_story_memory_enabled=False,
                 archive_return_to=_document_workbench_path(
                     document_id,
                     view="archive",

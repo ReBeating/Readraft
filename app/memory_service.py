@@ -311,6 +311,78 @@ class MemoryService:
             )
         return result
 
+    def list_project_chapter_memory_records(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+    ) -> List[Dict[str, Any]]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT ch.id AS chapter_id,
+                       ch.position AS chapter_position,
+                       ch.title AS chapter_title,
+                       m.id AS memory_id,
+                       m.summary,
+                       m.key_events_json,
+                       m.unresolved_questions_json,
+                       m.keywords_json,
+                       d.payload_json AS delta_payload_json,
+                       j.status AS extraction_status
+                FROM novel_chapters ch
+                JOIN novel_projects p ON p.id=ch.project_id
+                LEFT JOIN chapter_memory m
+                  ON m.chapter_id=ch.id
+                 AND m.version_id=ch.canonical_version_id
+                 AND m.record_status='canon'
+                LEFT JOIN story_deltas d
+                  ON d.id=m.delta_id AND d.status='projected'
+                LEFT JOIN generation_jobs j
+                  ON j.id=(
+                      SELECT latest.id
+                      FROM generation_jobs latest
+                      WHERE latest.chapter_id=ch.id
+                        AND latest.version_id=ch.canonical_version_id
+                        AND latest.operation='extract_story_delta'
+                      ORDER BY latest.created_at DESC
+                      LIMIT 1
+                  )
+                WHERE ch.project_id=? AND p.user_id=?
+                    AND ch.canonical_version_id IS NOT NULL
+                ORDER BY ch.position
+                """,
+                (project_id, user_id),
+            ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if item["memory_id"] and item["delta_payload_json"]:
+                item["memory_status"] = "ready"
+            else:
+                item["memory_status"] = str(
+                    item["extraction_status"] or "missing"
+                )
+            if item["memory_status"] == "completed":
+                item["memory_status"] = "missing"
+            if item["memory_status"] != "ready":
+                item["payload"] = None
+                results.append(item)
+                continue
+            for field in (
+                "key_events_json",
+                "unresolved_questions_json",
+                "keywords_json",
+            ):
+                item[field.removesuffix("_json")] = json.loads(
+                    str(item[field])
+                )
+            item["payload"] = StoryDelta.model_validate_json(
+                str(item.pop("delta_payload_json"))
+            ).model_dump(mode="json")
+            results.append(item)
+        return results
+
     @staticmethod
     def _owned_canonical_version(
         connection: sqlite3.Connection,
