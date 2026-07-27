@@ -30,7 +30,7 @@ sudo -u readraft git -C /opt/readraft checkout --detach "$LATEST_TAG"
 sudo install -d -o readraft -g readraft -m 700 /opt/readraft/data
 sudo -u readraft python3.12 -m venv /opt/readraft/.venv
 sudo -u readraft /opt/readraft/.venv/bin/python -m pip install \
-  --require-hashes -r /opt/readraft/requirements.lock
+  --no-cache-dir --require-hashes -r /opt/readraft/requirements.lock
 sudo install -o root -g readraft -m 640 \
   /opt/readraft/.env.example /opt/readraft/.env
 sudoedit /opt/readraft/.env

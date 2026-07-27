@@ -343,7 +343,7 @@ else
     "${target_commit:0:12}"
   run_as_readraft "$python_base" -m venv "$build_env"
   run_as_readraft "$build_env/bin/python" -m pip install \
-    --require-hashes -r "$target_lock"
+    --no-cache-dir --require-hashes -r "$target_lock"
   printf '%s\n' "$target_commit" >"$build_env/.readraft-ready"
   chown "$READRAFT_APP_USER:$READRAFT_APP_USER" \
     "$build_env/.readraft-ready"

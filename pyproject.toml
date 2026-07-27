@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "readraft"
-version = "0.1.1"
+version = "0.1.2"
 description = "Readraft：面向长篇中文小说的 AI 辅助创作工作台。"
 readme = "README.md"
 license = { file = "LICENSE" }
