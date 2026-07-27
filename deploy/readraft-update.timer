@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily stable Readraft update check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=readraft-update.service
+
+[Install]
+WantedBy=timers.target

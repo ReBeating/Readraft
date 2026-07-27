@@ -27,7 +27,9 @@ jobs:
       - name: Static checks
         run: |
           python -m ruff check app tests
-          bash -n deploy/update.sh
+          for script in deploy/*.sh; do
+            bash -n "$script"
+          done
       - name: Test
         run: python -m pytest
 

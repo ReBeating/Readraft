@@ -1,0 +1,18 @@
+[Unit]
+Description=Check and install a stable Readraft release
+Documentation=https://github.com/ReBeating/Readraft/blob/main/docs/deployment.md
+After=network-online.target readraft.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/readraft/update.env
+ExecStart=/opt/readraft/deploy/update.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=30min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

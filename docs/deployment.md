@@ -21,6 +21,12 @@ sudo install -d -o readraft -g readraft -m 700 /var/backups/readraft
 
 ```bash
 sudo -u readraft git clone https://github.com/ReBeating/Readraft.git /opt/readraft
+LATEST_TAG="$(
+  sudo -u readraft git -C /opt/readraft tag --list 'v[0-9]*' \
+    --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1
+)"
+test -n "$LATEST_TAG"
+sudo -u readraft git -C /opt/readraft checkout --detach "$LATEST_TAG"
 sudo install -d -o readraft -g readraft -m 700 /opt/readraft/data
 sudo -u readraft python3.12 -m venv /opt/readraft/.venv
 sudo -u readraft /opt/readraft/.venv/bin/python -m pip install \
@@ -82,32 +88,38 @@ sudo systemctl reload nginx
 
 ## 4. 日常升级
 
-标准安装以后不需要维护者登录服务器。管理员只需执行：
+生产实例默认只更新到带注释的稳定 `vMAJOR.MINOR.PATCH` Tag，不会自动
+运行 `main` 的开发提交。管理员可以先只读检查，再手动执行一次更新：
 
 ```bash
+sudo /opt/readraft/deploy/update.sh --check
 sudo /opt/readraft/deploy/update.sh
 ```
 
 脚本会：
 
-1. 拒绝未提交改动、缺失上游分支和非快进历史；
-2. 获取远端并预先安装目标版本的锁定依赖；
-3. 停止服务并在 `/var/backups/readraft` 创建完整备份；
-4. 执行 `git pull --ff-only` 并再次核对实际版本依赖；
-5. 更新 systemd 单元并启动服务；
-6. 等待 `/healthz` 返回成功。
+1. 使用系统级互斥锁拒绝并发升级，并拒绝未提交改动、非快进历史、
+   非稳定格式或未带注释的版本 Tag；
+2. 在当前服务仍正常运行时，为目标提交创建隔离的 Python 环境并安装
+   带哈希的锁定依赖；
+3. 停止服务，在 `/var/backups/readraft` 创建完整备份并实际解包校验；
+4. 以 detached HEAD 切换到目标版本，并原子切换 Python 环境；
+5. 更新 systemd 单元、启动服务并等待 `/healthz` 返回成功；
+6. 若新版本启动失败，自动切回旧提交和旧依赖、恢复更新前备份，再验证
+   旧服务已经恢复健康。
 
 数据库迁移由新版本启动时自动执行。不要直接使用会覆盖本地历史的
 `git reset --hard`，也不要跳过备份强行降级数据库。
 
-如果健康检查失败，脚本会保留备份并输出诊断命令。先查看：
+更新失败时 systemd 任务仍会记录为失败，以便监控发现；自动回滚成功不
+会把这次失败伪装成成功。脚本会保留备份并输出诊断命令。先查看：
 
 ```bash
 sudo systemctl status readraft
 sudo journalctl -u readraft -n 200 --no-pager
 ```
 
-完整恢复要求停止服务：
+只有自动回滚也失败时才需要手工恢复。完整恢复要求停止服务：
 
 ```bash
 sudo systemctl stop readraft
@@ -122,7 +134,46 @@ sudo systemctl start readraft
 恢复数据库前还应把代码切回与备份兼容的正式版本。若不确定，请保留故障
 现场和备份，不要反复启动不同版本。
 
-## 5. 从非 Git 部署迁移
+## 5. 启用自动更新
+
+先成功执行至少一次手动检查或更新，再显式安装并启用 Timer：
+
+```bash
+sudo /opt/readraft/deploy/install-auto-update.sh
+systemctl list-timers readraft-update.timer --all
+```
+
+Timer 每日检查一次，并随机延迟最多一小时，避免所有实例同时访问 GitHub。
+错过计划时间时，`Persistent=true` 会在服务器恢复运行后补做一次检查。
+没有新版本时不会停止 Readraft，也不会创建空备份。
+
+默认配置位于 `/etc/readraft/update.env`：
+
+```dotenv
+READRAFT_UPDATE_CHANNEL=release
+READRAFT_BACKUP_RETENTION_DAYS=30
+READRAFT_VENV_RETENTION=3
+```
+
+`release` 只接受最新稳定版本 Tag。只有可以容忍每个开发提交的测试机才应
+改成 `main`。修改配置后无需重启应用，下一次更新任务会读取新值。可以
+手动触发和查看日志：
+
+```bash
+sudo systemctl start readraft-update.service
+sudo journalctl -u readraft-update.service -n 200 --no-pager
+```
+
+暂停自动更新不会影响手动更新：
+
+```bash
+sudo systemctl disable --now readraft-update.timer
+```
+
+脚本只自动清理自身创建且超过保留天数的 `readraft-update-*.zip`，不会
+删除手工备份。每次更新保留当前与近期隔离依赖环境，以便失败回滚。
+
+## 6. 从非 Git 部署迁移
 
 通过复制或 rsync 安装、且目录内没有 `.git` 的旧实例不能直接
 `git pull`。一次性迁移时：

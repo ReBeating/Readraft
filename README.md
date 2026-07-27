@@ -1,7 +1,7 @@
 # Readraft
 
 > [!WARNING]
-> **Readraft 目前只是早期开发版本（0.1.0）。**
+> **Readraft 目前只是早期开发版本（0.1.x）。**
 > 核心流程已经可以使用，但界面、数据格式和部署方式仍可能发生不兼容变化。
 > 请勿把它作为重要作品的唯一副本，升级前务必创建并校验完整备份。
 
@@ -296,17 +296,29 @@ DEEPSEEK_API_KEY=
 ```
 
 标准部署使用 `/opt/readraft`、专用系统账号 `readraft` 和
-`readraft.service`。首次安装完成后，后续更新只需：
+`readraft.service`。生产环境默认只跟踪带注释的稳定语义版本 Tag，不会
+自动追踪 `main`。首次安装完成后，可以先检查再手动更新：
 
 ```bash
+sudo /opt/readraft/deploy/update.sh --check
 sudo /opt/readraft/deploy/update.sh
 ```
 
-更新脚本会拒绝脏工作树和非快进更新，预装目标版本依赖，停止服务后
-创建完整备份，再执行 `git pull --ff-only`、更新 systemd 单元、重启并
-检查 `/healthz`。数据库迁移在应用启动时自动执行。后台队列与 Web
-服务同进程，因此只能启动一个 Uvicorn worker；进程锁会拒绝第二个
-实例，避免同一生成任务被重复执行和计费。
+更新脚本会拒绝并发运行、脏工作树、非快进历史和非正式版本 Tag；在停机
+前准备隔离的 Python 依赖环境，停机后创建并校验完整备份，再切换代码与
+依赖、重启并检查 `/healthz`。如果新版本无法健康启动，会自动恢复旧
+代码、旧依赖和更新前数据。
+
+确认手动更新正常后，可以显式启用每日自动检查：
+
+```bash
+sudo /opt/readraft/deploy/install-auto-update.sh
+```
+
+Timer 默认每日运行并加入最多一小时随机延迟，配置保存在
+`/etc/readraft/update.env`。数据库迁移在应用启动时自动执行。后台队列
+与 Web 服务同进程，因此只能启动一个 Uvicorn worker；进程锁会拒绝
+第二个实例，避免同一生成任务被重复执行和计费。
 
 ## 安全、隐私与贡献
 
