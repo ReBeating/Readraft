@@ -18,6 +18,7 @@ from .agent_capabilities import (
     READ_CHAPTER,
     READ_PROJECT,
     READ_REFERENCE,
+    SEARCH_CONVERSATION,
     SEARCH_PROJECT,
     SEARCH_REFERENCE,
     WEB_SEARCH,
@@ -122,6 +123,24 @@ AGENT_TOOL_SPECS: dict[str, AgentToolSpec] = {
         scopes=frozenset({"novel_project", "novel_chapter"}),
         input_model=SearchArguments,
     ),
+    "search_conversation_history": AgentToolSpec(
+        name="search_conversation_history",
+        label="检索完整对话",
+        description=(
+            "检索当前对话中已保存的全部旧消息。作者提到前面说过的内容、"
+            "压缩记忆提示存在遗漏，或需要核对早期原话时调用。"
+        ),
+        capability=SEARCH_CONVERSATION,
+        scopes=frozenset(
+            {
+                "novel_project",
+                "novel_chapter",
+                "reference_document",
+                "reference_chapter",
+            }
+        ),
+        input_model=SearchArguments,
+    ),
     "read_reference_chapter": AgentToolSpec(
         name="read_reference_chapter",
         label="读取参考章节",
@@ -175,7 +194,9 @@ AGENT_TOOL_SPECS: dict[str, AgentToolSpec] = {
         name="propose_settings_patch",
         label="提出设定候选",
         description=(
-            "创建等待作者确认的设定候选；不会直接写入作品设定。"
+            "创建等待作者确认的作品资料候选；全局字段只放全书级概述，"
+            "具体人物、世界、结构和文风资料通过 archive_rules 分到五类，"
+            "不会直接写入作品。"
         ),
         capability=PROPOSE_SETTINGS_PATCH,
         scopes=frozenset({"novel_project", "novel_chapter"}),
@@ -318,6 +339,103 @@ class AgentToolExecutor:
         }
         return AgentToolExecution(result={"settings": result})
 
+    def _execute_search_conversation_history(
+        self,
+        *,
+        user_id: int,
+        arguments: SearchArguments,
+        context: Mapping[str, Any],
+        **_: Any,
+    ) -> AgentToolExecution:
+        conversation_id = str(context.get("conversation_id") or "")
+        if not conversation_id:
+            raise ValueError("当前任务缺少对话标识")
+        current_user_message_id = str(
+            context.get("current_user_message_id") or ""
+        )
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT message.id, message.role, message.content,
+                       message.created_at, message.rowid
+                FROM assistant_messages message
+                JOIN assistant_conversations conversation
+                  ON conversation.id=message.conversation_id
+                WHERE message.conversation_id=?
+                  AND conversation.user_id=?
+                  AND message.status='completed'
+                  AND message.content!=''
+                  AND message.id!=?
+                ORDER BY message.rowid
+                """,
+                (
+                    conversation_id,
+                    user_id,
+                    current_user_message_id,
+                ),
+            ).fetchall()
+        terms = _query_terms(arguments.query)
+        scored: list[tuple[int, int, Mapping[str, Any]]] = []
+        for row in rows:
+            content = str(row["content"] or "")
+            lowered = content.casefold()
+            score = sum(
+                max(1, len(term))
+                for term in terms
+                if term.casefold() in lowered
+            )
+            if score:
+                scored.append((score, int(row["rowid"]), row))
+        if not scored:
+            fallback = [
+                row for row in rows if str(row["role"]) == "user"
+            ]
+            fallback = ([fallback[0]] if fallback else []) + fallback[-3:]
+            deduplicated = {str(row["id"]): row for row in fallback}
+            scored = [
+                (0, int(row["rowid"]), row)
+                for row in deduplicated.values()
+            ]
+        scored.sort(key=lambda item: (-item[0], -item[1]))
+
+        matches: list[dict[str, Any]] = []
+        accessed_sources: list[dict[str, Any]] = []
+        for _score, _rowid, row in scored[: arguments.max_results]:
+            content = str(row["content"] or "")
+            position = _best_match_position(content, terms)
+            if position < 0:
+                position = 0
+            start = max(0, position - 1_200)
+            end = min(len(content), position + 4_800)
+            excerpt = content[start:end].strip()
+            source_id = f"conversation-message:{row['id']}"
+            role_label = "作者" if str(row["role"]) == "user" else "AI"
+            source = {
+                "source_id": source_id,
+                "kind": "conversation_message",
+                "label": f"对话历史 · {role_label}",
+                "text": excerpt,
+                "base_offset": start,
+                "url": "",
+            }
+            matches.append(
+                {
+                    "source_id": source_id,
+                    "role": str(row["role"]),
+                    "created_at": str(row["created_at"]),
+                    "quote": excerpt,
+                }
+            )
+            accessed_sources.append(source)
+        return AgentToolExecution(
+            result={
+                "query": arguments.query,
+                "matches": matches,
+                "matched_count": len(matches),
+            },
+            accessed_sources=accessed_sources,
+        )
+
     def _execute_read_chapter(
         self,
         *,
@@ -327,24 +445,58 @@ class AgentToolExecutor:
         **_: Any,
     ) -> AgentToolExecution:
         del arguments
+        dispatch = dict(context.get("dispatch") or {})
+        creating_new_chapter = (
+            str(dispatch.get("intent") or "") == "draft_new_chapter"
+        )
         result = {
-            key: context.get(key)
-            for key in (
-                "chapter",
-                "confirmed_task_card",
-                "characters",
-                "canonical_memory",
-                "confirmed_story_plan",
-                "planned_causal_links",
-                "confirmed_voice_profile",
-                "confirmed_editing_preferences",
-                "active_techniques",
-                "previous_chapter_excerpt",
-                "current_chapter_excerpt",
-                "current_version_id",
-                "current_chapter_hash",
-            )
-            if context.get(key) not in (None, "", [], {})
+            "chapter": context.get("chapter"),
+            "continuity_contract": {
+                "operation": (
+                    "create_next_chapter"
+                    if creating_new_chapter
+                    else "write_current_chapter"
+                ),
+                "required_draft_mode": (
+                    "replace" if creating_new_chapter else "context_dependent"
+                ),
+                "requirements": [
+                    "承接上一章实际结尾，不重新开局或重复已经发生的事件",
+                    "保持人物位置、知识状态、关系、物品和时间顺序一致",
+                    "优先推进未解决线索，并遵守已确认的章节任务和全书规划",
+                    "完成正文后自行复查视角、因果、伏笔和人物动机",
+                ],
+            },
+            # Put the actual transition text before larger structured records.
+            # Tool observations are bounded, so continuity-critical prose must
+            # not sit at the tail of the serialized result.
+            "previous_chapter_excerpt": context.get(
+                "previous_chapter_excerpt"
+            ),
+            "current_chapter_excerpt": context.get(
+                "current_chapter_excerpt"
+            ),
+            "confirmed_task_card": context.get("confirmed_task_card"),
+            "canonical_memory": context.get("canonical_memory"),
+            "characters": context.get("characters"),
+            "confirmed_story_plan": context.get(
+                "confirmed_story_plan"
+            ),
+            "planned_causal_links": context.get("planned_causal_links"),
+            "confirmed_voice_profile": context.get(
+                "confirmed_voice_profile"
+            ),
+            "confirmed_editing_preferences": context.get(
+                "confirmed_editing_preferences"
+            ),
+            "active_techniques": context.get("active_techniques"),
+            "current_version_id": context.get("current_version_id"),
+            "current_chapter_hash": context.get("current_chapter_hash"),
+        }
+        result = {
+            key: value
+            for key, value in result.items()
+            if value not in (None, "", [], {})
         }
         if selected_quote:
             result["selected_quote"] = selected_quote
@@ -650,8 +802,15 @@ class AgentToolExecutor:
         self,
         *,
         arguments: AssistantDraftProposal,
+        context: Mapping[str, Any],
         **_: Any,
     ) -> AgentToolExecution:
+        if (
+            str((context.get("dispatch") or {}).get("intent") or "")
+            == "draft_new_chapter"
+            and arguments.mode != "replace"
+        ):
+            arguments = arguments.model_copy(update={"mode": "replace"})
         return AgentToolExecution(
             result={
                 "accepted": True,

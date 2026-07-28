@@ -3860,6 +3860,24 @@ def _exa_web_search_v40(
     )
 
 
+def _assistant_conversation_memory_v41(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    _add_column(
+        connection,
+        "assistant_conversations",
+        "memory_summary",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "assistant_conversations",
+        "memory_message_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -4020,6 +4038,11 @@ MIGRATIONS = (
         40,
         "exa_web_search_v40",
         _exa_web_search_v40,
+    ),
+    Migration(
+        41,
+        "assistant_conversation_memory_v41",
+        _assistant_conversation_memory_v41,
     ),
 )
 

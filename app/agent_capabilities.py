@@ -9,6 +9,7 @@ READ_CHAPTER = "read_chapter"
 SEARCH_PROJECT = "search_project"
 READ_REFERENCE = "read_reference"
 SEARCH_REFERENCE = "search_reference"
+SEARCH_CONVERSATION = "search_conversation"
 ANALYZE_REFERENCE = "analyze_reference"
 WEB_SEARCH = "web_search"
 PROPOSE_SETTINGS_PATCH = "propose_settings_patch"
@@ -26,6 +27,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                SEARCH_CONVERSATION,
                 WEB_SEARCH,
             }
         ),
@@ -38,6 +40,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                SEARCH_CONVERSATION,
                 WEB_SEARCH,
             }
         ),
@@ -50,6 +53,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                SEARCH_CONVERSATION,
                 WEB_SEARCH,
                 PROPOSE_SETTINGS_PATCH,
             }
@@ -63,6 +67,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                SEARCH_CONVERSATION,
                 WEB_SEARCH,
                 PROPOSE_STORY_PLAN,
             }
@@ -75,6 +80,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
             {
                 READ_REFERENCE,
                 SEARCH_REFERENCE,
+                SEARCH_CONVERSATION,
                 ANALYZE_REFERENCE,
                 WEB_SEARCH,
             }
@@ -88,6 +94,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                SEARCH_CONVERSATION,
                 WEB_SEARCH,
                 CREATE_CANDIDATE_DRAFT,
             }
@@ -101,6 +108,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 READ_PROJECT,
                 READ_CHAPTER,
                 SEARCH_PROJECT,
+                SEARCH_CONVERSATION,
                 WEB_SEARCH,
                 PROPOSE_TEXT_PATCH,
             }
@@ -117,6 +125,7 @@ AGENT_INTENTS = frozenset(
         "update_settings",
         "plan_story",
         "draft_prose",
+        "draft_new_chapter",
         "revise_prose",
     }
 )
@@ -189,21 +198,13 @@ def resolve_agent_dispatch(
         else:
             reason = "model_intent"
 
-    if selected_intent == "draft_prose":
+    if selected_intent in {"draft_prose", "draft_new_chapter"}:
         if scope_type not in {"project", "chapter"}:
             return ResolvedAgentDispatch(
                 role="advisor",
                 intent="discuss",
                 reason="invalid_scope_fallback",
                 goal="answer",
-            )
-        if not settings_ready:
-            return ResolvedAgentDispatch(
-                role="planner",
-                intent="update_settings",
-                reason="settings_prerequisite",
-                goal="propose_settings_patch",
-                settings_prerequisite=True,
             )
         return ResolvedAgentDispatch(
             role="writer",
@@ -254,14 +255,6 @@ def resolve_agent_dispatch(
                 intent="discuss",
                 reason="invalid_scope_fallback",
                 goal="answer",
-            )
-        if not settings_ready:
-            return ResolvedAgentDispatch(
-                role="planner",
-                intent="update_settings",
-                reason="settings_prerequisite",
-                goal="propose_settings_patch",
-                settings_prerequisite=True,
             )
         return ResolvedAgentDispatch(
             role="story_planner",
@@ -324,7 +317,10 @@ def agent_role_prompt(role: str) -> str:
         "planner": (
             "你处于设定策划模式。应先读取作品材料，再把已经有依据的内容"
             "整理为结构化候选设定。只能通过 propose_settings_patch 提交"
-            "候选，不得创作或修订正文；story_plan、draft 和 rewrite 必须为 null。"
+            "候选。具体人物、世界规则、剧情结构和文风要求必须作为"
+            " archive_rules 归入对应资料分类，world_setting 只用于全书级"
+            "世界概述。不得创作或修订正文；story_plan、draft 和 rewrite "
+            "必须为 null。"
         ),
         "story_planner": (
             "你处于故事规划模式。应读取已有设定，把全书核心悬问、主角目标、"
@@ -339,8 +335,12 @@ def agent_role_prompt(role: str) -> str:
             "rewrite、draft、settings_patch 和 story_plan 必须为 null。"
         ),
         "writer": (
-            "你处于创作模式。可以创作新的候选文字，但不能直接覆盖现有"
-            "正文，也不能把草稿称为已经保存或生效。服务器会依据当前策略"
+            "你处于创作模式。创作前必须使用已经取得的章节连续性上下文，"
+            "先在内部明确上一章结尾状态、本章目标、人物当前状态、未解决线索"
+            "和不能破坏的事实，再生成正文。创建新章节时必须承接上一章的实际"
+            "结尾并使用 replace；续写当前章节时才使用 append。提交前自行检查"
+            "人物位置、知识状态、时间顺序、视角和伏笔是否自洽。可以创作新的"
+            "候选文字，但不能把草稿称为已经保存或生效。服务器会依据当前策略"
             "提交工作稿；局部修订应交给修订模式，settings_patch 和 story_plan "
             "必须为 null。"
         ),

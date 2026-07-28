@@ -285,7 +285,23 @@
                         {% for key, value in message.response.settings_patch.items() %}
                           <div>
                             <dt>{{ setting_field_labels.get(key, key) }}</dt>
-                            <dd>{{ value }}</dd>
+                            {% if key == 'archive_rules' %}
+                              <dd>
+                                {% for rule in value %}
+                                  <p>
+                                    <strong>
+                                      {% for category_key, category_label in archive_categories %}
+                                        {% if category_key == rule.category %}{{ category_label }}{% endif %}
+                                      {% endfor %}
+                                      {% if rule.title %} · {{ rule.title }}{% endif %}
+                                    </strong>
+                                    <br>{{ rule.content }}
+                                  </p>
+                                {% endfor %}
+                              </dd>
+                            {% else %}
+                              <dd>{{ value }}</dd>
+                            {% endif %}
                           </div>
                         {% endfor %}
                       </dl>
@@ -567,5 +583,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260728-2" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260728-3" defer></script>
 {% endblock %}

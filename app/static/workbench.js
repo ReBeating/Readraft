@@ -663,7 +663,7 @@
           return;
         }
         window.setTimeout(() => {
-          window.location.replace(redirectUrl);
+          window.location.replace(data.redirect_url || redirectUrl);
         }, 120);
       });
       source.onerror = () => {

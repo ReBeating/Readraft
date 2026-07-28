@@ -27,6 +27,7 @@ from app.agent_loop_schema import (
     AssistantIntentResponse,
 )
 from app.agent_orchestrator import AssistantAgentOrchestrator
+from app.agent_tools import AgentToolExecutor
 from app.assistant_chat import (
     DeepSeekAssistantChatModel,
     JsonAnswerStream,
@@ -104,6 +105,17 @@ class FixedIntentModel(MockAssistantChatModel):
             input_tokens=2,
             output_tokens=1,
         )
+
+
+class RecordingMockAssistantChatModel(MockAssistantChatModel):
+    def __init__(self):
+        self.observation_snapshots = []
+
+    async def next_action(self, **kwargs):
+        self.observation_snapshots.append(
+            [dict(item) for item in kwargs.get("observations") or []]
+        )
+        return await super().next_action(**kwargs)
 
 
 def test_assistant_system_prompt_combines_agent_and_book_instructions():
@@ -344,6 +356,21 @@ def test_structured_intent_dispatch_enforces_scope_and_permissions():
         "writer",
         "create_chapter_draft",
     )
+    new_chapter = resolve_agent_dispatch(
+        requested_role="auto",
+        scope_type="chapter",
+        intent="draft_new_chapter",
+        has_quote=False,
+    )
+    assert (
+        new_chapter.role,
+        new_chapter.intent,
+        new_chapter.goal,
+    ) == (
+        "writer",
+        "draft_new_chapter",
+        "create_chapter_draft",
+    )
     planning = resolve_agent_dispatch(
         requested_role="auto",
         scope_type="project",
@@ -384,7 +411,7 @@ def test_structured_intent_dispatch_enforces_scope_and_permissions():
         low_confidence.intent,
         low_confidence.reason,
     ) == ("advisor", "discuss", "low_confidence_fallback")
-    prerequisite = resolve_agent_dispatch(
+    empty_project_draft = resolve_agent_dispatch(
         requested_role="auto",
         scope_type="project",
         intent="draft_prose",
@@ -392,15 +419,15 @@ def test_structured_intent_dispatch_enforces_scope_and_permissions():
         settings_ready=False,
     )
     assert (
-        prerequisite.role,
-        prerequisite.intent,
-        prerequisite.goal,
-        prerequisite.settings_prerequisite,
+        empty_project_draft.role,
+        empty_project_draft.intent,
+        empty_project_draft.goal,
+        empty_project_draft.settings_prerequisite,
     ) == (
-        "planner",
-        "update_settings",
-        "propose_settings_patch",
-        True,
+        "writer",
+        "draft_prose",
+        "create_chapter_draft",
+        False,
     )
 
 
@@ -783,6 +810,105 @@ def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(
     assert inherited and inherited["quality_mode"] == "low"
 
 
+def test_long_conversation_keeps_memory_and_searches_complete_history(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="长期构思",
+        project_id=project_id,
+    )
+    model = MockAssistantChatModel()
+
+    for index in range(10):
+        question = (
+            "请记住：女主把青铜钥匙藏在旧收音机里。"
+            if index == 0
+            else f"继续讨论第 {index + 1} 个构思问题。"
+        )
+        message_id = service.queue_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            question=question,
+            provider="mock",
+            model="mock-creative-chat",
+            credential_source="default",
+            agent_role="advisor",
+        )
+        claimed = service.claim_next_message()
+        assert claimed and claimed["id"] == message_id
+        payload = service.build_job_payload(claimed)
+        response = asyncio.run(
+            model.reply(**payload, provider_user_id="u_test")
+        )
+        assert service.complete_message(
+            message_id=message_id,
+            claim_token=claimed["claim_token"],
+            response=response,
+        )
+
+    current_message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="我之前说过青铜钥匙藏在哪里？",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="auto",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == current_message_id
+    payload = service.build_job_payload(claimed)
+
+    assert len(payload["history"]) == 16
+    assert "青铜钥匙藏在旧收音机里" in (
+        payload["context"]["conversation_memory"]
+    )
+    assert payload["context"]["conversation_history_search_available"] is True
+    conversation = service.get_conversation(
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    assert conversation["memory_message_count"] == 20
+    assert "青铜钥匙" in conversation["memory_summary"]
+
+    execution = AgentToolExecutor(database).execute(
+        user_id=user_id,
+        tool_name="search_conversation_history",
+        arguments={"query": "青铜钥匙", "max_results": 5},
+        context=payload["context"],
+        sources=payload["sources"],
+        selected_quote="",
+    )
+    assert execution.result["matched_count"] >= 1
+    assert any(
+        "旧收音机" in item["quote"]
+        for item in execution.result["matches"]
+    )
+    orchestrated = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=FixedIntentModel("discuss"),
+            item=claimed,
+            payload=payload,
+            provider_user_id="u_test",
+        )
+    )
+    assert any(
+        item["tool_name"] == "search_conversation_history"
+        and item["status"] == "completed"
+        for item in orchestrated.agent_trace
+    )
+
+
 def test_project_writing_request_creates_blank_chapter_and_draft(
     tmp_path: Path,
 ):
@@ -875,7 +1001,126 @@ def test_project_writing_request_creates_blank_chapter_and_draft(
     assert Path(chapter["content_path"]).read_text(encoding="utf-8")
 
 
-def test_unwritten_project_script_must_propose_settings_before_chapter(
+def test_new_chapter_request_creates_next_chapter_without_touching_previous(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, version_id, content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="chapter",
+        title="继续写下一章",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    selected = content[-30:]
+    selected_start = content.rfind(selected)
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="请承接现在的结尾，写一个新的下一章。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="auto",
+        quote={
+            "source_type": "novel_version",
+            "project_id": project_id,
+            "novel_chapter_id": chapter_id,
+            "version_id": version_id,
+            "start_offset": selected_start,
+            "end_offset": selected_start + len(selected),
+            "quote_text": selected,
+            "content_hash": hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest(),
+        },
+        auto_commit=True,
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    model = RecordingMockAssistantChatModel()
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=model,
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+
+    chapters = database.list_novel_chapters(user_id, project_id)
+    assert len(chapters) == 2
+    assert [int(item["position"]) for item in chapters] == [1, 2]
+    next_chapter_id = str(chapters[1]["id"])
+    conversation = service.get_conversation(
+        user_id=user_id, conversation_id=conversation_id
+    )
+    assert conversation["scope_type"] == "chapter"
+    assert conversation["novel_chapter_id"] == next_chapter_id
+    assert response.result.draft
+    assert response.result.draft.mode == "replace"
+
+    chapter_contexts = [
+        observation["result"]["chapter_context"]
+        for snapshot in model.observation_snapshots
+        for observation in snapshot
+        if observation.get("tool_name") == "read_chapter"
+        and observation.get("status") == "completed"
+    ]
+    assert chapter_contexts
+    continuity = chapter_contexts[0]
+    assert continuity["continuity_contract"]["operation"] == (
+        "create_next_chapter"
+    )
+    assert continuity["previous_chapter_excerpt"] == content[-16_000:]
+    assert continuity.get("current_chapter_excerpt", "") == ""
+
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+    previous = database.get_novel_chapter(
+        user_id, project_id, chapter_id
+    )
+    assert previous["canonical_version_id"] == version_id
+    assert Path(previous["content_path"]).read_text(encoding="utf-8") == content
+    generated = database.get_novel_chapter(
+        user_id, project_id, next_chapter_id
+    )
+    assert generated["canonical_version_id"]
+    assert Path(generated["content_path"]).read_text(
+        encoding="utf-8"
+    ).strip()
+    stream_state = service.get_message_stream_state(
+        user_id=user_id, message_id=message_id
+    )
+    assert stream_state
+    assert stream_state["project_id"] == project_id
+    assert stream_state["novel_chapter_id"] == next_chapter_id
+    assert stream_state["terminal"] is True
+    with database.connection() as connection:
+        memory_job = connection.execute(
+            """
+            SELECT status, version_id
+            FROM generation_jobs
+            WHERE chapter_id=? AND operation='extract_story_delta'
+            """,
+            (next_chapter_id,),
+        ).fetchone()
+    assert memory_job
+    assert memory_job["status"] == "queued"
+    assert memory_job["version_id"] == generated["canonical_version_id"]
+
+
+def test_unwritten_project_script_can_create_first_chapter_directly(
     tmp_path: Path,
 ):
     database = Database(tmp_path / "app.db")
@@ -941,8 +1186,8 @@ def test_unwritten_project_script_must_propose_settings_before_chapter(
             provider_user_id="u_test",
         )
     )
-    assert response.result.draft is None
-    assert response.result.settings_patch is not None
+    assert response.result.draft is not None
+    assert response.result.settings_patch is None
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -951,8 +1196,10 @@ def test_unwritten_project_script_must_propose_settings_before_chapter(
     message = service.get_message(
         user_id=user_id, message_id=message_id
     )
-    assert message["response"]["agent"]["role"] == "planner"
-    assert message["response"]["settings_patch_status"] == "candidate"
+    assert message["response"]["agent"]["role"] == "writer"
+    assert message["response"]["draft"]
+    chapters = database.list_novel_chapters(user_id, project_id)
+    assert len(chapters) == 1
 
 
 def test_writer_cannot_finish_before_creating_requested_draft(
@@ -988,6 +1235,11 @@ def test_writer_cannot_finish_before_creating_requested_draft(
 
     class PrematureFinishModel(MockAssistantChatModel):
         async def next_action(self, **kwargs):
+            explicit_observations = [
+                item
+                for item in kwargs["observations"]
+                if not item.get("automatic")
+            ]
             if not kwargs["available_tools"]:
                 raw = {
                     "action": "finish",
@@ -995,7 +1247,7 @@ def test_writer_cannot_finish_before_creating_requested_draft(
                     "answer": "候选正文已经创建。",
                     "citations": [],
                 }
-            elif not kwargs["observations"]:
+            elif not explicit_observations:
                 raw = {
                     "action": "finish",
                     "tool_call": None,
@@ -1105,7 +1357,6 @@ def test_agent_loop_calls_domain_tools_and_auto_commits_working_copy(
     assert response.result.draft is not None
     assert [item["tool_name"] for item in response.agent_trace] == [
         "read_book_settings",
-        "read_chapter",
         "create_chapter_draft",
     ]
     assert service.complete_message(
@@ -1120,7 +1371,6 @@ def test_agent_loop_calls_domain_tools_and_auto_commits_working_copy(
     assert message["response"]["auto_commit"]["status"] == "applied"
     assert [item["tool_name"] for item in message["tool_calls"]] == [
         "read_book_settings",
-        "read_chapter",
         "create_chapter_draft",
     ]
     assert all(
@@ -1130,7 +1380,6 @@ def test_agent_loop_calls_domain_tools_and_auto_commits_working_copy(
         (item["action"], item["outcome_status"])
         for item in message["agent_steps"]
     ] == [
-        ("call_tool", "completed"),
         ("call_tool", "completed"),
         ("call_tool", "completed"),
         ("finish", "completed"),
@@ -1241,7 +1490,7 @@ def test_agent_loop_records_and_blocks_forbidden_tool_call(
     assert message["applied_version_id"] is None
 
 
-def test_agent_loop_limits_web_search_to_two_attempts(tmp_path: Path):
+def test_agent_loop_has_no_tool_call_count_budget(tmp_path: Path):
     database = Database(tmp_path / "app.db")
     database.initialize()
     user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
@@ -1259,7 +1508,7 @@ def test_agent_loop_limits_web_search_to_two_attempts(tmp_path: Path):
     message_id = service.queue_message(
         user_id=user_id,
         conversation_id=conversation_id,
-        question="请联网核实三项外部资料。",
+        question="请联网核实八项外部资料。",
         provider="mock",
         model="mock-creative-chat",
         credential_source="default",
@@ -1277,7 +1526,7 @@ def test_agent_loop_limits_web_search_to_two_attempts(tmp_path: Path):
 
         async def next_action(self, **kwargs):
             self.turn += 1
-            if self.turn <= 3 and kwargs["available_tools"]:
+            if self.turn <= 8 and kwargs["available_tools"]:
                 raw = {
                     "action": "call_tool",
                     "tool_call": {
@@ -1294,7 +1543,7 @@ def test_agent_loop_limits_web_search_to_two_attempts(tmp_path: Path):
                 raw = {
                     "action": "finish",
                     "tool_call": None,
-                    "answer": "已根据两次搜索取得的资料完成回答。",
+                    "answer": "已根据八次搜索取得的资料完成回答。",
                     "citations": [],
                 }
             decision = AgentLoopDecision.model_validate(raw)
@@ -1325,22 +1574,15 @@ def test_agent_loop_limits_web_search_to_two_attempts(tmp_path: Path):
             provider_user_id="u_test",
         )
     )
-    assert searches == ["外部资料 1", "外部资料 2"]
-    assert response.result.answer == "已根据两次搜索取得的资料完成回答。"
+    assert searches == [f"外部资料 {index}" for index in range(1, 9)]
+    assert response.result.answer == "已根据八次搜索取得的资料完成回答。"
     running_message = service.get_message(
         user_id=user_id, message_id=message_id
     )
     assert [
         (item["tool_name"], item["status"])
         for item in running_message["tool_calls"]
-    ] == [
-        ("search_web", "completed"),
-        ("search_web", "completed"),
-        ("search_web", "denied"),
-    ]
-    assert "联网搜索次数已达到上限" in (
-        running_message["tool_calls"][-1]["error"]
-    )
+    ] == [("search_web", "completed")] * 8
 
 
 def test_agent_loop_stops_repeated_call_and_forces_final_answer(
@@ -1884,6 +2126,82 @@ def test_project_chat_proposes_and_applies_settings_candidate(
         user_id=user_id, assistant_message_id=message_id
     )
     assert second["already_applied"] is True
+
+
+def test_settings_candidate_files_specific_material_in_five_part_archive(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id = database.create_user(
+        "classified-settings-writer", hash_password("password-123")
+    )
+    project_id = "m" * 32
+    database.create_novel_project(
+        user_id=user_id,
+        project_id=project_id,
+        title="分类资料测试",
+        genre="悬疑",
+        premise="记者追查一封来历不明的信。",
+        world_setting="当代海港。",
+        style_guide="",
+        point_of_view="第三人称限知",
+        target_chapter_chars=3000,
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="整理人物",
+        project_id=project_id,
+    )
+    question = "请记录人物资料：林悦是调查记者，遇事先核对物证。"
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question=question,
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="auto",
+    )
+    claimed = service.claim_next_message()
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=FixedIntentModel("update_settings"),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+    assert response.result.settings_patch is not None
+    proposed = response.result.settings_patch.model_dump(exclude_none=True)
+    assert "world_setting" not in proposed
+    assert proposed["archive_rules"][0]["category"] == "character"
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+
+    applied = service.apply_settings_candidate(
+        user_id=user_id,
+        assistant_message_id=message_id,
+    )
+    assert applied["changed_fields"] == ["archive_rules"]
+    project = database.get_novel_project(user_id, project_id)
+    assert project["world_setting"] == "当代海港。"
+    work = database.get_work_for_project(user_id, project_id)
+    entries = database.list_work_archive_entries(user_id, work["id"])
+    rule = next(
+        item for item in entries if item["entry_type"] == "creative_rule"
+    )
+    assert rule["category"] == "character"
+    assert rule["content"] == question
+    assert rule["status"] == "confirmed"
+    assert rule["provenance"] == "assistant"
 
 
 def test_project_chat_proposes_and_applies_versioned_story_plan(

@@ -914,11 +914,15 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
                                                     "version": 39,
                                                     "name": "assistant_streaming_and_web_search_v39",
                                                 },
-                                                {
-                                                    "version": 40,
-                                                    "name": "exa_web_search_v40",
-                                                },
-                                            ]
+                                                    {
+                                                        "version": 40,
+                                                        "name": "exa_web_search_v40",
+                                                    },
+                                                    {
+                                                        "version": 41,
+                                                        "name": "assistant_conversation_memory_v41",
+                                                    },
+                                                ]
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1
         assert connection.execute(

@@ -28,24 +28,12 @@ class AssistantAgentOrchestrator:
         service: AssistantChatService,
         *,
         web_search: WebSearchCallable | None = None,
-        max_model_turns: int = 10,
-        max_successful_tools: int = 6,
-        max_invalid_tool_calls: int = 2,
-        max_web_searches: int = 2,
+        max_model_turns: int = 32,
     ):
-        if not 2 <= max_model_turns <= 20:
-            raise ValueError("Agent Loop 模型轮次必须在 2–20 之间")
-        if not 1 <= max_successful_tools <= 12:
-            raise ValueError("Agent Loop 成功工具预算必须在 1–12 之间")
-        if not 1 <= max_invalid_tool_calls <= 6:
-            raise ValueError("Agent Loop 无效调用预算必须在 1–6 之间")
-        if not 1 <= max_web_searches <= 4:
-            raise ValueError("Agent Loop 联网搜索预算必须在 1–4 之间")
+        if not 2 <= max_model_turns <= 64:
+            raise ValueError("Agent Loop 故障保护轮次必须在 2–64 之间")
         self.service = service
         self.max_model_turns = max_model_turns
-        self.max_successful_tools = max_successful_tools
-        self.max_invalid_tool_calls = max_invalid_tool_calls
-        self.max_web_searches = max_web_searches
         self.executor = AgentToolExecutor(
             service.database,
             web_search=web_search,
@@ -63,6 +51,15 @@ class AssistantAgentOrchestrator:
         on_answer_update: AnswerUpdateCallback | None = None,
     ) -> AssistantChatResponse:
         context = dict(payload.get("context") or {})
+        runtime_conversation_context = {
+            key: context.get(key)
+            for key in (
+                "conversation_id",
+                "current_user_message_id",
+                "conversation_memory",
+                "conversation_history_search_available",
+            )
+        }
         sources = [dict(item) for item in payload.get("sources") or []]
         observations: list[dict[str, Any]] = []
         trace: list[dict[str, Any]] = []
@@ -121,6 +118,13 @@ class AssistantAgentOrchestrator:
                 decision=intent_decision,
             )
             context = dict(resolved_snapshot.get("context") or {})
+            context.update(
+                {
+                    key: value
+                    for key, value in runtime_conversation_context.items()
+                    if value not in (None, "")
+                }
+            )
             sources = [
                 dict(source)
                 for source in resolved_snapshot.get("sources") or []
@@ -142,7 +146,7 @@ class AssistantAgentOrchestrator:
         invalid_tool_calls = 0
         web_search_attempts = 0
         model_turns = 0
-        stop_reason = "model_turn_budget_exhausted"
+        stop_reason = "loop_safety_limit_reached"
         goal = str(
             ((context.get("dispatch") or {}).get("goal") or "answer")
         )
@@ -152,6 +156,28 @@ class AssistantAgentOrchestrator:
             "create_chapter_draft": "create_chapter_draft",
             "replace_selected_text": "replace_selected_text",
         }.get(goal)
+        if (
+            required_tool == "create_chapter_draft"
+            and "read_chapter" in allowed_names
+        ):
+            chapter_context = await asyncio.to_thread(
+                self.executor.execute,
+                user_id=int(item["user_id"]),
+                tool_name="read_chapter",
+                arguments={},
+                context=context,
+                sources=sources,
+                selected_quote=str(payload.get("selected_quote") or ""),
+            )
+            observations.append(
+                {
+                    "tool_name": "read_chapter",
+                    "status": "completed",
+                    "automatic": True,
+                    "result": chapter_context.result,
+                }
+            )
+            accessed_sources.extend(chapter_context.accessed_sources)
 
         def build_response(
             *,
@@ -280,12 +306,6 @@ class AssistantAgentOrchestrator:
                         available_tools=sorted(allowed_names),
                         error=error,
                     )
-                    if (
-                        invalid_tool_calls
-                        >= self.max_invalid_tool_calls
-                    ):
-                        stop_reason = "invalid_call_budget_exhausted"
-                        break
                     continue
                 record_step(
                     sequence=step,
@@ -346,14 +366,6 @@ class AssistantAgentOrchestrator:
                     "同一轮只能创建一个写入候选，已有工具："
                     + completed_mutation
                 )
-            elif (
-                name == "search_web"
-                and web_search_attempts >= self.max_web_searches
-            ):
-                status = "denied"
-                denied_error = (
-                    "本轮联网搜索次数已达到上限，请根据已有来源回答"
-                )
             elif call_fingerprints[fingerprint] > 1:
                 status = "denied"
                 denied_error = "相同工具调用已经执行过，请根据结果继续"
@@ -403,9 +415,6 @@ class AssistantAgentOrchestrator:
                 )
                 if call_fingerprints[fingerprint] > 1:
                     stop_reason = "repeated_tool_call"
-                    break
-                if invalid_tool_calls >= self.max_invalid_tool_calls:
-                    stop_reason = "invalid_call_budget_exhausted"
                     break
                 continue
 
@@ -463,9 +472,6 @@ class AssistantAgentOrchestrator:
                     available_tools=sorted(allowed_names),
                     error=error,
                 )
-                if invalid_tool_calls >= self.max_invalid_tool_calls:
-                    stop_reason = "invalid_call_budget_exhausted"
-                    break
                 continue
 
             self.service.finish_tool_call(
@@ -520,9 +526,6 @@ class AssistantAgentOrchestrator:
                 completed_mutation = name
             if completed_mutation is not None:
                 stop_reason = "mutation_completed"
-                break
-            if successful_tool_calls >= self.max_successful_tools:
-                stop_reason = "successful_tool_budget_exhausted"
                 break
 
         finalization_observations = [

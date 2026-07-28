@@ -54,6 +54,7 @@ class AssistantIntentDecision(BaseModel):
         "update_settings",
         "plan_story",
         "draft_prose",
+        "draft_new_chapter",
         "revise_prose",
     ]
     workflow: list[
@@ -63,6 +64,7 @@ class AssistantIntentDecision(BaseModel):
             "update_settings",
             "plan_story",
             "draft_prose",
+            "draft_new_chapter",
             "revise_prose",
         ]
     ] = Field(default_factory=list, max_length=4)

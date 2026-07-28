@@ -560,7 +560,7 @@ def build_writing_context_snapshot(
                 context.get("technique_cards") or [], usage="write"
             )
         ),
-        "previous_chapter_excerpt": previous_content[-6000:],
+        "previous_chapter_excerpt": previous_content[-16000:],
         "current_chapter_excerpt": current_content[-30000:],
     }
 

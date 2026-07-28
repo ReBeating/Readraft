@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -34,6 +35,9 @@ from .text_metrics import effective_char_count
 from .story_planning_service import StoryPlanningService
 
 
+logger = logging.getLogger(__name__)
+
+
 CONVERSATION_SCOPES = {
     "project",
     "chapter",
@@ -42,6 +46,9 @@ CONVERSATION_SCOPES = {
 }
 
 MAX_USER_MESSAGE_CHARS = 100_000
+RECENT_CONVERSATION_MESSAGE_LIMIT = 16
+RECENT_CONVERSATION_CHAR_BUDGET = 48_000
+CONVERSATION_MEMORY_CHAR_BUDGET = 32_000
 
 SETTING_FIELD_LABELS = {
     "title": "书名",
@@ -55,6 +62,7 @@ SETTING_FIELD_LABELS = {
     "world_setting": "世界概述",
     "style_guide": "叙事风格规范",
     "point_of_view": "叙事视角",
+    "archive_rules": "分类作品资料",
 }
 
 def _json(value: Any) -> str:
@@ -82,6 +90,83 @@ def _read_text(path: Any) -> str:
         return Path(str(path)).read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return ""
+
+
+def _clip_conversation_text(text: Any, limit: int) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    marker = "\n……（中间内容已压缩，可检索完整对话）……\n"
+    remaining = max(0, limit - len(marker))
+    head = max(1, round(remaining * 0.72))
+    tail = max(0, remaining - head)
+    return value[:head] + marker + (value[-tail:] if tail else "")
+
+
+def _compile_conversation_context(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[List[Dict[str, str]], str]:
+    """Compile accurate recent history plus an extractive older memory."""
+    normalized_rows = [dict(row) for row in rows]
+    selected_recent: List[Dict[str, str]] = []
+    remaining = RECENT_CONVERSATION_CHAR_BUDGET
+    recent_candidates = normalized_rows[
+        -RECENT_CONVERSATION_MESSAGE_LIMIT:
+    ]
+    for row in reversed(recent_candidates):
+        if remaining < 800:
+            break
+        cap = min(16_000, remaining)
+        content = _clip_conversation_text(row.get("content"), cap)
+        selected_recent.append(
+            {
+                "role": str(row.get("role") or ""),
+                "content": content,
+            }
+        )
+        remaining -= len(content)
+    selected_recent.reverse()
+
+    older_count = max(0, len(normalized_rows) - len(selected_recent))
+    older_rows = normalized_rows[:older_count]
+    if not older_rows:
+        return selected_recent, ""
+
+    first = older_rows[0]
+    first_entry = {
+        "index": 0,
+        "text": (
+            ("作者" if str(first.get("role")) == "user" else "AI")
+            + "："
+            + _clip_conversation_text(first.get("content"), 8_000)
+        ),
+    }
+    selected_memory = [first_entry]
+    memory_chars = len(first_entry["text"])
+    for index in range(len(older_rows) - 1, 0, -1):
+        row = older_rows[index]
+        per_message = 3_000 if str(row.get("role")) == "user" else 1_800
+        text = (
+            ("作者" if str(row.get("role")) == "user" else "AI")
+            + "："
+            + _clip_conversation_text(row.get("content"), per_message)
+        )
+        if memory_chars + len(text) > CONVERSATION_MEMORY_CHAR_BUDGET:
+            continue
+        selected_memory.append({"index": index, "text": text})
+        memory_chars += len(text)
+    selected_memory.sort(key=lambda item: int(item["index"]))
+    omitted = len(older_rows) - len(selected_memory)
+    header = (
+        "较早对话的压缩记忆。它只记录原话摘录；需要准确措辞或遗漏细节时，"
+        "请调用 search_conversation_history。"
+    )
+    if omitted:
+        header += f" 中间另有 {omitted} 条消息未展开。"
+    memory = header + "\n\n" + "\n\n".join(
+        str(item["text"]) for item in selected_memory
+    )
+    return selected_recent, memory
 
 
 def _atomic_write(path: Path, content: str, token: str) -> None:
@@ -188,6 +273,139 @@ class AssistantChatService:
             shutil.rmtree(chapter_dir, ignore_errors=True)
             raise
         return chapter_id
+
+    def _create_and_bind_next_chapter(
+        self,
+        *,
+        user_id: int,
+        conversation: Mapping[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        project_id = str(conversation.get("project_id") or "")
+        conversation_id = str(conversation.get("id") or "")
+        if not project_id or not conversation_id:
+            raise ValueError("当前对话没有可写作的作品")
+
+        chapter_id = uuid.uuid4().hex
+        chapter_dir = (
+            self.novels_dir
+            / str(user_id)
+            / project_id
+            / "chapters"
+            / chapter_id
+        )
+        try:
+            (chapter_dir / "versions").mkdir(
+                parents=True, exist_ok=False, mode=0o700
+            )
+            os.chmod(chapter_dir, 0o700)
+            os.chmod(chapter_dir / "versions", 0o700)
+            content_path = chapter_dir / "content.txt"
+            content_path.write_text("", encoding="utf-8")
+            content_path.chmod(0o600)
+            now = utc_now()
+            with self.database.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    owner = connection.execute(
+                        """
+                        SELECT c.scope_type, c.novel_chapter_id
+                        FROM assistant_conversations c
+                        JOIN novel_projects p ON p.id=c.project_id
+                        WHERE c.id=? AND c.user_id=? AND c.project_id=?
+                          AND p.user_id=?
+                          AND c.scope_type IN ('project', 'chapter')
+                        """,
+                        (
+                            conversation_id,
+                            user_id,
+                            project_id,
+                            user_id,
+                        ),
+                    ).fetchone()
+                    if not owner:
+                        raise ValueError("对话范围已经变化，请重新发送")
+                    last_chapter = connection.execute(
+                        """
+                        SELECT position, volume_id
+                        FROM novel_chapters
+                        WHERE project_id=?
+                        ORDER BY position DESC
+                        LIMIT 1
+                        """,
+                        (project_id,),
+                    ).fetchone()
+                    next_position = (
+                        int(last_chapter["position"]) + 1
+                        if last_chapter
+                        else 1
+                    )
+                    volume_id = (
+                        str(last_chapter["volume_id"])
+                        if last_chapter and last_chapter["volume_id"]
+                        else None
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO novel_chapters(
+                            id, project_id, position, title, outline,
+                            key_points, content_path, volume_id,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, '', '', '', ?, ?, ?, ?)
+                        """,
+                        (
+                            chapter_id,
+                            project_id,
+                            next_position,
+                            str(content_path),
+                            volume_id,
+                            now,
+                            now,
+                        ),
+                    )
+                    cursor = connection.execute(
+                        """
+                        UPDATE assistant_conversations
+                        SET scope_type='chapter', novel_chapter_id=?,
+                            updated_at=?
+                        WHERE id=? AND user_id=? AND project_id=?
+                          AND scope_type IN ('project', 'chapter')
+                        """,
+                        (
+                            chapter_id,
+                            now,
+                            conversation_id,
+                            user_id,
+                            project_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ValueError("对话范围已经变化，请重新发送")
+                    connection.execute(
+                        "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                        (now, project_id),
+                    )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        except Exception:
+            shutil.rmtree(chapter_dir, ignore_errors=True)
+            raise
+
+        prepared = self.get_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        if not prepared:
+            raise ValueError("切换到新章节失败")
+        return prepared, {
+            "action": "created_next_chapter",
+            "chapter_id": chapter_id,
+            "chapter_position": next_position,
+            "previous_chapter_id": str(
+                conversation.get("novel_chapter_id") or ""
+            ),
+        }
 
     def _bind_conversation_to_chapter(
         self,
@@ -1301,19 +1519,36 @@ class AssistantChatService:
             settings_ready=settings_ready,
             confidence=decision.confidence,
         )
+        previous_chapter_quote = (
+            self._validate_quote(
+                user_id=user_id,
+                conversation=conversation,
+                quote=dict(quote_row),
+            )
+            if quote_row and dispatch.intent == "draft_new_chapter"
+            else None
+        )
         scope_preflight: Dict[str, Any] = {}
         routing_notice = ""
         if dispatch.role == "writer":
             try:
-                conversation, scope_preflight = (
-                    self._prepare_project_writing_scope(
-                        user_id=user_id,
-                        conversation=conversation,
-                        target_chapter_id=(
-                            decision.target_chapter_id or ""
-                        ),
+                if dispatch.intent == "draft_new_chapter":
+                    conversation, scope_preflight = (
+                        self._create_and_bind_next_chapter(
+                            user_id=user_id,
+                            conversation=conversation,
+                        )
                     )
-                )
+                else:
+                    conversation, scope_preflight = (
+                        self._prepare_project_writing_scope(
+                            user_id=user_id,
+                            conversation=conversation,
+                            target_chapter_id=(
+                                decision.target_chapter_id or ""
+                            ),
+                        )
+                    )
             except ValueError as exc:
                 dispatch = resolve_agent_dispatch(
                     requested_role="auto",
@@ -1327,11 +1562,12 @@ class AssistantChatService:
 
         boundaries = dict(old_context.get("assistant_boundaries") or {})
         normalized_quote = (
-            self._validate_quote(
-                user_id=user_id,
-                conversation=conversation,
-                quote=dict(quote_row),
-            )
+            previous_chapter_quote
+            or self._validate_quote(
+                    user_id=user_id,
+                    conversation=conversation,
+                    quote=dict(quote_row),
+                )
             if quote_row
             else None
         )
@@ -1462,22 +1698,42 @@ class AssistantChatService:
                 raise ValueError("对话问题不存在")
             history_rows = connection.execute(
                 """
-                SELECT role, content
+                SELECT id, rowid, role, content, created_at
                 FROM assistant_messages
                 WHERE conversation_id=? AND rowid<?
                   AND status='completed'
                   AND content!=''
-                ORDER BY rowid DESC
-                LIMIT 12
+                ORDER BY rowid
                 """,
                 (item["conversation_id"], user_row["rowid"]),
             ).fetchall()
+            history, conversation_memory = _compile_conversation_context(
+                history_rows
+            )
+            connection.execute(
+                """
+                UPDATE assistant_conversations
+                SET memory_summary=?, memory_message_count=?
+                WHERE id=?
+                """,
+                (
+                    conversation_memory,
+                    len(history_rows),
+                    item["conversation_id"],
+                ),
+            )
+            connection.commit()
+        context = dict(snapshot.get("context") or {})
+        context["conversation_id"] = str(item["conversation_id"])
+        context["current_user_message_id"] = str(
+            item["parent_user_message_id"]
+        )
+        context["conversation_memory"] = conversation_memory
+        context["conversation_history_search_available"] = True
         return {
-            "context": dict(snapshot.get("context") or {}),
+            "context": context,
             "sources": list(snapshot.get("sources") or []),
-            "history": [
-                dict(row) for row in reversed(history_rows)
-            ],
+            "history": history,
             "question": str(user_row["content"]),
             "selected_quote": str(user_row["quote_text"] or ""),
         }
@@ -1785,7 +2041,9 @@ class AssistantChatService:
                 """
                 SELECT m.id, m.conversation_id, m.status, m.content,
                        m.stream_content, m.stream_sequence, m.error,
-                       m.response_json, m.provider, m.model
+                       m.response_json, m.provider, m.model,
+                       c.scope_type, c.project_id, c.document_id,
+                       c.novel_chapter_id, c.reference_chapter_id
                 FROM assistant_messages m
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
@@ -1864,6 +2122,36 @@ class AssistantChatService:
             kind=kind,
             version_id=str(result["version_id"]),
         )
+        if int(promoted.get("char_count") or 0) <= 0:
+            return
+        try:
+            with self.database.connection() as connection:
+                runtime = connection.execute(
+                    """
+                    SELECT provider, model, credential_source
+                    FROM assistant_messages
+                    WHERE id=? AND role='assistant'
+                    """,
+                    (assistant_message_id,),
+                ).fetchone()
+            if not runtime:
+                return
+            self.database.create_memory_extraction_job(
+                user_id=user_id,
+                project_id=str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                version_id=str(result["version_id"]),
+                provider=str(runtime["provider"]),
+                model=str(runtime["model"]),
+                credential_source=str(runtime["credential_source"]),
+            )
+        except Exception:
+            logger.exception(
+                "failed to queue assistant chapter memory extraction "
+                "message=%s chapter=%s",
+                assistant_message_id,
+                result.get("chapter_id"),
+            )
 
     def _record_auto_commit(
         self,
@@ -2250,6 +2538,7 @@ class AssistantChatService:
             if not project:
                 connection.rollback()
                 raise ValueError("小说项目不存在")
+            archive_rules = list(patch.pop("archive_rules", []))
             current = dict(project)
             baseline = dict(context.get("project") or {})
             stale_fields = [
@@ -2269,24 +2558,96 @@ class AssistantChatService:
                     f"{labels}在讨论后已经变化，请让 AI 基于最新设定重新整理"
                 )
             before = {key: current.get(key) for key in patch}
-            assignments = ", ".join(f"{key}=?" for key in patch)
-            values = [patch[key] for key in patch]
             now = utc_now()
-            cursor = connection.execute(
-                f"""
-                UPDATE novel_projects
-                SET {assignments}, updated_at=?
-                WHERE id=? AND user_id=?
-                """,
-                (*values, now, row["project_id"], user_id),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                raise ValueError("保存候选设定失败")
+            if patch:
+                assignments = ", ".join(f"{key}=?" for key in patch)
+                values = [patch[key] for key in patch]
+                cursor = connection.execute(
+                    f"""
+                    UPDATE novel_projects
+                    SET {assignments}, updated_at=?
+                    WHERE id=? AND user_id=?
+                    """,
+                    (*values, now, row["project_id"], user_id),
+                )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    raise ValueError("保存候选设定失败")
+            if archive_rules:
+                main = connection.execute(
+                    """
+                    SELECT version.id AS content_version_id,
+                           version.work_id
+                    FROM work_versions version
+                    JOIN works work ON work.id=version.work_id
+                    WHERE version.project_id=? AND work.user_id=?
+                      AND version.ref_type='branch'
+                      AND version.ref_name='main'
+                      AND version.is_editable=1
+                    """,
+                    (row["project_id"], user_id),
+                ).fetchone()
+                if not main:
+                    connection.rollback()
+                    raise ValueError("作品缺少可写的 main 分支")
+                for rule in archive_rules:
+                    category = str(rule["category"])
+                    title = str(rule.get("title") or "")
+                    content = str(rule["content"])
+                    duplicate = connection.execute(
+                        """
+                        SELECT id FROM work_archive_entries
+                        WHERE work_id=? AND entry_type='creative_rule'
+                          AND status='confirmed' AND category=?
+                          AND title=? AND content=?
+                        LIMIT 1
+                        """,
+                        (
+                            main["work_id"],
+                            category,
+                            title,
+                            content,
+                        ),
+                    ).fetchone()
+                    if duplicate:
+                        continue
+                    connection.execute(
+                        """
+                        INSERT INTO work_archive_entries(
+                            id, work_id, content_version_id,
+                            entry_type, title, content,
+                            provenance, status, evidence, source_ref,
+                            category, adopted_at, created_at, updated_at
+                        ) VALUES (
+                            ?, ?, ?, 'creative_rule', ?, ?,
+                            'assistant', 'confirmed', '', ?, ?, ?, ?, ?
+                        )
+                        """,
+                        (
+                            uuid.uuid4().hex,
+                            main["work_id"],
+                            main["content_version_id"],
+                            title,
+                            content,
+                            f"assistant:{assistant_message_id}",
+                            category,
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                connection.execute(
+                    "UPDATE works SET updated_at=? WHERE id=?",
+                    (now, main["work_id"]),
+                )
+            applied_values = dict(patch)
+            if archive_rules:
+                applied_values["archive_rules"] = archive_rules
+                before["archive_rules"] = []
             response["settings_patch_status"] = "applied"
             response["settings_patch_applied_at"] = now
             response["settings_patch_before"] = before
-            response["settings_patch_applied_values"] = patch
+            response["settings_patch_applied_values"] = applied_values
             connection.execute(
                 """
                 UPDATE assistant_messages SET response_json=?
@@ -2298,7 +2659,7 @@ class AssistantChatService:
         return {
             "project_id": str(row["project_id"]),
             "conversation_id": str(row["conversation_id"]),
-            "changed_fields": list(patch),
+            "changed_fields": list(applied_values),
             "already_applied": False,
         }
 

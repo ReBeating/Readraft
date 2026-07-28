@@ -1889,7 +1889,9 @@ def test_zero_input_project_enters_settings_and_applies_ai_candidate(
                 "csrf": csrf_from(workbench.text),
                 "question": question,
                 "conversation_id": "",
-                "return_view": "settings",
+                "return_view": "archive",
+                "return_archive_tab": "creative",
+                "return_settings_tab": "core",
             },
             follow_redirects=False,
         )
@@ -1899,10 +1901,10 @@ def test_zero_input_project_enters_settings_and_applies_ai_candidate(
         rendered = ""
         while time.monotonic() < deadline:
             rendered = client.get(conversation_url).text
-            if "应用到设定" in rendered:
+            if "应用到创作设定" in rendered:
                 break
             time.sleep(0.03)
-        assert "候选设定" in rendered
+        assert "候选创作设定" in rendered
         assert "尚未写入" in rendered
         assert re.search(r"<small>\s*AI\s*</small>", rendered)
         action = re.search(

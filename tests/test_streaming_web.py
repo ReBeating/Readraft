@@ -170,3 +170,5 @@ def test_chat_submit_returns_json_and_sse_terminal_snapshot(tmp_path):
         assert "event: snapshot" in body
         assert '"status": "completed"' in body
         assert "event: done" in body
+        assert '"redirect_url": "/novels/' in body
+        assert f"conversation_id={queued['conversation_id']}" in body

@@ -10069,6 +10069,27 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     previous_sequence = sequence
                     previous_status = message_status
                 if state.get("terminal"):
+                    redirect_url = ""
+                    if state.get("project_id"):
+                        redirect_url = _workbench_path(
+                            str(state["project_id"]),
+                            chapter_id=(
+                                str(state["novel_chapter_id"])
+                                if state.get("novel_chapter_id")
+                                else None
+                            ),
+                            conversation_id=str(state["conversation_id"]),
+                        )
+                    elif state.get("document_id"):
+                        redirect_url = _document_workbench_path(
+                            str(state["document_id"]),
+                            chapter_id=(
+                                str(state["reference_chapter_id"])
+                                if state.get("reference_chapter_id")
+                                else None
+                            ),
+                            conversation_id=str(state["conversation_id"]),
+                        )
                     yield (
                         "event: done\n"
                         "data: "
@@ -10076,6 +10097,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                             {
                                 "status": message_status,
                                 "error": state.get("error"),
+                                "redirect_url": redirect_url,
                             },
                             ensure_ascii=False,
                         )
