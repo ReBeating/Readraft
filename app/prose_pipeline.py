@@ -41,7 +41,7 @@ class ProseDraftPipeline:
             prepared_packet["craft_modules"] = raw_modules
         craft_brief = compose_craft_brief(raw_modules)
         target_chars = max(
-            500, int(prepared_packet.get("target_chars") or 3000)
+            80, int(prepared_packet.get("target_chars") or 3000)
         )
         max_tokens = min(20_000, max(4_000, target_chars * 2 + 2_000))
         turn = await model.native_turn(

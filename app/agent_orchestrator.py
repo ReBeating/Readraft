@@ -646,6 +646,15 @@ class AssistantAgentOrchestrator:
                     error=initial_error,
                 )
                 if initial_status == "denied":
+                    assessment = progress.assess(
+                        tool_name=call.name,
+                        arguments=call.arguments,
+                        status="denied",
+                        error=initial_error,
+                    )
+                    stop_after_tools = (
+                        stop_after_tools or assessment.should_stop
+                    )
                     tool_payload = {
                         "ok": False,
                         "error": initial_error,
@@ -669,6 +678,7 @@ class AssistantAgentOrchestrator:
                             "status": "denied",
                             "read_only": read_only,
                             "category": callable_category,
+                            "made_progress": assessment.made_progress,
                         }
                     )
                     self.service.record_agent_step(
@@ -1622,7 +1632,13 @@ def _explicit_intent_decision(
     )
     edit_verb = (
         r"(?:修改|修订|改写|重写|润色|修正|纠正|调整|补上|补写|"
+        r"追加|增补|补充|增加|加上|插入|写进|写到|放到|扩写|缩写|"
         r"删掉|删除|替换)"
+    )
+    prose_location = (
+        r"(?:本章|这一章|整章|正文|内容|第一章|第[0-9一二三四五六七八九十百]+章|"
+        r"章末|章节末尾|结尾|开头|段落|场景|对白|对话|描写|反应|动作|"
+        r"心理|叙述)"
     )
 
     if (
@@ -1645,11 +1661,11 @@ def _explicit_intent_decision(
         and not asks_how
         and (
             re.search(
-                edit_verb + r".{0,12}(?:本章|这一章|整章|正文|内容)",
+                edit_verb + r".{0,20}" + prose_location,
                 clean,
             )
             or re.search(
-                r"(?:本章|这一章|整章|正文|内容).{0,12}" + edit_verb,
+                prose_location + r".{0,20}" + edit_verb,
                 clean,
             )
             or re.search(r"(?:请|帮我|直接).{0,6}" + edit_verb, clean)
@@ -1678,15 +1694,28 @@ def _explicit_intent_decision(
         intent = "plan_story"
     elif (
         not asks_how
-        and re.search(
-            r"(?:请|帮我|直接|只|把|将|记录|新增|添加|删除|修改|"
-            r"调整|改为|改成|设为)",
-            clean,
-        )
-        and re.search(
-            r"(?:设定|人物|角色|世界观|世界规则|关系|文风|叙事视角|"
-            r"作品资料|剧情线|主题|读者|结局约束)",
-            clean,
+        and (
+            re.search(
+                r"(?:记录|保存|新增|添加|删除|修改|调整|改为|改成|设为|"
+                r"整理|完善|更新).{0,24}"
+                r"(?:设定|人物|角色|世界观|世界规则|关系|文风|叙事视角|"
+                r"作品资料|剧情线|主题|读者|结局约束)",
+                clean,
+            )
+            or re.search(
+                r"(?:设定|人物|角色|世界观|世界规则|关系|文风|叙事视角|"
+                r"作品资料|剧情线|主题|读者|结局约束).{0,24}"
+                r"(?:记录|保存|新增|添加|删除|修改|调整|改为|改成|设为|"
+                r"整理|完善|更新|写清楚|补全)",
+                clean,
+            )
+            or re.search(
+                r"(?:把|将).{0,24}"
+                r"(?:设定|人物|角色|世界观|世界规则|关系|文风|叙事视角|"
+                r"作品资料|剧情线|主题|读者|结局约束).{0,24}"
+                r"(?:写清楚|补全|整理|完善|更新|修改|调整|改为|改成|设为)",
+                clean,
+            )
         )
     ):
         intent = "update_settings"

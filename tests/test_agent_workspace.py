@@ -15,7 +15,7 @@ from app.agent_capabilities import (
     READ_PROJECT,
     RUN_BOUNDED_TASK,
 )
-from app.agent_actions import available_agent_actions
+from app.agent_actions import ComposeArguments, available_agent_actions
 from app.agent_workspace import AgentWorkspace
 from app.chapter_splitter import split_chapters
 from app.assistant_chat_service import AssistantChatService
@@ -147,6 +147,20 @@ def test_workspace_tools_and_agent_actions_have_separate_registries(tmp_path):
     assert "1: 林岚拆开旧信。" in reading.result["content"]
     assert reading.result["writable"] is True
     assert len(reading.result["revision"]) == 64
+
+
+def test_compose_accepts_a_small_target_for_bounded_append():
+    arguments = ComposeArguments.model_validate(
+        {
+            "path": "book/manuscript/chapters/001.md",
+            "instruction": "在章末追加一小段环境描写",
+            "expected_revision": "a" * 64,
+            "mode": "append",
+            "target_chars": 100,
+        }
+    )
+
+    assert arguments.target_chars == 100
 
 
 def test_workspace_reads_main_head_instead_of_mutable_chapter_cache(tmp_path):

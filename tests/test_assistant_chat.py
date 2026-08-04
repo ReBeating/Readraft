@@ -958,6 +958,16 @@ def test_explicit_commands_route_locally_but_discussion_stays_ambiguous():
     )
     assert revision and revision.intent == "revise_prose"
 
+    appended_revision = _explicit_intent_decision(
+        question=(
+            "请在当前第一章末尾追加一段约100字的环境描写；"
+            "保持现有人物和事实不变，直接写入。"
+        ),
+        scope="novel_chapter",
+        has_selected_quote=False,
+    )
+    assert appended_revision and appended_revision.intent == "revise_prose"
+
     settings = _explicit_intent_decision(
         question="把林岚的人物设定改为遇事先核对物证。",
         scope="novel_project",

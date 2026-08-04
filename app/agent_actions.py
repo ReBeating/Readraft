@@ -21,7 +21,7 @@ class ComposeArguments(BaseModel):
     instruction: str = Field(min_length=2, max_length=6000)
     expected_revision: str = Field(min_length=8, max_length=128)
     mode: Literal["replace", "append"] = "replace"
-    target_chars: int | None = Field(default=None, ge=500, le=20_000)
+    target_chars: int | None = Field(default=None, ge=80, le=20_000)
 
 
 class CreateArguments(BaseModel):
@@ -81,7 +81,8 @@ AGENT_ACTION_SPECS: dict[str, AgentCallableSpec] = {
         description=(
             "在你已经确定写作目标并读取必要章节与设定后，执行章节正文"
             "创作、续写或大范围重写。提供目标 path、revision、写作要求和"
-            "replace/append 模式；不要在参数中自行生成整章正文。"
+            "replace/append 模式；短段追加可按作者要求设置较小 target_chars。"
+            "不要在参数中自行生成整章正文。"
         ),
         input_model=ComposeArguments,
         category="agent_action",
