@@ -13,6 +13,7 @@ DEFAULT_MEMORY_CHAR_BUDGET = 12_000
 DEFAULT_TECHNIQUE_CHAR_BUDGET = 6_000
 DEFAULT_STORY_PLAN_CHAR_BUDGET = 12_000
 DEFAULT_CAUSAL_LINK_CHAR_BUDGET = 8_000
+DEFAULT_CHARACTER_LIMIT = 16
 
 
 def _serialized_length(value: Mapping[str, Any]) -> int:
@@ -489,6 +490,74 @@ def compile_planned_causal_links(
     return result
 
 
+def compile_relevant_characters(
+    context: Mapping[str, Any],
+    *,
+    max_characters: int = DEFAULT_CHARACTER_LIMIT,
+) -> Dict[str, Any]:
+    """Select characters named by this chapter's actual writing context."""
+
+    characters = [
+        dict(item) for item in (context.get("characters") or [])
+    ]
+    if not characters:
+        return {
+            "items": [],
+            "selected_names": [],
+            "total_count": 0,
+            "fallback": False,
+            "truncated": False,
+        }
+    searchable = json.dumps(
+        {
+            "chapter": context.get("chapter"),
+            "volume": context.get("volume"),
+            "task_card": context.get("task_card"),
+            "planned_plot_arcs": context.get("planned_plot_arcs"),
+            "planned_causal_links": context.get("planned_causal_links"),
+            "canonical_memory": (
+                (context.get("canonical_memory") or {}).get(
+                    "current_state"
+                )
+            ),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).casefold()
+    ranked: list[tuple[int, int, Dict[str, Any]]] = []
+    for position, item in enumerate(characters):
+        name = str(item.get("name") or "").strip()
+        role = str(item.get("role") or "").strip()
+        if not name:
+            continue
+        score = 0
+        if name.casefold() in searchable:
+            score += 100
+        if any(token in role for token in ("主角", "主人公", "视角")):
+            score += 50
+        if role and role.casefold() in searchable:
+            score += 10
+        ranked.append((-score, position, item))
+    selected = [
+        item
+        for negative_score, _position, item in sorted(ranked)
+        if negative_score < 0
+    ]
+    fallback = not selected
+    if fallback:
+        selected = [item for _score, _position, item in sorted(ranked)[:8]]
+    selected = selected[: max(1, max_characters)]
+    return {
+        "items": selected,
+        "selected_names": [
+            str(item.get("name") or "") for item in selected
+        ],
+        "total_count": len(characters),
+        "fallback": fallback,
+        "truncated": len(selected) < len(characters),
+    }
+
+
 def build_writing_context_snapshot(
     *,
     context: Mapping[str, Any],
@@ -498,6 +567,7 @@ def build_writing_context_snapshot(
     previous_content: str,
 ) -> Dict[str, Any]:
     chapter = dict(context["chapter"])
+    character_selection = compile_relevant_characters(context)
     return {
         "schema_version": 1,
         "operation": operation,
@@ -534,7 +604,12 @@ def build_writing_context_snapshot(
             "payoff": chapter.get("volume_payoff"),
         },
         "confirmed_task_card": context.get("task_card"),
-        "characters": list(context.get("characters") or []),
+        "characters": character_selection["items"],
+        "character_selection": {
+            key: value
+            for key, value in character_selection.items()
+            if key != "items"
+        },
         "confirmed_voice_profile": dict(
             context.get("voice_profile") or {}
         ),

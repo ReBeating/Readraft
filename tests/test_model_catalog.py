@@ -5,12 +5,11 @@ import pytest
 
 from app.model_catalog import (
     ModelCatalogError,
-    fetch_deepseek_models,
     fetch_models,
 )
 
 
-def test_fetch_deepseek_models_uses_bearer_key_and_deduplicates():
+def test_fetch_models_uses_deepseek_bearer_key_and_deduplicates():
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -29,7 +28,8 @@ def test_fetch_deepseek_models_uses_bearer_key_and_deduplicates():
         )
 
     result = asyncio.run(
-        fetch_deepseek_models(
+        fetch_models(
+            provider_id="deepseek",
             api_key="sk-test-key",
             base_url="https://api.deepseek.com",
             transport=httpx.MockTransport(handler),
@@ -40,13 +40,14 @@ def test_fetch_deepseek_models_uses_bearer_key_and_deduplicates():
     assert seen["authorization"] == "Bearer sk-test-key"
 
 
-def test_fetch_deepseek_models_reports_invalid_key():
+def test_fetch_models_reports_invalid_deepseek_key():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": {"message": "invalid"}})
 
     with pytest.raises(ModelCatalogError, match="API Key 无效"):
         asyncio.run(
-            fetch_deepseek_models(
+            fetch_models(
+                provider_id="deepseek",
                 api_key="sk-test-key",
                 base_url="https://api.deepseek.com",
                 transport=httpx.MockTransport(handler),
@@ -98,3 +99,32 @@ def test_fetch_openai_compatible_models_uses_custom_url_and_optional_key():
         == "https://gateway.example.com/openai/v1/models"
     )
     assert seen["authorization"] == "Bearer sk-test-key"
+
+
+def test_fetch_opencode_go_models_uses_official_catalog_endpoint():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "deepseek-v4-flash"},
+                    {"id": "qwen3.7-plus"},
+                ]
+            },
+        )
+
+    models = asyncio.run(
+        fetch_models(
+            provider_id="opencode_go",
+            api_key="go-test-key",
+            transport=httpx.MockTransport(handler),
+        )
+    )
+
+    assert models == ["deepseek-v4-flash", "qwen3.7-plus"]
+    assert seen["url"] == "https://opencode.ai/zen/go/v1/models"
+    assert seen["authorization"] == "Bearer go-test-key"

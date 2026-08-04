@@ -17,11 +17,11 @@ from app.context_compiler import (
 )
 from app.credentials import CredentialCipher, key_hint
 from app.db import Database
-from app.deepseek import MockAnalyzer
+from app.model_client import MockAnalyzer
 from app.main import create_app
 from app.preference_extraction import (
     BaseEditPreferenceExtractor,
-    DeepSeekEditPreferenceExtractor,
+    ProviderEditPreferenceExtractor,
     EditPreferenceExtractionResponse,
     MockEditPreferenceExtractor,
     build_edit_sample,
@@ -47,15 +47,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -273,11 +273,11 @@ def test_deepseek_edit_preference_extractor_uses_bounded_diff_and_schema(
         )
 
     settings = replace(
-        _settings(tmp_path), deepseek_api_key="sk-edit-pref-test"
+        _settings(tmp_path), model_api_key="sk-edit-pref-test"
     )
 
     async def scenario():
-        extractor = DeepSeekEditPreferenceExtractor(
+        extractor = ProviderEditPreferenceExtractor(
             settings, transport=httpx.MockTransport(handler)
         )
         try:
@@ -733,14 +733,14 @@ def test_edit_preference_extractor_uses_owning_personal_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekEditPreferenceExtractor",
+        "app.worker.ProviderEditPreferenceExtractor",
         FakePersonalExtractor,
     )
     before = "她觉得这件事显然让人无比难过。"

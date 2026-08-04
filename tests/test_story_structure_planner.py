@@ -26,7 +26,7 @@ from app.security import hash_password
 from app.story_planning_schema import PlannedStoryArc, StoryBlueprint
 from app.story_planning_service import StoryPlanningService
 from app.story_structure_planner import (
-    DeepSeekStoryStructurePlanner,
+    ProviderStoryStructurePlanner,
     MockStoryStructurePlanner,
 )
 from app.story_structure_schema import (
@@ -49,15 +49,15 @@ def _settings(tmp_path: Path, *, api_key: str | None = None) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=api_key,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=api_key,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -174,12 +174,11 @@ def _make_canonical(
         effective_char_count=len(content),
         content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
-    accepted = database.accept_chapter_version(
+    accepted = database.set_chapter_head(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapter_id,
         version_id=str(version_id),
-        override_reason="测试中由作者确认正史",
     )
     assert accepted
     return str(version_id)
@@ -374,7 +373,7 @@ def test_deepseek_structure_planner_retries_and_sends_frozen_context(
             instruction="",
             provider_user_id="mock",
         )
-        planner = DeepSeekStoryStructurePlanner(
+        planner = ProviderStoryStructurePlanner(
             _settings(tmp_path, api_key="sk-test-secret")
         )
         payloads = []
@@ -498,14 +497,14 @@ def test_structure_apply_preserves_canon_resets_task_card_and_reverts(
         user_id, project_id, first_id
     )
     assert (
-        canonical_after["canonical_version_id"]
-        == canonical_before["canonical_version_id"]
+        canonical_after["head_version_id"]
+        == canonical_before["head_version_id"]
     )
     assert canonical_after["title"] == canonical_before["title"]
     future_after = database.get_novel_chapter(
         user_id, project_id, second_id
     )
-    assert future_after["canonical_version_id"] is None
+    assert future_after["head_version_id"] is None
     assert future_after["needs_recheck"] == 1
     assert future_after["plan_status"] == "draft"
     task_after = PlanningService(database).get_task_card(
@@ -663,8 +662,8 @@ def test_author_can_edit_future_skeleton_without_touching_canon(
         user_id, project_id, first_id
     )
     assert (
-        canonical_after["canonical_version_id"]
-        == before_canon["canonical_version_id"]
+        canonical_after["head_version_id"]
+        == before_canon["head_version_id"]
     )
     assert canonical_after["title"] == before_canon["title"]
     future = database.get_novel_chapter(
@@ -771,8 +770,8 @@ def test_author_volume_edit_resets_only_future_task_cards(
         user_id, project_id, first_id
     )
     assert (
-        canonical_after["canonical_version_id"]
-        == canonical_before["canonical_version_id"]
+        canonical_after["head_version_id"]
+        == canonical_before["head_version_id"]
     )
     assert canonical_after["title"] == canonical_before["title"]
     no_change = planning.update_volume(
@@ -1061,7 +1060,7 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
         )
         assert len(chapters) == 10
         assert all(
-            chapter["canonical_version_id"] is None
+            chapter["head_version_id"] is None
             for chapter in chapters
         )
         assert all(chapter["plan_status"] == "draft" for chapter in chapters)
@@ -1078,34 +1077,16 @@ def test_story_structure_web_flow_uses_preview_and_never_creates_canon(
         )
         assert task_before_edit["status"] == "draft"
         assert "父亲失踪主线" in task_before_edit["plot_threads"]
-        response = client.post(
-            f"/novels/{project_id}/chapters/{first_chapter_id}/skeleton",
-            data={
-                "title": "第一章 作者修订的潮线",
-                "volume_id": chapters[0]["volume_id"],
-                "structural_role": "reversal",
-                "purpose": "林岚核对新信后发现第一条可被复查的投递矛盾。",
-                "key_points": "确认邮戳来源\n锁定第一位经手人",
-                "arc_titles": "父亲失踪主线",
-                "ending_hook": "经手人的记录显示父亲失踪后仍签收过文件。",
-                "csrf": _csrf(chapter_page.text),
-            },
-            follow_redirects=False,
+        skeleton_url = (
+            f"/novels/{project_id}/chapters/{first_chapter_id}/skeleton"
         )
-        assert response.status_code == 303
-        assert "skeleton_saved=true" in response.headers["location"]
-        updated_chapter = database.get_novel_chapter(
-            int(user["id"]), project_id, str(chapters[0]["id"])
-        )
-        assert updated_chapter["title"] == "第一章 作者修订的潮线"
-        assert updated_chapter["skeleton_role"] == "reversal"
-        updated_task = PlanningService(database).get_task_card(
+        assert client.post(skeleton_url, data={}).status_code == 404
+        unchanged_task = PlanningService(database).get_task_card(
             user_id=int(user["id"]),
             project_id=project_id,
-            chapter_id=str(chapters[0]["id"]),
+            chapter_id=first_chapter_id,
         )
-        assert updated_task["status"] == "draft"
-        assert updated_task["source"] == "manual"
+        assert unchanged_task == task_before_edit
 
         workspace = client.get(workbench_url)
         volumes = PlanningService(database).list_volumes(

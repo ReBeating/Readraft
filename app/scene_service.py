@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from .db import Database, utc_now
+from .json_support import load_json as _load_json
 from .text_metrics import effective_char_count
 
 
@@ -24,15 +25,6 @@ SCENE_PLAN_FIELDS = (
     "transition",
     "requirement_refs",
 )
-
-
-def _load_json(value: Any, default: Any) -> Any:
-    if value in (None, ""):
-        return default
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return default
 
 
 def scene_plan_payload(scene: Mapping[str, Any]) -> Dict[str, Any]:
@@ -107,8 +99,8 @@ class SceneService:
             chapter = connection.execute(
                 """
                 SELECT ch.id, ch.project_id, ch.position, ch.title,
-                       ch.content_path, ch.working_version_id,
-                       ch.canonical_version_id, ch.char_count,
+                       ch.content_path, ch.head_version_id,
+                       ch.head_version_id, ch.char_count,
                        p.title AS project_title, p.point_of_view,
                        cp.id AS plan_id, cp.status AS plan_status,
                        cp.target_chars AS plan_target_chars
@@ -574,7 +566,7 @@ class SceneService:
             connection.execute("BEGIN IMMEDIATE")
             chapter = connection.execute(
                 """
-                SELECT ch.working_version_id
+                SELECT ch.head_version_id
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
                 WHERE ch.id=? AND ch.project_id=? AND p.user_id=?
@@ -633,11 +625,11 @@ class SceneService:
                 """
                 INSERT INTO novel_chapter_versions(
                     id, chapter_id, kind, content_path, char_count,
-                    created_at, parent_version_id, status, source,
+                    created_at, parent_version_id, source,
                     content_hash, change_summary, created_by,
                     quality_status, effective_char_count, hard_issue_count
                 ) VALUES (?, ?, 'scene_assembly', ?, ?, ?, ?,
-                          'candidate', 'scene_assembly', ?, ?, 'author',
+                          'scene_assembly', ?, ?, 'author',
                           'pass', ?, 0)
                 """,
                 (
@@ -646,7 +638,7 @@ class SceneService:
                     str(version_path),
                     len(content),
                     now,
-                    chapter["working_version_id"],
+                    chapter["head_version_id"],
                     hashlib.sha256(content.encode("utf-8")).hexdigest(),
                     (
                         f"由 {len(expected)} 个场景版本按任务卡顺序组装"
@@ -681,19 +673,20 @@ class SceneService:
                 """,
                 (now, chapter_id),
             )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET working_version_id=?, char_count=?, status='draft',
-                    updated_at=?
-                WHERE id=?
-                """,
-                (version_id, len(content), now, chapter_id),
+            advanced = self.database.set_chapter_head_in_transaction(
+                connection,
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                version_id=version_id,
+                expected_old_head_version_id=str(
+                    chapter["head_version_id"] or ""
+                ),
+                now=now,
             )
-            connection.execute(
-                "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                (now, project_id),
-            )
+            if not advanced:
+                connection.rollback()
+                raise ValueError("场景组装版本没有成为 main HEAD")
             connection.commit()
         return version_id
 

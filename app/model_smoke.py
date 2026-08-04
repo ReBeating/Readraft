@@ -9,9 +9,9 @@ from typing import Any, Dict, Sequence
 from .config import Settings
 from .credentials import CredentialCipher
 from .db import Database
-from .deepseek import DeepSeekAnalyzer
+from .model_client import ProviderAnalyzer
 from .model_provider import settings_for_credential
-from .writing import DeepSeekWriter
+from .writing import ProviderWriter
 
 
 SAFE_SMOKE_MODEL_ADAPTER_PROMPT = (
@@ -76,8 +76,8 @@ def load_personal_model_settings(
     return replace(
         personal,
         model_adapter_prompt=SAFE_SMOKE_MODEL_ADAPTER_PROMPT,
-        deepseek_max_tokens=min(personal.deepseek_max_tokens, 3_000),
-        deepseek_max_retries=min(personal.deepseek_max_retries, 1),
+        model_max_tokens=min(personal.model_max_tokens, 3_000),
+        model_max_retries=min(personal.model_max_retries, 1),
     )
 
 
@@ -87,7 +87,7 @@ async def run_smoke(
     results = []
     provider_user_id = "readraft-synthetic-smoke"
     if run_text:
-        writer = DeepSeekWriter(settings)
+        writer = ProviderWriter(settings)
         try:
             started = time.perf_counter()
             response = await writer.write(
@@ -114,7 +114,7 @@ async def run_smoke(
             await writer.close()
 
     if run_json:
-        analyzer = DeepSeekAnalyzer(settings)
+        analyzer = ProviderAnalyzer(settings)
         try:
             started = time.perf_counter()
             response = await analyzer.analyze(

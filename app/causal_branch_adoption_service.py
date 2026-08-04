@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -20,6 +18,11 @@ from .causal_branch_service import (
     CausalBranchSimulationService,
 )
 from .db import Database, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    json_fingerprint as _fingerprint,
+    load_json as _load_json,
+)
 
 
 ADOPTION_STATUS_LABELS = {
@@ -46,8 +49,7 @@ CHAPTER_STATE_FIELDS = (
     "skeleton_arc_titles_json",
     "skeleton_ending_hook",
     "skeleton_application_id",
-    "canonical_version_id",
-    "working_version_id",
+    "head_version_id",
     "char_count",
     "needs_recheck",
     "target_chapter_chars",
@@ -90,26 +92,6 @@ SCENE_STATE_FIELDS = (
     "current_version_id",
     "updated_at",
 )
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
 def _unique(values: Iterable[str]) -> List[str]:
@@ -234,13 +216,13 @@ class CausalBranchAdoptionService:
             """
             SELECT COALESCE(MAX(position), 0) AS position
             FROM novel_chapters
-            WHERE project_id=? AND canonical_version_id IS NOT NULL
+            WHERE project_id=? AND head_version_id IS NOT NULL
             """,
             (project_id,),
         ).fetchone()
         rows = connection.execute(
             f"""
-            SELECT id, position, canonical_version_id
+            SELECT id, position, head_version_id
             FROM novel_chapters
             WHERE project_id=? AND id IN ({placeholders})
             """,
@@ -252,7 +234,7 @@ class CausalBranchAdoptionService:
         invalid = [
             int(row["position"])
             for row in rows
-            if row["canonical_version_id"]
+            if row["head_version_id"]
             or int(row["position"]) <= current_position
         ]
         if invalid:
@@ -959,7 +941,7 @@ class CausalBranchAdoptionService:
             SET key_points=?, skeleton_arc_titles_json=?,
                 skeleton_application_id=NULL,
                 needs_recheck=CASE
-                    WHEN working_version_id IS NOT NULL
+                    WHEN head_version_id IS NOT NULL
                       OR char_count>0
                       OR EXISTS(
                           SELECT 1 FROM novel_scene_beats scene

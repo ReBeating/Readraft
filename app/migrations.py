@@ -27,6 +27,29 @@ def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     }
 
 
+def _ensure_head_version_pointer(connection: sqlite3.Connection) -> None:
+    """Give historical replay migrations the current HEAD projection."""
+
+    columns = _columns(connection, "novel_chapters")
+    if "head_version_id" not in columns:
+        _add_column(
+            connection,
+            "novel_chapters",
+            "head_version_id",
+            "TEXT REFERENCES novel_chapter_versions(id) ON DELETE SET NULL",
+        )
+        columns.add("head_version_id")
+    if "canonical_version_id" in columns:
+        connection.execute(
+            """
+            UPDATE novel_chapters
+            SET head_version_id=COALESCE(
+                head_version_id, canonical_version_id
+            )
+            """
+        )
+
+
 def _add_column(
     connection: sqlite3.Connection,
     table: str,
@@ -34,9 +57,7 @@ def _add_column(
     definition: str,
 ) -> None:
     if name not in _columns(connection, table):
-        connection.execute(
-            f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
-        )
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def _execute_statements(
@@ -46,9 +67,7 @@ def _execute_statements(
         connection.execute(statement)
 
 
-def _core_memory_v1(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _core_memory_v1(connection: sqlite3.Connection, applied_at: str) -> None:
     _add_column(
         connection,
         "novel_projects",
@@ -440,9 +459,7 @@ def _core_memory_v1(
         )
 
 
-def _planning_v2(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _planning_v2(connection: sqlite3.Connection, applied_at: str) -> None:
     _execute_statements(
         connection,
         (
@@ -581,9 +598,7 @@ def _planning_v2(
         )
 
 
-def _quality_gate_v3(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _quality_gate_v3(connection: sqlite3.Connection, applied_at: str) -> None:
     _add_column(
         connection,
         "novel_chapter_versions",
@@ -674,9 +689,7 @@ def _quality_gate_v3(
     )
 
 
-def _style_editor_v4(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _style_editor_v4(connection: sqlite3.Connection, applied_at: str) -> None:
     _add_column(
         connection,
         "generation_jobs",
@@ -849,9 +862,7 @@ def _style_editor_v4(
         )
 
 
-def _reader_decisions_v5(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _reader_decisions_v5(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -990,9 +1001,7 @@ def _reader_decisions_v5(
     )
 
 
-def _technique_library_v6(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _technique_library_v6(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -1067,9 +1076,7 @@ def _technique_library_v6(
     )
 
 
-def _scene_workbench_v7(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _scene_workbench_v7(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -1191,9 +1198,7 @@ def _scene_workbench_v7(
     )
 
 
-def _memory_search_v8(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _memory_search_v8(connection: sqlite3.Connection, applied_at: str) -> None:
     try:
         _execute_statements(
             connection,
@@ -1280,15 +1285,11 @@ def _memory_search_v8(
             ),
         )
     except sqlite3.OperationalError as exc:
-        raise RuntimeError(
-            "当前 SQLite 未启用 FTS5，无法建立长篇故事记忆检索"
-        ) from exc
+        raise RuntimeError("当前 SQLite 未启用 FTS5，无法建立长篇故事记忆检索") from exc
     rebuild_memory_search_documents(connection, created_at=applied_at)
 
 
-def _continuity_replay_v9(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _continuity_replay_v9(connection: sqlite3.Connection, applied_at: str) -> None:
     _execute_statements(
         connection,
         (
@@ -1392,6 +1393,7 @@ def _continuity_replay_v9(
         """
     ).fetchall()
     for project in projects:
+        _ensure_head_version_pointer(connection)
         replay_canonical_state(
             connection,
             project_id=str(project["id"]),
@@ -1400,9 +1402,9 @@ def _continuity_replay_v9(
             trigger_chapter_id=None,
             created_at=applied_at,
         )
-def _continuity_lifecycle_v10(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+
+
+def _continuity_lifecycle_v10(connection: sqlite3.Connection, applied_at: str) -> None:
     projects = connection.execute(
         """
         SELECT id, canonical_branch_id
@@ -1411,6 +1413,7 @@ def _continuity_lifecycle_v10(
         """
     ).fetchall()
     for project in projects:
+        _ensure_head_version_pointer(connection)
         replay_canonical_state(
             connection,
             project_id=str(project["id"]),
@@ -1544,6 +1547,7 @@ def _memory_identity_and_causality_v11(
             project_id=project_id,
             created_at=applied_at,
         )
+        _ensure_head_version_pointer(connection)
         replay_canonical_state(
             connection,
             project_id=project_id,
@@ -1704,9 +1708,7 @@ def _manual_edit_preference_learning_v13(
     )
 
 
-def _story_blueprint_v14(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _story_blueprint_v14(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -1806,19 +1808,13 @@ def _story_blueprint_v14(
         connection,
         "novel_plot_arcs",
         "current_version_id",
-        (
-            "TEXT REFERENCES novel_plot_arc_versions(id) "
-            "ON DELETE SET NULL"
-        ),
+        ("TEXT REFERENCES novel_plot_arc_versions(id) ON DELETE SET NULL"),
     )
     _add_column(
         connection,
         "novel_plot_arcs",
         "confirmed_version_id",
-        (
-            "TEXT REFERENCES novel_plot_arc_versions(id) "
-            "ON DELETE SET NULL"
-        ),
+        ("TEXT REFERENCES novel_plot_arc_versions(id) ON DELETE SET NULL"),
     )
 
 
@@ -2007,9 +2003,7 @@ def _story_structure_planner_v16(
     )
 
 
-def _chapter_causal_links_v17(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _chapter_causal_links_v17(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -2429,9 +2423,7 @@ def _editing_preference_aggregation_v22(
     )
 
 
-def _assistant_chat_v23(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _assistant_chat_v23(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -2606,9 +2598,7 @@ def _assistant_chat_v23(
     )
 
 
-def _workbench_prompts_v24(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _workbench_prompts_v24(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _add_column(
         connection,
@@ -2624,9 +2614,7 @@ def _workbench_prompts_v24(
     )
 
 
-def _assistant_agent_tools_v25(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _assistant_agent_tools_v25(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -2671,9 +2659,7 @@ def _assistant_agent_tools_v25(
     )
 
 
-def _assistant_agent_steps_v26(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _assistant_agent_steps_v26(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _execute_statements(
         connection,
@@ -2713,9 +2699,7 @@ def _assistant_agent_steps_v26(
     )
 
 
-def _model_base_url_v27(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _model_base_url_v27(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     _add_column(
         connection,
@@ -2732,21 +2716,17 @@ def _multi_provider_credentials_v28(
     primary_key = [
         str(row["name"])
         for row in sorted(
-            connection.execute(
-                "PRAGMA table_info(api_credentials)"
-            ).fetchall(),
+            connection.execute("PRAGMA table_info(api_credentials)").fetchall(),
             key=lambda row: int(row["pk"]),
         )
         if int(row["pk"]) > 0
     ]
-    modern_schema = (
-        "is_default" in credential_columns
-        and primary_key == ["user_id", "provider"]
-    )
+    modern_schema = "is_default" in credential_columns and primary_key == [
+        "user_id",
+        "provider",
+    ]
     if not modern_schema:
-        connection.execute(
-            "ALTER TABLE api_credentials RENAME TO api_credentials_v27"
-        )
+        connection.execute("ALTER TABLE api_credentials RENAME TO api_credentials_v27")
         connection.execute(
             """
             CREATE TABLE api_credentials (
@@ -2807,9 +2787,7 @@ def _multi_provider_credentials_v28(
         """,
         (applied_at,),
     )
-    connection.execute(
-        "DROP INDEX IF EXISTS idx_api_credentials_one_default"
-    )
+    connection.execute("DROP INDEX IF EXISTS idx_api_credentials_one_default")
     connection.execute(
         """
         UPDATE api_credentials AS credential
@@ -2849,14 +2827,10 @@ def _automatic_reasoning_policy_v29(
     del applied_at
     credential_columns = _columns(connection, "api_credentials")
     if "thinking" in credential_columns:
-        connection.execute(
-            "ALTER TABLE api_credentials DROP COLUMN thinking"
-        )
+        connection.execute("ALTER TABLE api_credentials DROP COLUMN thinking")
     credential_columns = _columns(connection, "api_credentials")
     if "reasoning_effort" in credential_columns:
-        connection.execute(
-            "ALTER TABLE api_credentials DROP COLUMN reasoning_effort"
-        )
+        connection.execute("ALTER TABLE api_credentials DROP COLUMN reasoning_effort")
 
 
 _LEGACY_DEFAULT_SYSTEM_PROMPT_V24 = (
@@ -2873,9 +2847,7 @@ _LEGACY_DEFAULT_SYSTEM_PROMPT_V24 = (
 )
 
 
-def _unified_model_adapter_v30(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _unified_model_adapter_v30(connection: sqlite3.Connection, applied_at: str) -> None:
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS user_model_preferences (
@@ -2919,14 +2891,10 @@ def _unified_model_adapter_v30(
             _LEGACY_DEFAULT_SYSTEM_PROMPT_V24,
         ),
     )
-    connection.execute(
-        "ALTER TABLE api_credentials DROP COLUMN system_prompt"
-    )
+    connection.execute("ALTER TABLE api_credentials DROP COLUMN system_prompt")
 
 
-def _unified_work_library_v31(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _unified_work_library_v31(connection: sqlite3.Connection, applied_at: str) -> None:
     _execute_statements(
         connection,
         (
@@ -3152,9 +3120,7 @@ def _work_archive_semantics_v32(
     )
 
 
-def _repository_versions_v33(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _repository_versions_v33(connection: sqlite3.Connection, applied_at: str) -> None:
     _execute_statements(
         connection,
         (
@@ -3222,9 +3188,7 @@ def _repository_versions_v33(
     ).fetchall()
     editions_by_work: dict[str, list[sqlite3.Row]] = {}
     for edition in editions:
-        editions_by_work.setdefault(str(edition["work_id"]), []).append(
-            edition
-        )
+        editions_by_work.setdefault(str(edition["work_id"]), []).append(edition)
 
     for work_id, work_editions in editions_by_work.items():
         writing = [row for row in work_editions if row["project_id"]]
@@ -3260,14 +3224,8 @@ def _repository_versions_v33(
             elif str(edition["kind"] or "") == "source":
                 source_count += 1
                 ref_type = "tag"
-                ref_name = (
-                    "source" if source_count == 1 else f"source-{source_count}"
-                )
-                label = (
-                    "原始版本"
-                    if source_count == 1
-                    else f"原始版本 {source_count}"
-                )
+                ref_name = "source" if source_count == 1 else f"source-{source_count}"
+                label = "原始版本" if source_count == 1 else f"原始版本 {source_count}"
                 is_editable = 0
             else:
                 tag_count += 1
@@ -3319,9 +3277,7 @@ def _repository_versions_v33(
     ).fetchall()
     for work in works:
         work_id = str(work["id"])
-        preferred_type = (
-            "tag" if str(work["last_mode"] or "") == "read" else "branch"
-        )
+        preferred_type = "tag" if str(work["last_mode"] or "") == "read" else "branch"
         selected = connection.execute(
             """
             SELECT ref_name
@@ -3527,9 +3483,7 @@ def _five_material_sections_v34(
         WHERE category='general'
         """
     )
-    connection.execute(
-        "UPDATE novel_projects SET ai_instructions=''"
-    )
+    connection.execute("UPDATE novel_projects SET ai_instructions=''")
 
 
 def _background_memory_jobs_v35(
@@ -3625,16 +3579,12 @@ def _version_story_memory_snapshots_v36(
             candidates = []
             for row in rows:
                 try:
-                    body = Path(str(row["content_path"])).read_text(
-                        encoding="utf-8"
-                    )
+                    body = Path(str(row["content_path"])).read_text(encoding="utf-8")
                     payload = json.loads(str(row["payload_json"]))
                     keywords = json.loads(str(row["keywords_json"]))
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     continue
-                if not isinstance(payload, dict) or not isinstance(
-                    keywords, list
-                ):
+                if not isinstance(payload, dict) or not isinstance(keywords, list):
                     continue
                 candidates.append(
                     {
@@ -3642,15 +3592,9 @@ def _version_story_memory_snapshots_v36(
                         "title": str(row["title"] or ""),
                         "normalized_body": body.strip(),
                         "summary": str(row["summary"] or ""),
-                        "keywords_json": json.dumps(
-                            keywords, ensure_ascii=False
-                        ),
-                        "payload_json": json.dumps(
-                            payload, ensure_ascii=False
-                        ),
-                        "created_at": str(
-                            row["created_at"] or applied_at
-                        ),
+                        "keywords_json": json.dumps(keywords, ensure_ascii=False),
+                        "payload_json": json.dumps(payload, ensure_ascii=False),
+                        "created_at": str(row["created_at"] or applied_at),
                     }
                 )
             candidates_by_project[project_id] = candidates
@@ -3666,9 +3610,7 @@ def _version_story_memory_snapshots_v36(
         ).fetchall()
         for chapter in chapters:
             try:
-                body = Path(str(chapter["content_path"])).read_text(
-                    encoding="utf-8"
-                )
+                body = Path(str(chapter["content_path"])).read_text(encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
             title = str(chapter["title"] or "")
@@ -3820,9 +3762,7 @@ def _assistant_streaming_and_web_search_v39(
     )
 
 
-def _exa_web_search_v40(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def _exa_web_search_v40(connection: sqlite3.Connection, applied_at: str) -> None:
     del applied_at
     if not {
         "provider",
@@ -3875,6 +3815,558 @@ def _assistant_conversation_memory_v41(
         "assistant_conversations",
         "memory_message_count",
         "INTEGER NOT NULL DEFAULT 0",
+    )
+
+
+def _continuity_normalization_v42(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    projects = connection.execute(
+        """
+        SELECT id, canonical_branch_id
+        FROM novel_projects
+        ORDER BY id
+        """
+    ).fetchall()
+    for project in projects:
+        _ensure_head_version_pointer(connection)
+        replay_canonical_state(
+            connection,
+            project_id=str(project["id"]),
+            branch_id=str(project["canonical_branch_id"] or "main"),
+            trigger_type="migration_v42",
+            trigger_chapter_id=None,
+            created_at=applied_at,
+        )
+
+
+def _assistant_agent_runtime_v43(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    _add_column(
+        connection,
+        "assistant_conversations",
+        "memory_state_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "run_state",
+        "TEXT NOT NULL DEFAULT 'queued'",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "run_state_label",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "run_sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "cancel_requested_at",
+        "TEXT",
+    )
+    _add_column(
+        connection,
+        "assistant_messages",
+        "cancel_reason",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS assistant_agent_events (
+                id TEXT PRIMARY KEY,
+                assistant_message_id TEXT NOT NULL
+                    REFERENCES assistant_messages(id) ON DELETE CASCADE,
+                sequence INTEGER NOT NULL CHECK(sequence>=1),
+                event_type TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                status TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(assistant_message_id, sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_assistant_agent_events_message
+            ON assistant_agent_events(assistant_message_id, sequence)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_assistant_agent_events_type
+            ON assistant_agent_events(event_type, created_at)
+            """,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE assistant_messages
+        SET run_state=CASE status
+                WHEN 'completed' THEN 'completed'
+                WHEN 'failed' THEN 'failed'
+                WHEN 'running' THEN 'routing'
+                ELSE 'queued'
+            END,
+            run_state_label=CASE status
+                WHEN 'completed' THEN '已完成'
+                WHEN 'failed' THEN '失败'
+                WHEN 'running' THEN '正在恢复任务'
+                ELSE '等待处理'
+            END
+        WHERE role='assistant'
+          AND (run_state='' OR run_state='queued')
+        """
+    )
+    # Historical messages keep their terminal state, but do not receive
+    # synthetic events.  The event stream is an audit trail of actual runtime
+    # activity and starts with the first post-migration run.
+
+
+def _single_work_version_types_v44(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    """Remove pre-repository hidden branches from the active data model."""
+    legacy_projects = connection.execute(
+        """
+        SELECT project_id FROM work_versions
+        WHERE ref_type='legacy' AND project_id IS NOT NULL
+        """
+    ).fetchall()
+    legacy_documents = connection.execute(
+        """
+        SELECT document_id FROM work_versions
+        WHERE ref_type='legacy' AND document_id IS NOT NULL
+        """
+    ).fetchall()
+    for row in legacy_projects:
+        connection.execute(
+            "DELETE FROM novel_projects WHERE id=?",
+            (str(row["project_id"]),),
+        )
+    for row in legacy_documents:
+        connection.execute(
+            "DELETE FROM documents WHERE id=?",
+            (str(row["document_id"]),),
+        )
+    connection.execute("DELETE FROM work_versions WHERE ref_type='legacy'")
+    connection.execute(
+        """
+        UPDATE works
+        SET last_ref_name=COALESCE(
+                (
+                    SELECT version.ref_name
+                    FROM work_versions version
+                    WHERE version.work_id=works.id
+                    ORDER BY
+                        CASE
+                            WHEN version.ref_name='main' THEN 0
+                            WHEN version.ref_name='source' THEN 1
+                            ELSE 2
+                        END,
+                        version.created_at DESC,
+                        version.id
+                    LIMIT 1
+                ),
+                ''
+            ),
+            updated_at=?
+        WHERE NOT EXISTS (
+            SELECT 1 FROM work_versions current
+            WHERE current.work_id=works.id
+              AND current.ref_name=works.last_ref_name
+        )
+        """,
+        (applied_at,),
+    )
+    connection.execute(
+        """
+        DELETE FROM works
+        WHERE NOT EXISTS (
+            SELECT 1 FROM work_versions version
+            WHERE version.work_id=works.id
+        )
+        """
+    )
+
+
+def _author_notes_v45(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    """Persistent, project-scoped notes intentionally saved by the author."""
+
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS novel_author_notes (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL
+                    REFERENCES novel_projects(id) ON DELETE CASCADE,
+                note_key TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                source_message_id TEXT
+                    REFERENCES assistant_messages(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, note_key)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_novel_author_notes_project
+            ON novel_author_notes(project_id, updated_at DESC, note_key)
+            """,
+        ),
+    )
+
+
+def _chapter_workflows_v46(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    """Recoverable, sequential multi-chapter Agent workflows."""
+
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS assistant_chapter_workflows (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                project_id TEXT NOT NULL
+                    REFERENCES novel_projects(id) ON DELETE CASCADE,
+                conversation_id TEXT NOT NULL
+                    REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+                source_message_id TEXT
+                    REFERENCES assistant_messages(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                total_count INTEGER NOT NULL CHECK(total_count>=1),
+                completed_count INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT,
+                UNIQUE(source_message_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS assistant_chapter_workflow_items (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL
+                    REFERENCES assistant_chapter_workflows(id)
+                    ON DELETE CASCADE,
+                sequence INTEGER NOT NULL CHECK(sequence>=1),
+                title TEXT NOT NULL DEFAULT '',
+                outline TEXT NOT NULL DEFAULT '',
+                key_points TEXT NOT NULL DEFAULT '',
+                instruction TEXT NOT NULL,
+                target_chars INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending',
+                chapter_id TEXT
+                    REFERENCES novel_chapters(id) ON DELETE SET NULL,
+                version_id TEXT
+                    REFERENCES novel_chapter_versions(id) ON DELETE SET NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                UNIQUE(workflow_id, sequence)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_chapter_workflows_resume
+            ON assistant_chapter_workflows(
+                user_id, project_id, status, updated_at DESC
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_chapter_workflow_items_next
+            ON assistant_chapter_workflow_items(workflow_id, status, sequence)
+            """,
+        ),
+    )
+
+
+def _main_head_versions_v47(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Collapse chapter working/canon pointers into one main HEAD."""
+
+    _add_column(
+        connection,
+        "novel_chapters",
+        "head_version_id",
+        "TEXT REFERENCES novel_chapter_versions(id) ON DELETE SET NULL",
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_novel_chapters_head_version
+        ON novel_chapters(head_version_id)
+        """
+    )
+    chapters = connection.execute(
+        """
+        SELECT id, project_id, position, canonical_version_id,
+               working_version_id
+        FROM novel_chapters
+        ORDER BY project_id, position, id
+        """
+    ).fetchall()
+    changed_projects: set[str] = set()
+    for chapter in chapters:
+        head_version_id = str(
+            chapter["working_version_id"]
+            or chapter["canonical_version_id"]
+            or ""
+        )
+        if not head_version_id:
+            latest = connection.execute(
+                """
+                SELECT id FROM novel_chapter_versions
+                WHERE chapter_id=?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (chapter["id"],),
+            ).fetchone()
+            head_version_id = str(latest["id"] if latest else "")
+        if "status" in _columns(connection, "novel_chapter_versions"):
+            connection.execute(
+                """
+                UPDATE novel_chapter_versions
+                SET status=CASE WHEN id=? THEN 'head' ELSE 'history' END
+                WHERE chapter_id=?
+                """,
+                (head_version_id, chapter["id"]),
+            )
+        connection.execute(
+            """
+            UPDATE novel_chapters
+            SET head_version_id=?, canonical_version_id=NULL,
+                working_version_id=NULL,
+                status=CASE WHEN ?<>'' THEN 'written' ELSE 'planned' END,
+                updated_at=CASE WHEN ?<>'' THEN ? ELSE updated_at END
+            WHERE id=?
+            """,
+            (
+                head_version_id or None,
+                head_version_id,
+                head_version_id,
+                applied_at,
+                chapter["id"],
+            ),
+        )
+        if head_version_id != str(chapter["canonical_version_id"] or ""):
+            changed_projects.add(str(chapter["project_id"]))
+
+    connection.execute(
+        """
+        UPDATE story_deltas
+        SET status='superseded', updated_at=?
+        WHERE status='projected'
+          AND NOT EXISTS (
+              SELECT 1 FROM novel_chapters chapter
+              WHERE chapter.id=story_deltas.chapter_id
+                AND chapter.head_version_id=story_deltas.version_id
+          )
+        """,
+        (applied_at,),
+    )
+    for table in (
+        "chapter_memory",
+        "story_events",
+        "character_knowledge",
+        "plot_threads",
+        "foreshadowing",
+    ):
+        connection.execute(
+            f"""
+            UPDATE {table}
+            SET record_status='retracted'
+            WHERE record_status='canon'
+              AND NOT EXISTS (
+                  SELECT 1 FROM novel_chapters chapter
+                  WHERE chapter.id={table}.chapter_id
+                    AND chapter.head_version_id={table}.version_id
+              )
+            """
+        )
+    connection.execute(
+        """
+        UPDATE story_facts
+        SET fact_status='retracted'
+        WHERE fact_status='canon'
+          AND NOT EXISTS (
+              SELECT 1 FROM novel_chapters chapter
+              WHERE chapter.id=story_facts.chapter_id
+                AND chapter.head_version_id=story_facts.version_id
+          )
+        """
+    )
+    for project_id in sorted(changed_projects):
+        project = connection.execute(
+            """
+            SELECT canonical_branch_id FROM novel_projects WHERE id=?
+            """,
+            (project_id,),
+        ).fetchone()
+        if project:
+            replay_canonical_state(
+                connection,
+                project_id=project_id,
+                branch_id=str(project["canonical_branch_id"] or "main"),
+                trigger_type="main_head_migrated",
+                trigger_chapter_id=None,
+                created_at=applied_at,
+            )
+
+
+def _drop_legacy_chapter_pointers_v48(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Remove the obsolete working/canonical columns after HEAD migration."""
+
+    del applied_at
+    columns = _columns(connection, "novel_chapters")
+    for column in ("canonical_version_id", "working_version_id"):
+        if column in columns:
+            connection.execute(
+                f"ALTER TABLE novel_chapters DROP COLUMN {column}"
+            )
+
+
+def _drop_chapter_version_status_v49(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Make ``novel_chapters.head_version_id`` the only HEAD authority."""
+
+    del applied_at
+    connection.execute("DROP INDEX IF EXISTS idx_chapter_versions_status")
+    if "status" in _columns(connection, "novel_chapter_versions"):
+        connection.execute(
+            "ALTER TABLE novel_chapter_versions DROP COLUMN status"
+        )
+
+
+def _chapter_edit_buffers_v50(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Persist crash-recovery edits without creating immutable history."""
+
+    del applied_at
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE novel_chapter_edit_buffers (
+                chapter_id TEXT PRIMARY KEY
+                    REFERENCES novel_chapters(id) ON DELETE CASCADE,
+                base_version_id TEXT
+                    REFERENCES novel_chapter_versions(id) ON DELETE SET NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX idx_chapter_edit_buffers_updated
+            ON novel_chapter_edit_buffers(updated_at DESC)
+            """,
+        ),
+    )
+
+
+def _work_tag_chapter_heads_v51(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Record the exact main HEAD used for every chapter in a Tag."""
+
+    del applied_at
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE work_tag_chapter_heads (
+                work_version_id TEXT NOT NULL
+                    REFERENCES work_versions(id) ON DELETE CASCADE,
+                document_chapter_id TEXT NOT NULL
+                    REFERENCES chapters(id) ON DELETE CASCADE,
+                source_chapter_id TEXT NOT NULL,
+                source_version_id TEXT,
+                position INTEGER NOT NULL CHECK(position>=1),
+                content_hash TEXT NOT NULL,
+                PRIMARY KEY(work_version_id, document_chapter_id),
+                UNIQUE(work_version_id, position)
+            )
+            """,
+            """
+            CREATE INDEX idx_work_tag_chapter_source_version
+            ON work_tag_chapter_heads(source_version_id)
+            """,
+        ),
+    )
+
+
+def _detach_tag_source_foreign_keys_v52(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Keep Tag provenance after its editable main project is deleted."""
+
+    del applied_at
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE work_tag_chapter_heads_v52 (
+                work_version_id TEXT NOT NULL
+                    REFERENCES work_versions(id) ON DELETE CASCADE,
+                document_chapter_id TEXT NOT NULL
+                    REFERENCES chapters(id) ON DELETE CASCADE,
+                source_chapter_id TEXT NOT NULL,
+                source_version_id TEXT,
+                position INTEGER NOT NULL CHECK(position>=1),
+                content_hash TEXT NOT NULL,
+                PRIMARY KEY(work_version_id, document_chapter_id),
+                UNIQUE(work_version_id, position)
+            )
+            """,
+            """
+            INSERT INTO work_tag_chapter_heads_v52(
+                work_version_id, document_chapter_id,
+                source_chapter_id, source_version_id,
+                position, content_hash
+            )
+            SELECT work_version_id, document_chapter_id,
+                   source_chapter_id, source_version_id,
+                   position, content_hash
+            FROM work_tag_chapter_heads
+            """,
+            "DROP TABLE work_tag_chapter_heads",
+            """
+            ALTER TABLE work_tag_chapter_heads_v52
+            RENAME TO work_tag_chapter_heads
+            """,
+            """
+            CREATE INDEX idx_work_tag_chapter_source_version
+            ON work_tag_chapter_heads(source_version_id)
+            """,
+        ),
     )
 
 
@@ -4044,12 +4536,65 @@ MIGRATIONS = (
         "assistant_conversation_memory_v41",
         _assistant_conversation_memory_v41,
     ),
+    Migration(
+        42,
+        "continuity_normalization_v42",
+        _continuity_normalization_v42,
+    ),
+    Migration(
+        43,
+        "assistant_agent_runtime_v43",
+        _assistant_agent_runtime_v43,
+    ),
+    Migration(
+        44,
+        "single_work_version_types_v44",
+        _single_work_version_types_v44,
+    ),
+    Migration(
+        45,
+        "author_notes_v45",
+        _author_notes_v45,
+    ),
+    Migration(
+        46,
+        "chapter_workflows_v46",
+        _chapter_workflows_v46,
+    ),
+    Migration(
+        47,
+        "main_head_versions_v47",
+        _main_head_versions_v47,
+    ),
+    Migration(
+        48,
+        "drop_legacy_chapter_pointers_v48",
+        _drop_legacy_chapter_pointers_v48,
+    ),
+    Migration(
+        49,
+        "drop_chapter_version_status_v49",
+        _drop_chapter_version_status_v49,
+    ),
+    Migration(
+        50,
+        "chapter_edit_buffers_v50",
+        _chapter_edit_buffers_v50,
+    ),
+    Migration(
+        51,
+        "work_tag_chapter_heads_v51",
+        _work_tag_chapter_heads_v51,
+    ),
+    Migration(
+        52,
+        "detach_tag_source_foreign_keys_v52",
+        _detach_tag_source_foreign_keys_v52,
+    ),
 )
 
 
-def apply_migrations(
-    connection: sqlite3.Connection, applied_at: str
-) -> None:
+def apply_migrations(connection: sqlite3.Connection, applied_at: str) -> None:
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (

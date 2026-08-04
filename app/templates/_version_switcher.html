@@ -17,27 +17,25 @@
       </header>
       <nav aria-label="作品版本">
         {% for version in work.versions %}
-          {% if version.ref_type != 'legacy' %}
-            <a
-              class="{% if version.id == current_version.id %}active{% endif %}"
-              href="/works/{{ work.id }}/versions/{{ version.id }}"
-              data-save-before-navigation
-            >
-              <span>
-                <strong>{{ version.label }}</strong>
-                <small>
-                  {% if version.ref_name == 'main' %}分支 · 可编辑
-                  {% elif version.ref_name == 'source' %}原始版本 · 只读
-                  {% else %}Tag · 只读{% endif %}
-                </small>
-              </span>
-              {% if version.id == current_version.id %}
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m5 12 4 4L19 6"></path>
-                </svg>
-              {% endif %}
-            </a>
-          {% endif %}
+          <a
+            class="{% if version.id == current_version.id %}active{% endif %}"
+            href="/works/{{ work.id }}/versions/{{ version.id }}"
+            data-save-before-navigation
+          >
+            <span>
+              <strong>{{ version.label }}</strong>
+              <small>
+                {% if version.ref_name == 'main' %}分支 · 可编辑
+                {% elif version.ref_name == 'source' %}原始版本 · 只读
+                {% else %}Tag · 只读{% endif %}
+              </small>
+            </span>
+            {% if version.id == current_version.id %}
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m5 12 4 4L19 6"></path>
+              </svg>
+            {% endif %}
+          </a>
         {% endfor %}
       </nav>
     </div>

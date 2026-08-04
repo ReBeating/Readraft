@@ -1,11 +1,11 @@
 import asyncio
 from pathlib import Path
 
-from app.assistant_chat import MockAssistantChatModel
+from app.agent_model import MockAgentModel
 from app.config import Settings
 from app.credentials import CredentialCipher, key_hint
 from app.db import Database
-from app.deepseek import MockAnalyzer
+from app.model_client import MockAnalyzer
 from app.memory_extraction import MockMemoryExtractor
 from app.planning_ai import MockChapterPlanner
 from app.reader_planner import MockReaderPlanner
@@ -28,15 +28,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -99,28 +99,28 @@ def test_personal_model_strategy_routes_two_models_and_three_modes(tmp_path):
     maximum = asyncio.run(settings_for("max", "fast"))
 
     assert (
-        low.deepseek_model,
-        low.deepseek_thinking,
+        low.model_name,
+        low.model_thinking,
     ) == ("deepseek-v4-flash", False)
     assert (
-        standard_discussion.deepseek_model,
-        standard_discussion.deepseek_thinking,
-        standard_discussion.deepseek_reasoning_effort,
+        standard_discussion.model_name,
+        standard_discussion.model_thinking,
+        standard_discussion.model_reasoning_effort,
     ) == ("deepseek-v4-flash", True, "high")
     assert (
-        standard_writing.deepseek_model,
-        standard_writing.deepseek_thinking,
-        standard_writing.deepseek_reasoning_effort,
+        standard_writing.model_name,
+        standard_writing.model_thinking,
+        standard_writing.model_reasoning_effort,
     ) == ("deepseek-v4-pro", True, "high")
     assert (
-        standard_planning.deepseek_model,
-        standard_planning.deepseek_thinking,
-        standard_planning.deepseek_reasoning_effort,
+        standard_planning.model_name,
+        standard_planning.model_thinking,
+        standard_planning.model_reasoning_effort,
     ) == ("deepseek-v4-pro", True, "max")
     assert (
-        maximum.deepseek_model,
-        maximum.deepseek_thinking,
-        maximum.deepseek_reasoning_effort,
+        maximum.model_name,
+        maximum.model_thinking,
+        maximum.model_reasoning_effort,
     ) == ("deepseek-v4-pro", True, "max")
 
 
@@ -154,14 +154,14 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
             seen["adapter"] = personal_settings.model_adapter_prompt
 
-    monkeypatch.setattr("app.worker.DeepSeekAnalyzer", FakePersonalAnalyzer)
+    monkeypatch.setattr("app.worker.ProviderAnalyzer", FakePersonalAnalyzer)
 
     async def scenario():
         worker = AnalysisWorker(
@@ -195,7 +195,7 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
     }
 
 
-def test_writing_worker_uses_owning_users_decrypted_api_key(
+def test_scene_worker_uses_owning_users_decrypted_api_key(
     tmp_path, monkeypatch
 ):
     settings = make_settings(tmp_path)
@@ -216,11 +216,11 @@ def test_writing_worker_uses_owning_users_decrypted_api_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
 
-    monkeypatch.setattr("app.worker.DeepSeekWriter", FakePersonalWriter)
+    monkeypatch.setattr("app.worker.ProviderWriter", FakePersonalWriter)
 
     async def scenario():
         worker = AnalysisWorker(
@@ -232,13 +232,13 @@ def test_writing_worker_uses_owning_users_decrypted_api_key(
             cipher,
             poll_seconds=0.01,
         )
-        return await worker._write(
+        return await worker._write_scene(
             item={
                 "user_id": user_id,
                 "provider": "deepseek",
                 "model": "deepseek-v4-flash",
                 "credential_source": "personal",
-                "operation": "draft",
+                "operation": "generate_scene",
                 "instruction": "",
             },
             context={
@@ -276,20 +276,24 @@ def test_chat_worker_uses_owning_users_decrypted_api_key(
         key_hint=key_hint(raw_key),
         model="deepseek-v4-pro",
     )
-    seen = {}
+    seen = []
 
-    class FakePersonalChatModel(MockAssistantChatModel):
+    class FakePersonalChatModel(MockAgentModel):
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen.append(
+                {
+                    "api_key": personal_settings.model_api_key,
+                    "model": personal_settings.model_name,
+                    "thinking": personal_settings.model_thinking,
+                    "effort": personal_settings.model_reasoning_effort,
+                }
+            )
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekAssistantChatModel",
+        "app.worker.ProviderAgentModel",
         FakePersonalChatModel,
     )
 
@@ -301,33 +305,50 @@ def test_chat_worker_uses_owning_users_decrypted_api_key(
             settings.secret_key,
             settings,
             cipher,
-            assistant_chat_model=MockAssistantChatModel(),
+            assistant_chat_model=MockAgentModel(),
             poll_seconds=0.01,
         )
+        project_id = "chat-worker-project"
+        database.create_novel_project(
+            user_id=user_id,
+            project_id=project_id,
+            title="凭据路由测试",
+            genre="悬疑",
+            premise="测试对话任务只使用作品所有者的凭据。",
+            world_setting="",
+            style_guide="",
+            point_of_view="第三人称限知",
+            target_chapter_chars=3000,
+        )
+        conversation_id = worker.assistant_chat_service.create_conversation(
+            user_id=user_id,
+            scope_type="project",
+            title="讨论开场",
+            project_id=project_id,
+        )
+        message_id = worker.assistant_chat_service.queue_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            question="如何安排开场？",
+            provider="deepseek",
+            model="deepseek-v4-pro",
+            credential_source="personal",
+            agent_role="advisor",
+        )
+        item = worker.assistant_chat_service.claim_next_message()
+        assert item and item["id"] == message_id
         return await worker._reply_assistant_chat(
-            item={
-                "user_id": user_id,
-                "provider": "deepseek",
-                "model": "deepseek-v4-pro",
-                "credential_source": "personal",
-            },
-            payload={
-                "context": {"scope": "novel_project"},
-                "sources": [],
-                "history": [],
-                "question": "如何安排开场？",
-                "selected_quote": "",
-            },
+            item=item,
+            payload=worker.assistant_chat_service.build_job_payload(item),
         )
 
     response = asyncio.run(scenario())
     assert response.result.answer
-    assert seen == {
-        "api_key": raw_key,
-        "model": "deepseek-v4-pro",
-        "thinking": True,
-        "effort": "high",
-    }
+    assert seen
+    assert all(item["api_key"] == raw_key for item in seen)
+    assert {item["model"] for item in seen} == {"deepseek-v4-pro"}
+    assert any(item["thinking"] for item in seen)
+    assert any(item["effort"] == "high" for item in seen)
 
 
 def test_memory_worker_uses_owning_users_decrypted_api_key(
@@ -353,14 +374,14 @@ def test_memory_worker_uses_owning_users_decrypted_api_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekMemoryExtractor", FakePersonalExtractor
+        "app.worker.ProviderMemoryExtractor", FakePersonalExtractor
     )
 
     async def scenario():
@@ -421,14 +442,14 @@ def test_planner_worker_uses_owning_users_decrypted_api_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekChapterPlanner", FakePersonalPlanner
+        "app.worker.ProviderChapterPlanner", FakePersonalPlanner
     )
 
     async def scenario():
@@ -493,14 +514,14 @@ def test_style_editor_uses_owning_users_decrypted_api_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekStyleEditor", FakePersonalStyleEditor
+        "app.worker.ProviderStyleEditor", FakePersonalStyleEditor
     )
 
     async def scenario():
@@ -560,14 +581,14 @@ def test_reader_planner_uses_owning_users_decrypted_api_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekReaderPlanner",
+        "app.worker.ProviderReaderPlanner",
         FakePersonalReaderPlanner,
     )
 

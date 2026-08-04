@@ -14,8 +14,12 @@ ANALYZE_REFERENCE = "analyze_reference"
 WEB_SEARCH = "web_search"
 PROPOSE_SETTINGS_PATCH = "propose_settings_patch"
 PROPOSE_STORY_PLAN = "propose_story_plan"
-CREATE_CANDIDATE_DRAFT = "create_candidate_draft"
-PROPOSE_TEXT_PATCH = "propose_text_patch"
+WRITE_CHAPTER = "write_chapter"
+CREATE_CHAPTER = "create_chapter"
+RUN_BOUNDED_TASK = "run_bounded_task"
+MANAGE_CHAPTERS = "manage_chapters"
+MANAGE_NOTES = "manage_notes"
+CREATE_TECHNIQUE_CARD = "create_technique_card"
 
 
 AGENT_ROLES: Dict[str, Dict[str, Any]] = {
@@ -29,6 +33,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_PROJECT,
                 SEARCH_CONVERSATION,
                 WEB_SEARCH,
+                RUN_BOUNDED_TASK,
             }
         ),
     },
@@ -42,6 +47,7 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_PROJECT,
                 SEARCH_CONVERSATION,
                 WEB_SEARCH,
+                RUN_BOUNDED_TASK,
             }
         ),
     },
@@ -56,6 +62,9 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_CONVERSATION,
                 WEB_SEARCH,
                 PROPOSE_SETTINGS_PATCH,
+                RUN_BOUNDED_TASK,
+                MANAGE_CHAPTERS,
+                MANAGE_NOTES,
             }
         ),
     },
@@ -70,6 +79,10 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_CONVERSATION,
                 WEB_SEARCH,
                 PROPOSE_STORY_PLAN,
+                PROPOSE_SETTINGS_PATCH,
+                RUN_BOUNDED_TASK,
+                MANAGE_CHAPTERS,
+                MANAGE_NOTES,
             }
         ),
     },
@@ -82,13 +95,15 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_REFERENCE,
                 SEARCH_CONVERSATION,
                 ANALYZE_REFERENCE,
+                CREATE_TECHNIQUE_CARD,
                 WEB_SEARCH,
+                RUN_BOUNDED_TASK,
             }
         ),
     },
     "writer": {
         "label": "创作",
-        "description": "读取设定并创作正文，自动提交为可撤回工作稿。",
+        "description": "读取设定并创作正文；写入推进 main HEAD，并保留历史。",
         "capabilities": frozenset(
             {
                 READ_PROJECT,
@@ -96,13 +111,20 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_PROJECT,
                 SEARCH_CONVERSATION,
                 WEB_SEARCH,
-                CREATE_CANDIDATE_DRAFT,
+                WRITE_CHAPTER,
+                CREATE_CHAPTER,
+                RUN_BOUNDED_TASK,
+                MANAGE_CHAPTERS,
+                MANAGE_NOTES,
             }
         ),
     },
     "editor": {
         "label": "修订",
-        "description": "检查现有文字并局部修订，自动提交且可以撤回。",
+        "description": (
+            "检查现有文字并局部修订；有选区时精确替换，"
+            "无选区时可提交保留其余内容的整章修订稿。"
+        ),
         "capabilities": frozenset(
             {
                 READ_PROJECT,
@@ -110,7 +132,10 @@ AGENT_ROLES: Dict[str, Dict[str, Any]] = {
                 SEARCH_PROJECT,
                 SEARCH_CONVERSATION,
                 WEB_SEARCH,
-                PROPOSE_TEXT_PATCH,
+                WRITE_CHAPTER,
+                RUN_BOUNDED_TASK,
+                MANAGE_CHAPTERS,
+                MANAGE_NOTES,
             }
         ),
     },
@@ -214,23 +239,22 @@ def resolve_agent_dispatch(
         )
 
     if selected_intent == "revise_prose":
-        if scope_type != "chapter" or not has_quote:
-            fallback_role = (
-                "editor"
-                if requested == "editor" and scope_type == "chapter"
-                else "advisor"
-            )
+        if scope_type != "chapter":
             return ResolvedAgentDispatch(
-                role=fallback_role,
+                role="advisor",
                 intent="discuss",
-                reason="selection_required",
+                reason="invalid_scope_fallback",
                 goal="answer",
             )
         return ResolvedAgentDispatch(
             role="editor",
             intent=selected_intent,
-            reason=reason,
-            goal="replace_selected_text",
+            reason=(reason if has_quote else "whole_chapter_revision"),
+            goal=(
+                "replace_selected_text"
+                if has_quote
+                else "create_chapter_draft"
+            ),
         )
 
     if selected_intent == "update_settings":
@@ -293,67 +317,51 @@ def agent_manifest(role: str) -> Dict[str, Any]:
         "description": str(profile["description"]),
         "capabilities": sorted(profile["capabilities"]),
         "write_policy": (
-            "模型只能提出结构化变更。服务器可按作者开启的策略自动提交到"
-            "可撤回工作稿；进入正史仍必须由作者触发。"
+            "模型只能提出结构化变更。服务器按本轮权限原子写入；正文写入"
+            "会创建不可变历史并推进 main HEAD，Tag 始终只读。"
         ),
     }
 
 
-def agent_role_prompt(role: str) -> str:
+def native_agent_role_prompt(role: str) -> str:
+    """Role guidance for the native resource/tool runtime."""
+
     manifest = agent_manifest(role)
-    capabilities = "、".join(manifest["capabilities"])
-    role_instructions = {
+    instructions = {
         "advisor": (
-            "你处于只读讨论模式。可以分析、提问和搜索已有上下文，但不得"
-            "创建设定候选或正文变更；settings_patch、draft 和 rewrite "
-            "必须为 null。"
+            "只读讨论：可以检索作品并帮助作者收敛构思，不修改任何资源。"
         ),
         "analyst": (
-            "你处于作品分析模式。应先读取与问题直接相关的材料，再给出"
-            "有依据的结构、人物、情节、文风或连续性诊断。不得创建设定、"
-            "规划或正文候选；settings_patch、story_plan、draft 和 rewrite "
-            "必须为 null。"
+            "只读分析：先读取与问题直接相关的证据，再诊断结构、人物、"
+            "情节、文风或连续性，不修改任何资源。"
         ),
         "planner": (
-            "你处于设定策划模式。应先读取作品材料，再把已经有依据的内容"
-            "整理为结构化候选设定。只能通过 propose_settings_patch 提交"
-            "候选。具体人物、世界规则、剧情结构和文风要求必须作为"
-            " archive_rules 归入对应资料分类，world_setting 只用于全书级"
-            "世界概述。不得创作或修订正文；story_plan、draft 和 rewrite "
-            "必须为 null。"
+            "设定编辑：把已有依据的想法写入 settings/ 下准确的结构化"
+            "资源。微调已有对象时优先 edit，只改变作者要求的字段。作者明确"
+            "要求保存构思或专项结论时，可写入 notes/author/；普通讨论不归档。"
         ),
         "story_planner": (
-            "你处于故事规划模式。应读取已有设定，把全书核心悬问、主角目标、"
-            "冲突引擎、终局状态、关键转折和必须兑现项整理为一个完整规划。"
-            "只能通过 propose_story_plan 提交候选，不得创作或修订正文；"
-            "settings_patch、draft 和 rewrite 必须为 null。"
+            "故事规划：读取已有设定后完善全书蓝图与剧情线；不要写正文。"
+            "作者明确要求沉淀规划讨论时，可保存为作者笔记。"
         ),
         "researcher": (
-            "你处于只读研究模式。必须以参考原文或拆书分析中的具体证据"
-            "说明结构、节奏、视角和信息释放方法，只提炼可迁移的抽象规则。"
-            "不得续写参考作品、复刻独特措辞或生成可直接应用的正文；"
-            "rewrite、draft、settings_patch 和 story_plan 必须为 null。"
+            "只读研究：用参考原文或分析中的证据提炼可迁移方法，不续写"
+            "参考作品，也不修改其资源。作者明确要求保存或提炼技法卡时，"
+            "可以把有原文证据和原创边界的方法写入 techniques/new/。"
         ),
         "writer": (
-            "你处于创作模式。创作前必须使用已经取得的章节连续性上下文，"
-            "先在内部明确上一章结尾状态、本章目标、人物当前状态、未解决线索"
-            "和不能破坏的事实，再生成正文。创建新章节时必须承接上一章的实际"
-            "结尾并使用 replace；续写当前章节时才使用 append。提交前自行检查"
-            "人物位置、知识状态、时间顺序、视角和伏笔是否自洽。可以创作新的"
-            "候选文字，但不能把草稿称为已经保存或生效。服务器会依据当前策略"
-            "提交工作稿；局部修订应交给修订模式，settings_patch 和 story_plan "
-            "必须为 null。"
+            "章节创作：写作前读取上一章结尾、当前章节目标和必要设定。"
+            "另起一章时先用 create 建立章节，再读取新路径并用 compose 写正文。"
+            "不要让计划、解释或检查清单混入正文。作者明确要求保存非正文"
+            "材料时，写入作者笔记而不是正文。"
         ),
         "editor": (
-            "你处于修订模式。应优先诊断现有文本并做最小范围修改。只有"
-            "存在经过校验的正文选区且作者明确要求修改时，才可返回 rewrite；"
-            "服务器会依据当前策略提交可撤回工作稿，settings_patch 和 draft "
-            "和 story_plan 必须为 null。"
+            "正文修订：先定位问题，再用 edit 做最小范围修改。未被要求"
+            "改变的文字尽量保持原样；大范围重写才使用 compose 动作。作者"
+            "明确要求保留诊断时，可将诊断保存为作者笔记。"
         ),
     }[manifest["role"]]
     return (
         f"当前协作角色：{manifest['label']}（{manifest['role']}）。\n"
-        f"服务器授予的能力：{capabilities}。\n"
-        f"{role_instructions}\n"
-        f"{manifest['write_policy']}"
+        f"{instructions}"
     )

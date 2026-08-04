@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
 from .causal_suggestion_schema import CausalSuggestionSet
 from .continuity import get_continuity_context
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    json_fingerprint as _fingerprint,
+    load_json as _load_json,
+)
 from .story_plan_suggestion_service import StoryPlanSuggestionService
 from .structure_link_schema import CAUSAL_RELATION_LABELS
 from .structure_link_service import StructureLinkService
@@ -37,26 +40,6 @@ CAUSAL_ARC_IMPACT_LABELS = {
     "pays_off": "兑现",
     "risks_breaking": "可能破坏",
 }
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
 def _evidence_value(value: Any, *, limit: int = 1400) -> str:
@@ -390,7 +373,7 @@ class CausalSuggestionService:
             SELECT ch.id, ch.position, ch.title, ch.outline, ch.key_points,
                    ch.skeleton_role, ch.skeleton_arc_titles_json,
                    ch.skeleton_ending_hook, ch.skeleton_application_id,
-                   ch.canonical_version_id,
+                   ch.head_version_id,
                    v.position AS volume_position,
                    v.title AS volume_title, v.goal AS volume_goal,
                    v.payoff AS volume_payoff,
@@ -405,7 +388,7 @@ class CausalSuggestionService:
             LEFT JOIN novel_volumes v ON v.id=ch.volume_id
             LEFT JOIN novel_chapter_plans cp ON cp.chapter_id=ch.id
             WHERE ch.project_id=? AND ch.position>?
-                AND ch.canonical_version_id IS NULL
+                AND ch.head_version_id IS NULL
             ORDER BY ch.position
             LIMIT ?
             """,
@@ -453,7 +436,7 @@ class CausalSuggestionService:
                 raw.pop("skeleton_arc_titles_json"), []
             )
             raw["is_canonical"] = bool(
-                raw.pop("canonical_version_id", None)
+                raw.pop("head_version_id", None)
             )
             raw["confirmed_task_card"] = task_card
             future_chapters.append(raw)
@@ -469,7 +452,7 @@ class CausalSuggestionService:
                        ORDER BY m.created_at DESC LIMIT 1
                    ) AS memory_summary
             FROM novel_chapters ch
-            WHERE ch.project_id=? AND ch.canonical_version_id IS NOT NULL
+            WHERE ch.project_id=? AND ch.head_version_id IS NOT NULL
             ORDER BY ch.position DESC
             LIMIT 6
             """,

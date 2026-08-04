@@ -4,7 +4,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional
@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from .chapter_splitter import ChapterChunk
 from .continuity import get_continuity_context, replay_canonical_state
+from .json_support import load_json as _load_json
 from .memory_identity import (
     ensure_memory_identity,
     expand_identity_terms,
@@ -38,25 +39,16 @@ def utc_after(seconds: int) -> str:
     )
 
 
-def _load_json(value: Any, fallback: Any) -> Any:
-    if value is None:
-        return fallback
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-
-
 WORK_MATERIAL_CATEGORIES = frozenset(
     {"core", "world", "character", "structure", "style"}
 )
 WORK_ARCHIVE_CATEGORIES = WORK_MATERIAL_CATEGORIES | {"uncategorized"}
-WORK_ARCHIVE_ANALYSIS_TYPES = frozenset(
-    {"source_fact", "analysis_note", "material"}
-)
-WORLD_ENTRY_TYPES = frozenset(
-    {"background", "rule", "faction", "location", "element"}
-)
+WORK_ARCHIVE_ANALYSIS_TYPES = frozenset({"source_fact", "analysis_note", "material"})
+WORLD_ENTRY_TYPES = frozenset({"background", "rule", "faction", "location", "element"})
+
+
+class ChapterHeadConflict(ValueError):
+    """The caller edited an older HEAD and must reconcile before commit."""
 
 
 SCHEMA = """
@@ -259,9 +251,7 @@ CREATE INDEX IF NOT EXISTS idx_analysis_queue
 """
 
 
-def has_active_user_ai_task(
-    connection: sqlite3.Connection, user_id: int
-) -> bool:
+def has_active_user_ai_task(connection: sqlite3.Connection, user_id: int) -> bool:
     """Return whether changing this user's model credentials is unsafe."""
     row = connection.execute(
         """
@@ -385,9 +375,7 @@ def _attach_work_version(
         raise ValueError("作品版本必须且只能关联一个内容对象")
     if ref_type not in {"branch", "tag"}:
         raise ValueError("不支持的版本类型")
-    if ref_type == "branch" and (
-        ref_name != "main" or project_id is None
-    ):
+    if ref_type == "branch" and (ref_name != "main" or project_id is None):
         raise ValueError("只有 main 可以作为可编辑分支")
     if ref_type == "tag" and document_id is None:
         raise ValueError("固定版本必须保存为只读文档")
@@ -719,9 +707,7 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_web_search_settings(
-        self, user_id: int
-    ) -> Optional[Dict[str, Any]]:
+    def get_web_search_settings(self, user_id: int) -> Optional[Dict[str, Any]]:
         with self.connection() as connection:
             row = connection.execute(
                 """
@@ -733,9 +719,7 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
-    def get_web_search_summary(
-        self, user_id: int
-    ) -> Optional[Dict[str, Any]]:
+    def get_web_search_summary(self, user_id: int) -> Optional[Dict[str, Any]]:
         return self.get_web_search_settings(user_id)
 
     def upsert_web_search_settings(
@@ -749,9 +733,7 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
-                raise ValueError(
-                    "有 AI 任务正在运行，请在任务结束后再修改联网搜索配置"
-                )
+                raise ValueError("有 AI 任务正在运行，请在任务结束后再修改联网搜索配置")
             connection.execute(
                 """
                 INSERT INTO user_web_search_settings(
@@ -808,9 +790,7 @@ class Database:
             ).fetchone()
         return str(row["adapter_prompt"]) if row else None
 
-    def get_model_routing_preferences(
-        self, user_id: int
-    ) -> Dict[str, str]:
+    def get_model_routing_preferences(self, user_id: int) -> Dict[str, str]:
         with self.connection() as connection:
             row = connection.execute(
                 """
@@ -835,9 +815,7 @@ class Database:
             "fast_model": str(row["fast_model"] or ""),
             "quality_provider": str(row["quality_provider"] or ""),
             "quality_model": str(row["quality_model"] or ""),
-            "default_quality_mode": str(
-                row["default_quality_mode"] or "standard"
-            ),
+            "default_quality_mode": str(row["default_quality_mode"] or "standard"),
         }
 
     def upsert_model_routing_preferences(
@@ -857,9 +835,7 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
-                raise ValueError(
-                    "有 AI 任务正在运行，请在任务结束后再修改模型策略"
-                )
+                raise ValueError("有 AI 任务正在运行，请在任务结束后再修改模型策略")
             connection.execute(
                 """
                 INSERT INTO user_model_preferences(
@@ -888,9 +864,7 @@ class Database:
             )
             connection.commit()
 
-    def remember_quality_mode(
-        self, user_id: int, quality_mode: str
-    ) -> None:
+    def remember_quality_mode(self, user_id: int, quality_mode: str) -> None:
         if quality_mode not in {"low", "standard", "max"}:
             raise ValueError("不支持的模型强度")
         now = utc_now()
@@ -908,17 +882,13 @@ class Database:
             )
             connection.commit()
 
-    def upsert_model_adapter_prompt(
-        self, user_id: int, adapter_prompt: str
-    ) -> None:
+    def upsert_model_adapter_prompt(self, user_id: int, adapter_prompt: str) -> None:
         now = utc_now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
-                raise ValueError(
-                    "有 AI 任务正在运行，请在任务结束后再修改模型适配策略"
-                )
+                raise ValueError("有 AI 任务正在运行，请在任务结束后再修改模型适配策略")
             connection.execute(
                 """
                 INSERT INTO user_model_preferences(
@@ -932,9 +902,7 @@ class Database:
             )
             connection.commit()
 
-    def has_api_credential(
-        self, user_id: int, provider: Optional[str] = None
-    ) -> bool:
+    def has_api_credential(self, user_id: int, provider: Optional[str] = None) -> bool:
         with self.connection() as connection:
             if provider:
                 row = connection.execute(
@@ -971,9 +939,7 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
-                raise ValueError(
-                    "有 AI 任务正在运行，请在任务结束后再修改 API 设置"
-                )
+                raise ValueError("有 AI 任务正在运行，请在任务结束后再修改 API 设置")
             if make_default:
                 connection.execute(
                     "UPDATE api_credentials SET is_default=0 WHERE user_id=?",
@@ -1030,9 +996,7 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             if has_active_user_ai_task(connection, user_id):
                 connection.rollback()
-                raise ValueError(
-                    "有 AI 任务正在运行，请在任务结束后再删除 API Key"
-                )
+                raise ValueError("有 AI 任务正在运行，请在任务结束后再删除 API Key")
             target = (
                 connection.execute(
                     """
@@ -1227,6 +1191,7 @@ class Database:
                 LEFT JOIN novel_projects p ON p.id=version.project_id
                 LEFT JOIN documents d ON d.id=version.document_id
                 WHERE version.work_id=?
+                  AND version.ref_type IN ('branch', 'tag')
                 ORDER BY
                     CASE
                         WHEN version.ref_name='main' THEN 0
@@ -1251,14 +1216,7 @@ class Database:
             None,
         )
         tag_versions = [
-            item
-            for item in versions
-            if str(item.get("ref_type") or "") == "tag"
-        ]
-        legacy_versions = [
-            item
-            for item in versions
-            if str(item.get("ref_type") or "") == "legacy"
+            item for item in versions if str(item.get("ref_type") or "") == "tag"
         ]
         source_version = next(
             (
@@ -1268,25 +1226,16 @@ class Database:
             ),
             None,
         )
-        version_index = {
-            str(item["id"]): item
-            for item in versions
-        }
+        version_index = {str(item["id"]): item for item in versions}
         for version in versions:
-            base = version_index.get(
-                str(version.get("base_version_id") or "")
-            )
+            base = version_index.get(str(version.get("base_version_id") or ""))
             version["base_version"] = base
-            version["base_label"] = (
-                str(base.get("label") or "") if base else ""
-            )
+            version["base_label"] = str(base.get("label") or "") if base else ""
             version["creative_snapshot"] = _load_json(
                 version.get("creative_snapshot_json"), {}
             )
             if version.get("project_id"):
-                open_url = (
-                    f"/novels/{version['project_id']}/workbench"
-                )
+                open_url = f"/novels/{version['project_id']}/workbench"
             elif version.get("document_id"):
                 open_url = f"/documents/{version['document_id']}"
             else:
@@ -1298,14 +1247,12 @@ class Database:
             )
             version["resume_chapter_id"] = remembered_chapter_id
             version["open_url"] = (
-                f"{open_url}?chapter_id="
-                f"{quote(remembered_chapter_id, safe='')}"
+                f"{open_url}?chapter_id={quote(remembered_chapter_id, safe='')}"
                 if remembered_chapter_id
                 else open_url
             )
-            version["is_current"] = (
-                str(version.get("ref_name") or "")
-                == str(work.get("last_ref_name") or "")
+            version["is_current"] = str(version.get("ref_name") or "") == str(
+                work.get("last_ref_name") or ""
             )
 
         current_version = next(
@@ -1317,8 +1264,7 @@ class Database:
             ),
             main_version
             or source_version
-            or (tag_versions[0] if tag_versions else None)
-            or (legacy_versions[0] if legacy_versions else None),
+            or (tag_versions[0] if tag_versions else None),
         )
         display_title = str(work.get("title") or "").strip()
         if not display_title and current_version:
@@ -1333,7 +1279,6 @@ class Database:
                 "versions": versions,
                 "main_version": main_version,
                 "tag_versions": tag_versions,
-                "legacy_versions": legacy_versions,
                 "source_version": source_version,
                 "current_version": current_version,
                 "has_main": bool(main_version),
@@ -1382,9 +1327,7 @@ class Database:
             ).fetchall()
             return [self._hydrate_work(connection, row) for row in rows]
 
-    def get_work(
-        self, user_id: int, work_id: str
-    ) -> Optional[Dict[str, Any]]:
+    def get_work(self, user_id: int, work_id: str) -> Optional[Dict[str, Any]]:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM works WHERE id=? AND user_id=?",
@@ -1519,9 +1462,14 @@ class Database:
         return max(numbers, default=0) + 1
 
     def build_project_creative_snapshot(
-        self, user_id: int, project_id: str
+        self,
+        user_id: int,
+        project_id: str,
+        *,
+        connection: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, Any]:
-        with self.connection() as connection:
+        manager = nullcontext(connection) if connection else self.connection()
+        with manager as connection:
             project = connection.execute(
                 """
                 SELECT id, title, genre, premise, theme, world_setting,
@@ -1661,9 +1609,7 @@ class Database:
             "project": dict(project),
             "world_entries": [dict(row) for row in world_entries],
             "characters": [dict(row) for row in characters],
-            "character_relationships": [
-                dict(row) for row in relationships
-            ],
+            "character_relationships": [dict(row) for row in relationships],
             "chapters": [dict(row) for row in chapters],
             "voice": voice_item,
             "story_blueprint": dict(blueprint) if blueprint else None,
@@ -1673,9 +1619,14 @@ class Database:
         }
 
     def build_project_story_memory_snapshots(
-        self, user_id: int, project_id: str
+        self,
+        user_id: int,
+        project_id: str,
+        *,
+        connection: Optional[sqlite3.Connection] = None,
     ) -> List[Dict[str, Any]]:
-        with self.connection() as connection:
+        manager = nullcontext(connection) if connection else self.connection()
+        with manager as connection:
             rows = connection.execute(
                 """
                 SELECT ch.id AS source_chapter_id,
@@ -1689,7 +1640,7 @@ class Database:
                 FROM novel_chapters ch
                 JOIN novel_projects project ON project.id=ch.project_id
                 JOIN novel_chapter_versions version
-                  ON version.id=ch.canonical_version_id
+                  ON version.id=ch.head_version_id
                 JOIN chapter_memory memory
                   ON memory.chapter_id=ch.id
                  AND memory.version_id=version.id
@@ -1711,19 +1662,79 @@ class Database:
                     body = Path(content_path).read_text(encoding="utf-8")
                 except (OSError, UnicodeError):
                     continue
-                item["content_hash"] = hashlib.sha256(
-                    body.encode("utf-8")
-                ).hexdigest()
+                item["content_hash"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
             payload = _load_json(item.pop("payload_json"), {})
             keywords = _load_json(item.pop("keywords_json"), [])
-            if not isinstance(payload, dict) or not isinstance(
-                keywords, list
-            ):
+            if not isinstance(payload, dict) or not isinstance(keywords, list):
                 continue
             item["payload"] = payload
             item["keywords"] = keywords
             snapshots.append(item)
         return snapshots
+
+    def build_project_tag_snapshot(
+        self, user_id: int, project_id: str
+    ) -> Dict[str, Any]:
+        """Capture every Tag input from one consistent database snapshot."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            ownership = connection.execute(
+                """
+                SELECT project.*, work.id AS work_id,
+                       version.id AS main_version_id,
+                       version.ref_name, version.is_editable
+                FROM novel_projects project
+                JOIN work_versions version
+                  ON version.project_id=project.id
+                JOIN works work ON work.id=version.work_id
+                WHERE project.id=? AND project.user_id=?
+                  AND work.user_id=?
+                """,
+                (project_id, user_id, user_id),
+            ).fetchone()
+            if (
+                not ownership
+                or str(ownership["ref_name"] or "") != "main"
+                or not bool(ownership["is_editable"])
+            ):
+                connection.rollback()
+                raise ValueError("只有 main 分支可以创建固定版本")
+            chapters = connection.execute(
+                """
+                SELECT chapter.id, chapter.position, chapter.title,
+                       chapter.head_version_id,
+                       head.content_path AS head_content_path,
+                       head.content_hash AS head_content_hash,
+                       head.char_count AS head_char_count
+                FROM novel_chapters chapter
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=chapter.head_version_id
+                WHERE chapter.project_id=?
+                ORDER BY chapter.position, chapter.created_at, chapter.id
+                """,
+                (project_id,),
+            ).fetchall()
+            creative_snapshot = self.build_project_creative_snapshot(
+                user_id,
+                project_id,
+                connection=connection,
+            )
+            memory_snapshots = self.build_project_story_memory_snapshots(
+                user_id,
+                project_id,
+                connection=connection,
+            )
+            result = {
+                "project": dict(ownership),
+                "work_id": str(ownership["work_id"]),
+                "main_version_id": str(ownership["main_version_id"]),
+                "chapters": [dict(row) for row in chapters],
+                "creative_snapshot": creative_snapshot,
+                "story_memory_snapshots": memory_snapshots,
+            }
+            connection.commit()
+        return result
 
     def list_work_version_story_memory_records(
         self, user_id: int, work_version_id: str
@@ -1761,9 +1772,7 @@ class Database:
                 continue
             payload = _load_json(item.pop("payload_json"), {})
             keywords = _load_json(item.pop("keywords_json"), [])
-            if not isinstance(payload, dict) or not isinstance(
-                keywords, list
-            ):
+            if not isinstance(payload, dict) or not isinstance(keywords, list):
                 item["memory_status"] = "missing"
                 item["payload"] = None
                 item["keywords"] = []
@@ -2332,17 +2341,13 @@ class Database:
                     connection, user_id=user_id, project_id=project_id
                 ):
                     connection.rollback()
-                    raise ValueError(
-                        "作品有 AI 任务正在排队或运行，请完成后再删除"
-                    )
+                    raise ValueError("作品有 AI 任务正在排队或运行，请完成后再删除")
             for document_id in document_ids:
                 if has_active_document_ai_task(
                     connection, user_id=user_id, document_id=document_id
                 ):
                     connection.rollback()
-                    raise ValueError(
-                        "作品有分析任务正在排队或运行，请完成后再删除"
-                    )
+                    raise ValueError("作品有分析任务正在排队或运行，请完成后再删除")
             connection.execute(
                 "DELETE FROM novel_projects WHERE id IN "
                 f"({','.join('?' for _ in project_ids)})"
@@ -2365,8 +2370,7 @@ class Database:
         return {
             "project_ids": project_ids,
             "document_paths": [
-                str(Path(str(row["source_path"])).parent)
-                for row in document_rows
+                str(Path(str(row["source_path"])).parent) for row in document_rows
             ],
         }
 
@@ -2391,10 +2395,7 @@ class Database:
             if not target:
                 connection.rollback()
                 return None
-            if (
-                str(target["ref_type"]) != "tag"
-                or str(target["ref_name"]) == "source"
-            ):
+            if str(target["ref_type"]) != "tag" or str(target["ref_name"]) == "source":
                 connection.rollback()
                 raise ValueError("main 和原始版本不能删除")
             dependent = connection.execute(
@@ -2460,18 +2461,12 @@ class Database:
             )
             connection.commit()
         return {
-            "document_path": str(
-                Path(str(target["source_path"])).parent
-            ),
+            "document_path": str(Path(str(target["source_path"])).parent),
             "fallback_project_id": (
-                str(fallback["project_id"])
-                if fallback["project_id"]
-                else None
+                str(fallback["project_id"]) if fallback["project_id"] else None
             ),
             "fallback_document_id": (
-                str(fallback["document_id"])
-                if fallback["document_id"]
-                else None
+                str(fallback["document_id"]) if fallback["document_id"] else None
             ),
         }
 
@@ -2537,9 +2532,7 @@ class Database:
                 connection, user_id=user_id, project_id=project_id
             ):
                 connection.rollback()
-                raise ValueError(
-                    "作品有 AI 任务正在排队或运行，请完成后再删除"
-                )
+                raise ValueError("作品有 AI 任务正在排队或运行，请完成后再删除")
             cursor = connection.execute(
                 """
                 DELETE FROM novel_projects
@@ -2832,9 +2825,7 @@ class Database:
             connection.commit()
         return cursor.rowcount == 1
 
-    def list_world_entries(
-        self, user_id: int, project_id: str
-    ) -> List[Dict[str, Any]]:
+    def list_world_entries(self, user_id: int, project_id: str) -> List[Dict[str, Any]]:
         with self.connection() as connection:
             rows = connection.execute(
                 """
@@ -2949,9 +2940,7 @@ class Database:
             connection.commit()
         return cursor.rowcount == 1
 
-    def delete_world_entry(
-        self, user_id: int, project_id: str, entry_id: str
-    ) -> bool:
+    def delete_world_entry(self, user_id: int, project_id: str, entry_id: str) -> bool:
         now = utc_now()
         with self.connection() as connection:
             cursor = connection.execute(
@@ -3006,9 +2995,7 @@ class Database:
         tension: str,
         change_direction: str,
     ) -> str:
-        first_id, second_id = sorted(
-            (character_a_id, character_b_id)
-        )
+        first_id, second_id = sorted((character_a_id, character_b_id))
         if not first_id or first_id == second_id:
             raise ValueError("请选择两个不同的人物")
         relation_id = uuid.uuid4().hex
@@ -3078,9 +3065,7 @@ class Database:
         tension: str,
         change_direction: str,
     ) -> bool:
-        first_id, second_id = sorted(
-            (character_a_id, character_b_id)
-        )
+        first_id, second_id = sorted((character_a_id, character_b_id))
         if not first_id or first_id == second_id:
             raise ValueError("请选择两个不同的人物")
         now = utc_now()
@@ -3159,6 +3144,12 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT ch.*,
+                    head.content_path AS head_content_path,
+                    head.content_hash AS head_content_hash,
+                    buffer.base_version_id AS edit_buffer_base_version_id,
+                    buffer.content AS edit_buffer_content,
+                    buffer.content_hash AS edit_buffer_content_hash,
+                    buffer.updated_at AS edit_buffer_updated_at,
                     v.title AS volume_title,
                     cp.status AS plan_status,
                     (SELECT COUNT(*) FROM novel_scene_beats sb
@@ -3174,6 +3165,10 @@ class Database:
                         ORDER BY j.created_at DESC LIMIT 1) AS latest_job_status
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
+                LEFT JOIN novel_chapter_versions head
+                    ON head.id=ch.head_version_id
+                LEFT JOIN novel_chapter_edit_buffers buffer
+                    ON buffer.chapter_id=ch.id
                 LEFT JOIN novel_volumes v ON v.id=ch.volume_id
                 LEFT JOIN novel_chapter_plans cp ON cp.chapter_id=ch.id
                 WHERE ch.project_id=? AND p.user_id=?
@@ -3260,6 +3255,12 @@ class Database:
                        p.world_setting, p.style_guide, p.ai_instructions,
                        p.point_of_view,
                        p.target_chapter_chars,
+                       head.content_path AS head_content_path,
+                       head.content_hash AS head_content_hash,
+                       buffer.base_version_id AS edit_buffer_base_version_id,
+                       buffer.content AS edit_buffer_content,
+                       buffer.content_hash AS edit_buffer_content_hash,
+                       buffer.updated_at AS edit_buffer_updated_at,
                        v.title AS volume_title,
                        cp.status AS plan_status,
                        (SELECT COUNT(*) FROM novel_scene_beats sb
@@ -3275,6 +3276,10 @@ class Database:
                             ORDER BY j.created_at DESC LIMIT 1) AS latest_job_status
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
+                LEFT JOIN novel_chapter_versions head
+                    ON head.id=ch.head_version_id
+                LEFT JOIN novel_chapter_edit_buffers buffer
+                    ON buffer.chapter_id=ch.id
                 LEFT JOIN novel_volumes v ON v.id=ch.volume_id
                 LEFT JOIN novel_chapter_plans cp ON cp.chapter_id=ch.id
                 WHERE ch.id=? AND ch.project_id=? AND p.user_id=?
@@ -3333,6 +3338,8 @@ class Database:
         effective_char_count: Optional[int] = None,
         content_hash: str = "",
         change_summary: str = "",
+        kind: str = "manual",
+        expected_old_head_version_id: Optional[str] = None,
     ) -> Optional[str]:
         now = utc_now()
         version_id = uuid.uuid4().hex
@@ -3345,8 +3352,12 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             chapter = connection.execute(
                 """
-                SELECT ch.id, ch.working_version_id FROM novel_chapters ch
+                SELECT ch.id, ch.head_version_id,
+                       head.content_hash AS head_content_hash
+                FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=ch.head_version_id
                 WHERE ch.id=? AND ch.project_id=? AND p.user_id=?
                 """,
                 (chapter_id, project_id, user_id),
@@ -3366,66 +3377,271 @@ class Database:
             if active:
                 connection.rollback()
                 raise ValueError("AI 正在生成本章，请等待任务完成后再保存")
+            current_head_id = str(chapter["head_version_id"] or "")
+            if (
+                expected_old_head_version_id is not None
+                and current_head_id != expected_old_head_version_id
+            ):
+                connection.rollback()
+                raise ChapterHeadConflict(
+                    "main HEAD 已在别处变化，请重新加载后再合并这份修改"
+                )
+            if (
+                current_head_id
+                and content_hash
+                and content_hash == str(chapter["head_content_hash"] or "")
+            ):
+                if expected_old_head_version_id is not None:
+                    connection.execute(
+                        """
+                        DELETE FROM novel_chapter_edit_buffers
+                        WHERE chapter_id=?
+                          AND COALESCE(base_version_id, '')=?
+                        """,
+                        (chapter_id, expected_old_head_version_id),
+                    )
+                connection.commit()
+                return current_head_id
             connection.execute(
                 """
                 INSERT INTO novel_chapter_versions(
                     id, chapter_id, kind, content_path, char_count, created_at,
-                    parent_version_id, status, source, content_hash,
+                    parent_version_id, source, content_hash,
                     change_summary, created_by, quality_status,
                     effective_char_count, hard_issue_count
-                ) VALUES (?, ?, 'manual', ?, ?, ?, ?, 'candidate', 'manual',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'manual',
                           ?, ?, 'author', 'pass', ?, 0)
                 """,
                 (
                     version_id,
                     chapter_id,
+                    str(kind or "manual")[:80],
                     str(version_path),
                     char_count,
                     now,
-                    chapter["working_version_id"],
+                    chapter["head_version_id"],
                     content_hash,
                     change_summary[:1000],
                     effective_count,
                 ),
             )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET char_count=?, status=?, working_version_id=?, updated_at=?
-                WHERE id=?
-                """,
-                (
-                    char_count,
-                    "draft" if char_count else "planned",
-                    version_id,
-                    now,
-                    chapter_id,
-                ),
+            advanced = self.set_chapter_head_in_transaction(
+                connection,
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                version_id=version_id,
+                expected_old_head_version_id=expected_old_head_version_id,
+                now=now,
             )
-            connection.execute(
-                "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                (now, project_id),
-            )
+            if not advanced:
+                connection.rollback()
+                return None
+            if expected_old_head_version_id is not None:
+                connection.execute(
+                    """
+                    DELETE FROM novel_chapter_edit_buffers
+                    WHERE chapter_id=?
+                      AND COALESCE(base_version_id, '')=?
+                    """,
+                    (chapter_id, expected_old_head_version_id),
+                )
             connection.commit()
         return version_id
 
+    def save_chapter_edit_buffer(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        chapter_id: str,
+        base_version_id: str,
+        content: str,
+        content_hash: str,
+    ) -> Dict[str, Any]:
+        """Persist a recoverable edit without advancing HEAD or history."""
+
+        now = utc_now()
+        expected_head = str(base_version_id or "")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            chapter = connection.execute(
+                """
+                SELECT ch.head_version_id,
+                       head.content_hash AS head_content_hash
+                FROM novel_chapters ch
+                JOIN novel_projects project ON project.id=ch.project_id
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=ch.head_version_id
+                WHERE ch.id=? AND ch.project_id=? AND project.user_id=?
+                """,
+                (chapter_id, project_id, user_id),
+            ).fetchone()
+            if not chapter:
+                connection.rollback()
+                raise ValueError("章节不存在")
+            current_head = str(chapter["head_version_id"] or "")
+            if current_head != expected_head:
+                connection.rollback()
+                raise ChapterHeadConflict(
+                    "main HEAD 已在别处变化，暂存内容没有覆盖新版本"
+                )
+            if (
+                current_head
+                and content_hash
+                and content_hash == str(chapter["head_content_hash"] or "")
+            ):
+                connection.execute(
+                    "DELETE FROM novel_chapter_edit_buffers WHERE chapter_id=?",
+                    (chapter_id,),
+                )
+                connection.commit()
+                return {
+                    "buffered": False,
+                    "head_version_id": current_head,
+                    "updated_at": now,
+                }
+            connection.execute(
+                """
+                INSERT INTO novel_chapter_edit_buffers(
+                    chapter_id, base_version_id, content, content_hash,
+                    updated_at
+                ) VALUES (?, NULLIF(?, ''), ?, ?, ?)
+                ON CONFLICT(chapter_id) DO UPDATE SET
+                    base_version_id=excluded.base_version_id,
+                    content=excluded.content,
+                    content_hash=excluded.content_hash,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    chapter_id,
+                    expected_head,
+                    content,
+                    content_hash,
+                    now,
+                ),
+            )
+            connection.commit()
+        return {
+            "buffered": True,
+            "head_version_id": current_head,
+            "updated_at": now,
+        }
+
+    def rebase_chapter_edit_buffer(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        chapter_id: str,
+    ) -> bool:
+        """Let the author deliberately reopen a stale buffer on current HEAD."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE novel_chapter_edit_buffers
+                SET base_version_id=(
+                        SELECT head_version_id FROM novel_chapters
+                        WHERE id=? AND project_id=?
+                    ),
+                    updated_at=?
+                WHERE chapter_id=? AND EXISTS(
+                    SELECT 1
+                    FROM novel_chapters chapter
+                    JOIN novel_projects project
+                      ON project.id=chapter.project_id
+                    WHERE chapter.id=? AND chapter.project_id=?
+                      AND project.user_id=?
+                )
+                """,
+                (
+                    chapter_id,
+                    project_id,
+                    utc_now(),
+                    chapter_id,
+                    chapter_id,
+                    project_id,
+                    user_id,
+                ),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def delete_chapter_edit_buffer(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        chapter_id: str,
+    ) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM novel_chapter_edit_buffers
+                WHERE chapter_id=? AND EXISTS(
+                    SELECT 1
+                    FROM novel_chapters chapter
+                    JOIN novel_projects project
+                      ON project.id=chapter.project_id
+                    WHERE chapter.id=? AND chapter.project_id=?
+                      AND project.user_id=?
+                )
+                """,
+                (chapter_id, chapter_id, project_id, user_id),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
     def list_chapter_versions(
-        self, user_id: int, project_id: str, chapter_id: str
+        self,
+        user_id: int,
+        project_id: str,
+        chapter_id: str,
+        *,
+        limit: Optional[int] = 20,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        clean_limit = None if limit is None else max(1, min(int(limit), 200))
+        clean_offset = max(0, int(offset))
+        pagination = "" if clean_limit is None else "LIMIT ? OFFSET ?"
+        params: List[Any] = [chapter_id, project_id, user_id]
+        if clean_limit is not None:
+            params.extend([clean_limit, clean_offset])
         with self.connection() as connection:
             rows = connection.execute(
-                """
-                SELECT v.*
+                f"""
+                SELECT v.*, ch.head_version_id,
+                       CASE WHEN v.id=ch.head_version_id THEN 1 ELSE 0 END
+                           AS is_head
                 FROM novel_chapter_versions v
                 JOIN novel_chapters ch ON ch.id=v.chapter_id
                 JOIN novel_projects p ON p.id=ch.project_id
                 WHERE v.chapter_id=? AND ch.project_id=? AND p.user_id=?
                 ORDER BY v.created_at DESC, v.rowid DESC
-                LIMIT 20
+                {pagination}
                 """,
-                (chapter_id, project_id, user_id),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_chapter_versions(
+        self, user_id: int, project_id: str, chapter_id: str
+    ) -> int:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS version_count
+                FROM novel_chapter_versions version
+                JOIN novel_chapters chapter ON chapter.id=version.chapter_id
+                JOIN novel_projects project ON project.id=chapter.project_id
+                WHERE version.chapter_id=? AND chapter.project_id=?
+                  AND project.user_id=?
+                """,
+                (chapter_id, project_id, user_id),
+            ).fetchone()
+        return int(row["version_count"] if row else 0)
 
     def get_chapter_version(
         self,
@@ -3437,7 +3653,7 @@ class Database:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT v.*, ch.canonical_version_id, ch.working_version_id,
+                SELECT v.*, ch.head_version_id,
                        ch.position, ch.title AS chapter_title,
                        p.title AS project_title
                 FROM novel_chapter_versions v
@@ -3450,29 +3666,25 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
-    def accept_chapter_version(
+    def set_chapter_head(
         self,
         *,
         user_id: int,
         project_id: str,
         chapter_id: str,
         version_id: str,
-        override_reason: str = "",
-        expected_old_canonical_version_id: Optional[str] = None,
+        expected_old_head_version_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         now = utc_now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            result = self._accept_chapter_version_in_transaction(
+            result = self.set_chapter_head_in_transaction(
                 connection,
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
                 version_id=version_id,
-                override_reason=override_reason,
-                expected_old_canonical_version_id=(
-                    expected_old_canonical_version_id
-                ),
+                expected_old_head_version_id=(expected_old_head_version_id),
                 now=now,
             )
             if not result:
@@ -3481,7 +3693,7 @@ class Database:
             connection.commit()
         return result
 
-    def _accept_chapter_version_in_transaction(
+    def set_chapter_head_in_transaction(
         self,
         connection: sqlite3.Connection,
         *,
@@ -3489,18 +3701,16 @@ class Database:
         project_id: str,
         chapter_id: str,
         version_id: str,
-        override_reason: str = "",
-        expected_old_canonical_version_id: Optional[str] = None,
+        expected_old_head_version_id: Optional[str] = None,
         ignored_active_job_id: Optional[str] = None,
         now: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        del override_reason
         accepted_at = now or utc_now()
         row = connection.execute(
             """
             SELECT v.id, v.content_path, v.char_count, v.quality_status,
                    v.job_id,
-                   ch.canonical_version_id, ch.position,
+                   ch.head_version_id, ch.position,
                    p.canonical_branch_id
             FROM novel_chapter_versions v
             JOIN novel_chapters ch ON ch.id=v.chapter_id
@@ -3513,12 +3723,12 @@ class Database:
         if not row:
             return None
         if (
-            expected_old_canonical_version_id is not None
-            and str(row["canonical_version_id"] or "")
-            != expected_old_canonical_version_id
+            expected_old_head_version_id is not None
+            and str(row["head_version_id"] or "")
+            != expected_old_head_version_id
         ):
-            raise ValueError(
-                "正史版本已在别处发生变化，请重新生成影响报告"
+            raise ChapterHeadConflict(
+                "main HEAD 已在别处变化，请重新读取版本历史"
             )
         active = connection.execute(
             """
@@ -3535,26 +3745,16 @@ class Database:
             ),
         ).fetchone()
         if active:
-            raise ValueError(
-                "AI 正在处理本章，请等待任务完成后再切换正史版本"
-            )
-        old_canonical = row["canonical_version_id"]
-        changed = old_canonical != version_id
+            raise ValueError("AI 正在处理本章，请等待任务完成后再切换版本")
+        old_head = row["head_version_id"]
+        changed = old_head != version_id
         downstream_count = 0
         if changed:
             connection.execute(
                 """
                 UPDATE novel_chapter_versions
-                SET status='archived'
-                WHERE chapter_id=? AND status='canonical' AND id<>?
-                """,
-                (chapter_id, version_id),
-            )
-            connection.execute(
-                """
-                UPDATE novel_chapter_versions
-                SET status='canonical', quality_status='pass',
-                    hard_issue_count=0, quality_override_reason='',
+                SET quality_status='pass', hard_issue_count=0,
+                    quality_override_reason='',
                     quality_overridden_at=NULL
                 WHERE id=?
                 """,
@@ -3565,57 +3765,75 @@ class Database:
                 UPDATE novel_chapters
                 SET needs_recheck=1, updated_at=?
                 WHERE project_id=? AND position>?
-                    AND canonical_version_id IS NOT NULL
+                    AND head_version_id IS NOT NULL
                 """,
                 (accepted_at, project_id, row["position"]),
             )
             downstream_count = int(cursor.rowcount)
-            if old_canonical:
-                delete_chapter_search_documents(
-                    connection, chapter_id=chapter_id
-                )
-                for table in (
-                    "chapter_memory",
-                    "story_events",
-                    "character_knowledge",
-                    "plot_threads",
-                    "foreshadowing",
-                ):
-                    connection.execute(
-                        f"""
-                        UPDATE {table}
-                        SET record_status='retracted'
-                        WHERE chapter_id=? AND record_status='canon'
-                        """,
-                        (chapter_id,),
-                    )
+            affected_chapters = connection.execute(
+                """
+                SELECT id FROM novel_chapters
+                WHERE project_id=? AND position>=?
+                  AND head_version_id IS NOT NULL
+                ORDER BY position
+                """,
+                (project_id, row["position"]),
+            ).fetchall()
+            affected_ids = [str(item["id"]) for item in affected_chapters]
+            for affected_id in affected_ids:
+                delete_chapter_search_documents(connection, chapter_id=affected_id)
+            for table in (
+                "chapter_memory",
+                "story_events",
+                "character_knowledge",
+                "plot_threads",
+                "foreshadowing",
+            ):
                 connection.execute(
-                    """
-                    UPDATE story_facts
-                    SET fact_status='retracted'
-                    WHERE chapter_id=? AND fact_status='canon'
+                    f"""
+                    UPDATE {table}
+                    SET record_status='retracted'
+                    WHERE chapter_id IN (
+                        SELECT id FROM novel_chapters
+                        WHERE project_id=? AND position>=?
+                    ) AND record_status='canon'
                     """,
-                    (chapter_id,),
+                    (project_id, row["position"]),
                 )
-                connection.execute(
-                    """
-                    UPDATE story_deltas
-                    SET status='superseded', updated_at=?
-                    WHERE chapter_id=? AND status='projected'
-                    """,
-                    (accepted_at, chapter_id),
-                )
+            connection.execute(
+                """
+                UPDATE story_facts
+                SET fact_status='retracted'
+                WHERE chapter_id IN (
+                    SELECT id FROM novel_chapters
+                    WHERE project_id=? AND position>=?
+                ) AND fact_status='canon'
+                """,
+                (project_id, row["position"]),
+            )
+            connection.execute(
+                """
+                UPDATE story_deltas
+                SET status='superseded', updated_at=?
+                WHERE chapter_id IN (
+                    SELECT id FROM novel_chapters
+                    WHERE project_id=? AND position>=?
+                ) AND status='projected'
+                """,
+                (accepted_at, project_id, row["position"]),
+            )
         connection.execute(
             """
             UPDATE novel_chapters
-            SET canonical_version_id=?, working_version_id=?,
-                char_count=?, status='canonical', needs_recheck=0,
+            SET head_version_id=?, char_count=?,
+                status=CASE WHEN ?>0 THEN 'written' ELSE 'planned' END,
+                needs_recheck=0,
                 updated_at=?
             WHERE id=?
             """,
             (
                 version_id,
-                version_id,
+                int(row["char_count"]),
                 int(row["char_count"]),
                 accepted_at,
                 chapter_id,
@@ -3632,12 +3850,10 @@ class Database:
             ).fetchone()
             if generation:
                 try:
-                    result_payload = json.loads(
-                        str(generation["result_json"] or "{}")
-                    )
+                    result_payload = json.loads(str(generation["result_json"] or "{}"))
                 except json.JSONDecodeError:
                     result_payload = {}
-                result_payload["canonical"] = True
+                result_payload["head"] = True
                 connection.execute(
                     """
                     UPDATE generation_jobs
@@ -3654,7 +3870,7 @@ class Database:
                 connection,
                 project_id=project_id,
                 branch_id=str(row["canonical_branch_id"] or "main"),
-                trigger_type="canon_version_changed",
+                trigger_type="main_head_changed",
                 trigger_chapter_id=chapter_id,
                 created_at=accepted_at,
             )
@@ -3662,9 +3878,7 @@ class Database:
             "version_id": version_id,
             "content_path": str(row["content_path"]),
             "char_count": int(row["char_count"]),
-            "old_canonical_version_id": (
-                str(old_canonical) if old_canonical else None
-            ),
+            "old_head_version_id": (str(old_head) if old_head else None),
             "changed": changed,
             "downstream_count": downstream_count,
         }
@@ -3687,6 +3901,40 @@ class Database:
             ).fetchone()
         return row is not None
 
+    def list_memory_refresh_targets(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        chapter_id: str,
+    ) -> List[Dict[str, Any]]:
+        with self.connection() as connection:
+            anchor = connection.execute(
+                """
+                SELECT position FROM novel_chapters
+                WHERE id=? AND project_id=? AND EXISTS(
+                    SELECT 1 FROM novel_projects
+                    WHERE id=? AND user_id=?
+                )
+                """,
+                (chapter_id, project_id, project_id, user_id),
+            ).fetchone()
+            if not anchor:
+                return []
+            rows = connection.execute(
+                """
+                SELECT id AS chapter_id, position, head_version_id,
+                       needs_recheck
+                FROM novel_chapters
+                WHERE project_id=? AND head_version_id IS NOT NULL
+                  AND position>=?
+                  AND (id=? OR needs_recheck=1)
+                ORDER BY position
+                """,
+                (project_id, anchor["position"], chapter_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_writing_context(
         self,
         user_id: int,
@@ -3703,6 +3951,8 @@ class Database:
                        p.target_chapter_chars, p.canonical_branch_id,
                        p.story_promise, p.target_audience, p.core_appeal,
                        p.ending_constraint, p.planning_horizon,
+                       head.content_path AS active_content_path,
+                       head.content_hash AS active_content_hash,
                        v.title AS volume_title, v.goal AS volume_goal,
                        v.start_state AS volume_start_state,
                        v.end_state AS volume_end_state,
@@ -3710,6 +3960,8 @@ class Database:
                        v.payoff AS volume_payoff
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=ch.head_version_id
                 LEFT JOIN novel_volumes v ON v.id=ch.volume_id
                 WHERE ch.id=? AND p.user_id=?
                 """,
@@ -3727,14 +3979,14 @@ class Database:
                        source.title AS source_title,
                        source.skeleton_arc_titles_json
                            AS source_arc_titles_json,
-                       source.canonical_version_id
-                           AS source_canonical_version_id,
+                       source.head_version_id
+                           AS source_head_version_id,
                        target.position AS target_position,
                        target.title AS target_title,
                        target.skeleton_arc_titles_json
                            AS target_arc_titles_json,
-                       target.canonical_version_id
-                           AS target_canonical_version_id
+                       target.head_version_id
+                           AS target_head_version_id
                 FROM novel_chapter_causal_links link
                 JOIN novel_chapters source
                   ON source.id=link.source_chapter_id
@@ -3742,7 +3994,7 @@ class Database:
                   ON target.id=link.target_chapter_id
                 WHERE link.project_id=?
                   AND link.status='active'
-                  AND target.canonical_version_id IS NULL
+                  AND target.head_version_id IS NULL
                   AND (
                     link.source_chapter_id=?
                     OR link.target_chapter_id=?
@@ -3838,7 +4090,9 @@ class Database:
             ).fetchall()
             characters = connection.execute(
                 """
-                SELECT name, role, traits, background, character_arc
+                SELECT id, name, role, traits, background, character_arc,
+                       external_goal, internal_need, central_conflict,
+                       hidden_fact AS secret, speech_style, initial_state
                 FROM novel_characters
                 WHERE project_id=?
                 ORDER BY position
@@ -3897,7 +4151,7 @@ class Database:
                        v.content_path, v.char_count
                 FROM novel_chapters ch
                 JOIN novel_chapter_versions v
-                    ON v.id=ch.canonical_version_id
+                    ON v.id=ch.head_version_id
                 WHERE ch.project_id=? AND ch.position<?
                 ORDER BY ch.position DESC LIMIT 1
                 """,
@@ -4002,9 +4256,7 @@ class Database:
             retrieval_scenes = []
             for row in scene_beats:
                 scene = dict(row)
-                scene["key_items"] = _load_json(
-                    scene.pop("key_items_json"), []
-                )
+                scene["key_items"] = _load_json(scene.pop("key_items_json"), [])
                 scene["requirement_refs"] = _load_json(
                     scene.pop("requirement_refs_json"), []
                 )
@@ -4063,9 +4315,7 @@ class Database:
                 branch_id=str(chapter["canonical_branch_id"]),
                 before_chapter_position=int(chapter["position"]),
                 query_terms=retrieval_query_terms,
-                excluded_chapter_ids=[
-                    str(row["chapter_id"]) for row in recent_memory
-                ],
+                excluded_chapter_ids=[str(row["chapter_id"]) for row in recent_memory],
             )
             continuity_context = get_continuity_context(
                 connection,
@@ -4124,9 +4374,7 @@ class Database:
         recent_items = []
         for row in recent_memory:
             item = dict(row)
-            item["key_events"] = _load_json(
-                item.pop("key_events_json"), []
-            )
+            item["key_events"] = _load_json(item.pop("key_events_json"), [])
             item["unresolved_questions"] = _load_json(
                 item.pop("unresolved_questions_json"), []
             )
@@ -4140,20 +4388,16 @@ class Database:
         technique_items = []
         for row in technique_rows:
             item = dict(row)
-            item["usage_modes"] = _load_json(
-                item.pop("usage_modes_json"), []
-            )
+            item["usage_modes"] = _load_json(item.pop("usage_modes_json"), [])
             if item["scope_type"] == "project":
                 item["scope_label"] = "全书"
             elif item["scope_type"] == "volume":
                 item["scope_label"] = (
-                    f"第 {item['volume_position']} 卷"
-                    f"《{item['volume_title']}》"
+                    f"第 {item['volume_position']} 卷《{item['volume_title']}》"
                 )
             elif item["scope_type"] == "chapter":
                 item["scope_label"] = (
-                    f"第 {item['chapter_position']} 章"
-                    f"《{item['chapter_title']}》"
+                    f"第 {item['chapter_position']} 章《{item['chapter_title']}》"
                 )
             else:
                 item["scope_label"] = (
@@ -4172,15 +4416,11 @@ class Database:
                 ("foreshadow_setup_json", "foreshadow_setup"),
                 ("foreshadow_payoff_json", "foreshadow_payoff"),
             ):
-                task_card[public] = _load_json(
-                    task_card.pop(stored), []
-                )
+                task_card[public] = _load_json(task_card.pop(stored), [])
             task_card["scenes"] = []
             for row in scene_beats:
                 scene = dict(row)
-                scene["key_items"] = _load_json(
-                    scene.pop("key_items_json"), []
-                )
+                scene["key_items"] = _load_json(scene.pop("key_items_json"), [])
                 scene["requirement_refs"] = _load_json(
                     scene.pop("requirement_refs_json"), []
                 )
@@ -4204,9 +4444,7 @@ class Database:
                 confirmed_story_blueprint.pop("must_payoffs_json"), []
             )
             confirmed_story_blueprint["forbidden_shortcuts"] = _load_json(
-                confirmed_story_blueprint.pop(
-                    "forbidden_shortcuts_json"
-                ),
+                confirmed_story_blueprint.pop("forbidden_shortcuts_json"),
                 [],
             )
         confirmed_plot_arcs = []
@@ -4215,51 +4453,42 @@ class Database:
             item["involved_characters"] = _load_json(
                 item.pop("involved_characters_json"), []
             )
-            item["planned_turns"] = _load_json(
-                item.pop("planned_turns_json"), []
-            )
+            item["planned_turns"] = _load_json(item.pop("planned_turns_json"), [])
             confirmed_plot_arcs.append(item)
         planned_causal_links = []
         for row in planned_causal_link_rows:
             item = dict(row)
-            source_arcs = _load_json(
-                item.pop("source_arc_titles_json"), []
-            )
-            target_arcs = _load_json(
-                item.pop("target_arc_titles_json"), []
-            )
+            source_arcs = _load_json(item.pop("source_arc_titles_json"), [])
+            target_arcs = _load_json(item.pop("target_arc_titles_json"), [])
             if not isinstance(source_arcs, list):
                 source_arcs = []
             if not isinstance(target_arcs, list):
                 target_arcs = []
-            source_arcs = [
-                str(value)
-                for value in source_arcs
-                if str(value).strip()
-            ]
-            target_arcs = [
-                str(value)
-                for value in target_arcs
-                if str(value).strip()
-            ]
+            source_arcs = [str(value) for value in source_arcs if str(value).strip()]
+            target_arcs = [str(value) for value in target_arcs if str(value).strip()]
             item["source_arc_titles"] = source_arcs
             item["target_arc_titles"] = target_arcs
-            item["shared_arc_titles"] = sorted(
-                set(source_arcs) & set(target_arcs)
-            )
+            item["shared_arc_titles"] = sorted(set(source_arcs) & set(target_arcs))
             item["cross_line"] = bool(
-                source_arcs
-                and target_arcs
-                and not item["shared_arc_titles"]
+                source_arcs and target_arcs and not item["shared_arc_titles"]
             )
             item["source_is_canonical"] = bool(
-                item.pop("source_canonical_version_id", None)
+                item.pop("source_head_version_id", None)
             )
             item["target_is_canonical"] = bool(
-                item.pop("target_canonical_version_id", None)
+                item.pop("target_head_version_id", None)
             )
             planned_causal_links.append(item)
         chapter_item = dict(chapter)
+        chapter_item["cache_content_path"] = str(
+            chapter_item.get("content_path") or ""
+        )
+        chapter_item["content_path"] = str(
+            chapter_item.pop("active_content_path", "") or ""
+        )
+        chapter_item["content_hash"] = str(
+            chapter_item.pop("active_content_hash", "") or ""
+        )
         chapter_item["skeleton_arc_titles"] = _load_json(
             chapter_item.pop("skeleton_arc_titles_json", "[]"), []
         )
@@ -4272,44 +4501,32 @@ class Database:
             "story_blueprint": confirmed_story_blueprint,
             "planned_plot_arcs": confirmed_plot_arcs,
             "planned_causal_links": planned_causal_links,
-            "confirmed_archive_rules": [
-                dict(row) for row in confirmed_archive_rules
-            ],
-            "confirmed_editing_preferences": [
-                dict(row) for row in editing_preferences
-            ],
+            "confirmed_archive_rules": [dict(row) for row in confirmed_archive_rules],
+            "confirmed_editing_preferences": [dict(row) for row in editing_preferences],
             "canonical_memory": {
                 "recent_chapters": recent_items,
                 "story_facts": fact_items,
-                "character_knowledge": [
-                    dict(row) for row in knowledge
-                ],
+                "character_knowledge": [dict(row) for row in knowledge],
                 "plot_threads": [dict(row) for row in plot_threads],
                 "foreshadowing": [dict(row) for row in hooks],
                 "retrieved_memory": retrieved_memory,
                 "current_state": continuity_context["current_state"],
-                "continuity_issues": continuity_context[
-                    "continuity_issues"
-                ],
-                "continuity_replay": continuity_context[
-                    "continuity_replay"
-                ],
+                "continuity_issues": continuity_context["continuity_issues"],
+                "continuity_replay": continuity_context["continuity_replay"],
                 "retrieval": {
                     "engine": SEARCH_ENGINE,
                     "scope": SEARCH_SCOPE,
                     "query_terms": retrieval_query_terms,
                     "query_concepts": retrieval_query_concepts,
                     "matched_count": len(retrieved_memory),
-                    "excluded_recent_chapter_count": len(
-                        recent_memory
-                    ),
+                    "excluded_recent_chapter_count": len(recent_memory),
                 },
             },
             "memory_identities": memory_identities,
             "technique_cards": technique_items,
         }
 
-    def create_generation_job(
+    def create_scene_generation_job(
         self,
         *,
         user_id: int,
@@ -4322,15 +4539,8 @@ class Database:
         credential_source: str,
         subject_id: Optional[str] = None,
     ) -> str:
-        if operation not in {
-            "draft",
-            "continue",
-            "rewrite",
-            "polish",
-            "generate_scene",
-            "rewrite_scene",
-        }:
-            raise ValueError("不支持的写作操作")
+        if operation not in {"generate_scene", "rewrite_scene"}:
+            raise ValueError("不支持的场景写作操作")
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
         job_id = uuid.uuid4().hex
@@ -4348,41 +4558,31 @@ class Database:
             if not chapter:
                 connection.rollback()
                 raise ValueError("章节不存在")
-            if operation in {"generate_scene", "rewrite_scene"}:
-                if not subject_id:
-                    connection.rollback()
-                    raise ValueError("没有指定场景节拍")
-                scene = connection.execute(
-                    """
-                    SELECT sb.current_version_id, cp.status
-                    FROM novel_scene_beats sb
-                    JOIN novel_chapter_plans cp ON cp.id=sb.plan_id
-                    WHERE sb.id=? AND cp.chapter_id=?
-                        AND sb.beat_status='active'
-                    """,
-                    (subject_id, chapter_id),
-                ).fetchone()
-                if not scene:
-                    connection.rollback()
-                    raise ValueError("场景节拍不存在")
-                if str(scene["status"]) != "confirmed":
-                    connection.rollback()
-                    raise ValueError("章节任务卡尚未确认")
-                if (
-                    operation == "generate_scene"
-                    and scene["current_version_id"]
-                ):
-                    connection.rollback()
-                    raise ValueError("这个场景已有草稿，请选择重写")
-                if (
-                    operation == "rewrite_scene"
-                    and not scene["current_version_id"]
-                ):
-                    connection.rollback()
-                    raise ValueError("这个场景还没有草稿，请先生成")
-            elif subject_id:
+            if not subject_id:
                 connection.rollback()
-                raise ValueError("整章写作任务不能指定场景")
+                raise ValueError("没有指定场景节拍")
+            scene = connection.execute(
+                """
+                SELECT sb.current_version_id, cp.status
+                FROM novel_scene_beats sb
+                JOIN novel_chapter_plans cp ON cp.id=sb.plan_id
+                WHERE sb.id=? AND cp.chapter_id=?
+                    AND sb.beat_status='active'
+                """,
+                (subject_id, chapter_id),
+            ).fetchone()
+            if not scene:
+                connection.rollback()
+                raise ValueError("场景节拍不存在")
+            if str(scene["status"]) != "confirmed":
+                connection.rollback()
+                raise ValueError("章节任务卡尚未确认")
+            if operation == "generate_scene" and scene["current_version_id"]:
+                connection.rollback()
+                raise ValueError("这个场景已有草稿，请选择重写")
+            if operation == "rewrite_scene" and not scene["current_version_id"]:
+                connection.rollback()
+                raise ValueError("这个场景还没有草稿，请先生成")
             if credential_source == "personal":
                 credential = connection.execute(
                     """
@@ -4393,9 +4593,7 @@ class Database:
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
+                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
             active = connection.execute(
                 """
                 SELECT id, chapter_id, operation, subject_id
@@ -4411,8 +4609,7 @@ class Database:
                 if (
                     str(active["chapter_id"]) == chapter_id
                     and str(active["operation"]) == operation
-                    and str(active["subject_id"] or "")
-                    == str(subject_id or "")
+                    and str(active["subject_id"] or "") == str(subject_id or "")
                 ):
                     return str(active["id"])
                 raise ValueError("你已有一个写作任务正在排队或运行，请等待其完成")
@@ -4465,13 +4662,13 @@ class Database:
                 JOIN novel_chapters ch ON ch.id=v.chapter_id
                 JOIN novel_projects p ON p.id=ch.project_id
                 WHERE v.id=? AND v.chapter_id=? AND ch.project_id=?
-                    AND p.user_id=? AND ch.canonical_version_id=v.id
+                    AND p.user_id=? AND ch.head_version_id=v.id
                 """,
                 (version_id, chapter_id, project_id, user_id),
             ).fetchone()
             if not target:
                 connection.rollback()
-                raise ValueError("只能从当前正史版本提取故事记忆")
+                raise ValueError("只能从当前 main HEAD 提取故事记忆")
             if credential_source == "personal":
                 credential = connection.execute(
                     """
@@ -4482,9 +4679,7 @@ class Database:
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
+                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
             existing_job = connection.execute(
                 """
                 SELECT id FROM generation_jobs
@@ -4510,9 +4705,7 @@ class Database:
             ).fetchone()
             if active:
                 connection.rollback()
-                raise ValueError(
-                    "你已有一个写作任务正在排队或运行，请等待其完成"
-                )
+                raise ValueError("你已有一个写作任务正在排队或运行，请等待其完成")
             existing_delta = connection.execute(
                 """
                 SELECT id FROM story_deltas
@@ -4525,7 +4718,7 @@ class Database:
             ).fetchone()
             if existing_delta:
                 connection.rollback()
-                raise ValueError("这个正史版本已经有故事记忆提案")
+                raise ValueError("这个 main HEAD 已经有故事记忆提案")
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
@@ -4600,9 +4793,7 @@ class Database:
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
+                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
             active = connection.execute(
                 """
                 SELECT id, chapter_id, operation
@@ -4620,15 +4811,11 @@ class Database:
                     and str(active["operation"]) == operation
                 ):
                     return str(active["id"])
-                raise ValueError(
-                    "你已有一个写作任务正在排队或运行，请等待其完成"
-                )
+                raise ValueError("你已有一个写作任务正在排队或运行，请等待其完成")
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
-                "chapter_title": str(
-                    chapter["title"] or "未命名章节"
-                ),
+                "chapter_title": str(chapter["title"] or "未命名章节"),
                 "chapter_position": int(chapter["position"]),
             }
             connection.execute(
@@ -4693,7 +4880,7 @@ class Database:
                 FROM novel_chapters
                 WHERE project_id=?
                 ORDER BY
-                    CASE WHEN canonical_version_id IS NOT NULL
+                    CASE WHEN head_version_id IS NOT NULL
                          THEN 0 ELSE 1 END,
                     position DESC
                 LIMIT 1
@@ -4713,9 +4900,7 @@ class Database:
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
+                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
             active = connection.execute(
                 """
                 SELECT id, operation, subject_id
@@ -4729,14 +4914,11 @@ class Database:
             if active:
                 connection.rollback()
                 if (
-                    str(active["operation"])
-                    == "propose_reader_branches"
+                    str(active["operation"]) == "propose_reader_branches"
                     and str(active["subject_id"] or "") == request_id
                 ):
                     return str(active["id"])
-                raise ValueError(
-                    "你已有一个写作任务正在排队或运行，请等待其完成"
-                )
+                raise ValueError("你已有一个写作任务正在排队或运行，请等待其完成")
             snapshot = {
                 "project_id": project_id,
                 "request_id": request_id,
@@ -4848,9 +5030,7 @@ class Database:
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
+                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
             active = connection.execute(
                 """
                 SELECT id, operation, version_id, subject_id
@@ -4869,9 +5049,7 @@ class Database:
                     and str(active["subject_id"] or "") == subject_id
                 ):
                     return str(active["id"])
-                raise ValueError(
-                    "你已有一个写作任务正在排队或运行，请等待其完成"
-                )
+                raise ValueError("你已有一个写作任务正在排队或运行，请等待其完成")
             snapshot = {
                 "project_id": project_id,
                 "chapter_id": chapter_id,
@@ -4927,8 +5105,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT j.*, ch.title AS chapter_title, ch.outline,
-                       ch.key_points, ch.content_path, ch.position,
-                       ch.char_count
+                       ch.key_points, ch.position, ch.char_count
                 FROM generation_jobs j
                 JOIN novel_chapters ch ON ch.id=j.chapter_id
                 WHERE j.status='queued'
@@ -4986,121 +5163,6 @@ class Database:
             )
             connection.commit()
         return cursor.rowcount == 1
-
-    def complete_generation(
-        self,
-        *,
-        job_id: str,
-        claim_token: str,
-        version_path: Path,
-        result_char_count: int,
-        input_tokens: int,
-        output_tokens: int,
-        warning: str = "",
-        content_hash: str = "",
-        accept_as_canonical: bool = False,
-    ) -> Optional[str]:
-        now = utc_now()
-        version_id = uuid.uuid4().hex
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            job = connection.execute(
-                """
-                SELECT j.id, j.project_id, j.chapter_id, j.user_id,
-                       j.operation,
-                       ch.working_version_id
-                FROM generation_jobs j
-                JOIN novel_chapters ch ON ch.id=j.chapter_id
-                WHERE j.id=? AND j.status='running' AND j.claim_token=?
-                """,
-                (job_id, claim_token),
-            ).fetchone()
-            if not job:
-                connection.rollback()
-                return None
-            connection.execute(
-                """
-                INSERT INTO novel_chapter_versions(
-                    id, chapter_id, job_id, kind, content_path,
-                    char_count, created_at, parent_version_id, status,
-                    source, content_hash, created_by, quality_status,
-                    effective_char_count, hard_issue_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'candidate', 'generated',
-                          ?, 'ai', 'pass', ?, 0)
-                """,
-                (
-                    version_id,
-                    job["chapter_id"],
-                    job_id,
-                    job["operation"],
-                    str(version_path),
-                    result_char_count,
-                    now,
-                    job["working_version_id"],
-                    content_hash,
-                    result_char_count,
-                ),
-            )
-            if accept_as_canonical:
-                accepted = self._accept_chapter_version_in_transaction(
-                    connection,
-                    user_id=int(job["user_id"]),
-                    project_id=str(job["project_id"]),
-                    chapter_id=str(job["chapter_id"]),
-                    version_id=version_id,
-                    ignored_active_job_id=job_id,
-                    now=now,
-                )
-                if not accepted:
-                    connection.rollback()
-                    return None
-            connection.execute(
-                """
-                UPDATE generation_jobs
-                SET status='completed', input_tokens=?, output_tokens=?,
-                    result_char_count=?, error=?, finished_at=?,
-                    claim_token=NULL, lease_expires_at=NULL, version_id=?,
-                    result_json=?
-                WHERE id=?
-                """,
-                (
-                    input_tokens,
-                    output_tokens,
-                    result_char_count,
-                    warning[:2000] or None,
-                    now,
-                    version_id,
-                    json.dumps(
-                        {
-                            "version_id": version_id,
-                            "canonical": accept_as_canonical,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    job_id,
-                ),
-            )
-            if not accept_as_canonical:
-                connection.execute(
-                    """
-                    UPDATE novel_chapters
-                    SET char_count=?, status='draft', working_version_id=?,
-                        updated_at=?
-                    WHERE id=?
-                    """,
-                    (
-                        result_char_count,
-                        version_id,
-                        now,
-                        job["chapter_id"],
-                    ),
-                )
-                connection.execute(
-                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                    (now, job["project_id"]),
-                )
-            connection.commit()
-        return version_id
 
     def complete_memory_extraction(
         self,
@@ -5289,9 +5351,7 @@ class Database:
             connection.commit()
         return cursor.rowcount == 1
 
-    def get_generation_job(
-        self, user_id: int, job_id: str
-    ) -> Optional[Dict[str, Any]]:
+    def get_generation_job(self, user_id: int, job_id: str) -> Optional[Dict[str, Any]]:
         with self.connection() as connection:
             row = connection.execute(
                 """
@@ -5326,14 +5386,14 @@ class Database:
         intent: str = "original",
         content_hash: str = "",
         creative_snapshot: Optional[Mapping[str, Any]] = None,
-        story_memory_snapshots: Optional[
-            Iterable[Mapping[str, Any]]
-        ] = None,
+        story_memory_snapshots: Optional[Iterable[Mapping[str, Any]]] = None,
+        source_head_snapshots: Optional[Iterable[Mapping[str, Any]]] = None,
     ) -> str:
         document_id = source_path.parent.name
         chunk_list = list(chunks)
         path_list = list(chapter_paths)
         memory_snapshot_list = list(story_memory_snapshots or [])
+        source_head_snapshot_list = list(source_head_snapshots or [])
         if len(chunk_list) != len(path_list):
             raise ValueError("章节与文件数量不一致")
 
@@ -5358,9 +5418,7 @@ class Database:
                 and int(usage["stored_chars"] or 0) + text_length > max_stored_chars
             ):
                 connection.rollback()
-                raise ValueError(
-                    f"账号累计正文不能超过 {max_stored_chars:,} 字"
-                )
+                raise ValueError(f"账号累计正文不能超过 {max_stored_chars:,} 字")
             connection.execute(
                 """
                 INSERT INTO documents(
@@ -5422,22 +5480,72 @@ class Database:
                 creative_snapshot=creative_snapshot,
                 origin="imported",
             )
+            for source_snapshot in source_head_snapshot_list:
+                try:
+                    chapter_position = int(
+                        source_snapshot["chapter_position"]
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError("Tag 章节清单缺少有效位置") from exc
+                document_chapter_id = chapter_ids.get(chapter_position)
+                source_chapter_id = str(
+                    source_snapshot.get("source_chapter_id") or ""
+                ).strip()
+                source_version_id = str(
+                    source_snapshot.get("source_version_id") or ""
+                ).strip()
+                snapshot_hash = str(
+                    source_snapshot.get("content_hash") or ""
+                ).strip()
+                if not document_chapter_id or not source_chapter_id:
+                    raise ValueError("Tag 章节清单指向不存在的章节")
+                if not snapshot_hash:
+                    raise ValueError("Tag 章节清单缺少正文校验值")
+                chunk_hash = hashlib.sha256(
+                    chunk_list[chapter_position - 1].text.encode("utf-8")
+                ).hexdigest()
+                if chunk_hash != snapshot_hash:
+                    raise ValueError("Tag 章节清单与正文快照不一致")
+                if source_version_id:
+                    source = connection.execute(
+                        """
+                        SELECT 1
+                        FROM novel_chapter_versions version
+                        WHERE version.id=? AND version.chapter_id=?
+                        """,
+                        (source_version_id, source_chapter_id),
+                    ).fetchone()
+                    if not source:
+                        raise ValueError("Tag 来源 HEAD 已不存在")
+                connection.execute(
+                    """
+                    INSERT INTO work_tag_chapter_heads(
+                        work_version_id, document_chapter_id,
+                        source_chapter_id, source_version_id,
+                        position, content_hash
+                    ) VALUES (?, ?, ?, NULLIF(?, ''), ?, ?)
+                    """,
+                    (
+                        work_version_id,
+                        document_chapter_id,
+                        source_chapter_id,
+                        source_version_id,
+                        chapter_position,
+                        snapshot_hash,
+                    ),
+                )
             for snapshot in memory_snapshot_list:
                 try:
                     chapter_position = int(snapshot["chapter_position"])
                 except (KeyError, TypeError, ValueError) as exc:
-                    raise ValueError(
-                        "故事记忆快照缺少有效章节位置"
-                    ) from exc
+                    raise ValueError("故事记忆快照缺少有效章节位置") from exc
                 document_chapter_id = chapter_ids.get(chapter_position)
                 if not document_chapter_id:
                     raise ValueError("故事记忆快照指向不存在的章节")
                 payload = snapshot.get("payload")
                 keywords = snapshot.get("keywords") or []
                 summary = str(snapshot.get("summary") or "").strip()
-                snapshot_hash = str(
-                    snapshot.get("content_hash") or ""
-                ).strip()
+                snapshot_hash = str(snapshot.get("content_hash") or "").strip()
                 if (
                     not isinstance(payload, Mapping)
                     or not isinstance(keywords, list)
@@ -5460,9 +5568,7 @@ class Database:
                         snapshot_hash,
                         summary,
                         json.dumps(keywords, ensure_ascii=False),
-                        json.dumps(
-                            dict(payload), ensure_ascii=False
-                        ),
+                        json.dumps(dict(payload), ensure_ascii=False),
                         utc_now(),
                     ),
                 )
@@ -5563,9 +5669,7 @@ class Database:
                 ).fetchone()
                 if not credential:
                     connection.rollback()
-                    raise ValueError(
-                        "所选模型服务 API Key 或凭据不存在，请重新配置"
-                    )
+                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
             active = connection.execute(
                 """
                 SELECT id FROM analysis_jobs
@@ -5891,9 +5995,7 @@ class Database:
             connection.commit()
             return bool(cursor.rowcount)
 
-    def get_analysis(
-        self, user_id: int, analysis_id: str
-    ) -> Optional[Dict[str, Any]]:
+    def get_analysis(self, user_id: int, analysis_id: str) -> Optional[Dict[str, Any]]:
         with self.connection() as connection:
             row = connection.execute(
                 """
@@ -5918,7 +6020,9 @@ class Database:
         exported = []
         for chapter in chapters:
             result = (
-                json.loads(chapter["result_json"]) if chapter.get("result_json") else None
+                json.loads(chapter["result_json"])
+                if chapter.get("result_json")
+                else None
             )
             exported.append(
                 {

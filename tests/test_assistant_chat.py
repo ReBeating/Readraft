@@ -12,32 +12,43 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agent_capabilities import (
-    CREATE_CANDIDATE_DRAFT,
+    WRITE_CHAPTER,
     PROPOSE_SETTINGS_PATCH,
     PROPOSE_STORY_PLAN,
-    PROPOSE_TEXT_PATCH,
     agent_capabilities,
     agent_manifest,
+    native_agent_role_prompt,
     resolve_agent_dispatch,
 )
-from app.agent_loop_schema import (
-    AgentDecisionResponse,
-    AgentLoopDecision,
+from app.agent_intent import (
     AssistantIntentDecision,
     AssistantIntentResponse,
 )
-from app.agent_orchestrator import AssistantAgentOrchestrator
-from app.agent_tools import AgentToolExecutor
-from app.assistant_chat import (
-    DeepSeekAssistantChatModel,
-    JsonAnswerStream,
-    MockAssistantChatModel,
-    compose_agent_loop_system_prompt,
-    compose_assistant_system_prompt,
+from app.agent_orchestrator import (
+    AssistantAgentOrchestrator,
+    _explicit_intent_decision,
+)
+from app.agent_model import (
+    AssistantModelTurn,
+    AssistantToolCall,
+    ProviderAgentModel,
+    MockAgentModel,
+    _exact_repetition_findings,
+    _mock_settings_patch,
+    _repair_likely_accidental_repetitions,
+    _unresolved_repetition_findings,
+    compose_native_agent_system_prompt,
 )
 from app.assistant_chat_service import (
     MAX_USER_MESSAGE_CHARS,
     AssistantChatService,
+    _author_explicitly_requested_deletion,
+)
+from app.assistant_chat_schema import (
+    AssistantDraftProposal,
+    ChapterDraftAuditIssue,
+    ChapterDraftAuditResponse,
+    ChapterDraftAuditResult,
 )
 from app.chapter_splitter import split_chapters
 from app.config import Settings
@@ -60,15 +71,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -79,7 +90,15 @@ def csrf_from(html: str) -> str:
     return match.group(1)
 
 
-class FixedIntentModel(MockAssistantChatModel):
+def test_native_planner_prompt_uses_current_workspace_actions():
+    prompt = native_agent_role_prompt("planner")
+
+    assert "settings/" in prompt
+    assert "edit" in prompt
+    assert "propose_settings_patch" not in prompt
+
+
+class FixedIntentModel(MockAgentModel):
     def __init__(
         self,
         intent: str,
@@ -107,158 +126,461 @@ class FixedIntentModel(MockAssistantChatModel):
         )
 
 
-class RecordingMockAssistantChatModel(MockAssistantChatModel):
-    def __init__(self):
-        self.observation_snapshots = []
-
-    async def next_action(self, **kwargs):
-        self.observation_snapshots.append(
-            [dict(item) for item in kwargs.get("observations") or []]
+def run_agent(
+    service: AssistantChatService,
+    claimed: dict,
+    *,
+    model: MockAgentModel | None = None,
+):
+    return asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=model or MockAgentModel(),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
         )
-        return await super().next_action(**kwargs)
-
-
-def test_assistant_system_prompt_combines_agent_and_book_instructions():
-    prompt = compose_assistant_system_prompt(
-        book_prompt="本书的冲突必须通过行动显现。",
     )
-    assert "只输出一个合法 JSON object" in prompt
-    assert "本书的冲突必须通过行动显现" in prompt
-    agent_prompt = compose_agent_loop_system_prompt(
-        book_prompt="本书先行动后解释。",
+
+
+class ScriptedNativeEditModel(MockAgentModel):
+    def __init__(self):
+        self.turns = 0
+        self.seen_messages = []
+
+    async def native_turn(self, **kwargs):
+        self.turns += 1
+        messages = [dict(item) for item in kwargs["messages"]]
+        self.seen_messages.append(messages)
+        tool_names = {
+            item["function"]["name"] for item in kwargs["tools"]
+        }
+        if self.turns == 1:
+            assert {"glob", "read", "grep", "edit", "compose"} <= (
+                tool_names
+            )
+            assert "write" in tool_names
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="call-read",
+                        name="read",
+                        arguments={
+                            "path": "book/manuscript/chapters/001.md"
+                        },
+                        raw_arguments=(
+                            '{"path":"book/manuscript/chapters/001.md"}'
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+                input_tokens=10,
+                output_tokens=2,
+            )
+        if self.turns == 2:
+            tool_message = messages[-1]
+            assert tool_message["role"] == "tool"
+            result = json.loads(tool_message["content"])["result"]
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="call-edit",
+                        name="edit",
+                        arguments={
+                            "path": "book/manuscript/chapters/001.md",
+                            "old_string": "她立刻明白了一切。",
+                            "new_string": "她把信纸翻到背面。",
+                            "expected_revision": result["revision"],
+                            "rationale": "用动作替换直接总结",
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+                input_tokens=12,
+                output_tokens=3,
+            )
+        assert messages[-1]["role"] == "tool"
+        assert json.loads(messages[-1]["content"])["ok"] is True
+        return AssistantModelTurn(
+            content="已按你的要求做了局部修改，其他正文保持不变。",
+            reasoning="",
+            tool_calls=(),
+            finish_reason="stop",
+            input_tokens=9,
+            output_tokens=8,
+        )
+
+
+class ScriptedNativeDraftModel(MockAgentModel):
+    def __init__(self):
+        self.turns = 0
+
+    async def native_turn(self, **kwargs):
+        self.turns += 1
+        messages = kwargs["messages"]
+        if self.turns == 1:
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="draft-read",
+                        name="read",
+                        arguments={
+                            "path": "book/manuscript/chapters/001.md"
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        if self.turns == 2:
+            revision = json.loads(messages[-1]["content"])["result"][
+                "revision"
+            ]
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="draft-write",
+                        name="compose",
+                        arguments={
+                            "path": "book/manuscript/chapters/001.md",
+                            "instruction": "承接旧信，让林岚决定去灯塔调查。",
+                            "expected_revision": revision,
+                            "mode": "replace",
+                            "target_chars": 1500,
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        return AssistantModelTurn(
+            content="第一章正文已经写入可撤回工作稿。",
+            reasoning="",
+            tool_calls=(),
+            finish_reason="stop",
+        )
+
+
+class ScriptedNativeCreateThenComposeModel(MockAgentModel):
+    def __init__(self):
+        self.turns = 0
+
+    async def native_turn(self, **kwargs):
+        self.turns += 1
+        messages = kwargs["messages"]
+        available = {
+            item["function"]["name"] for item in kwargs["tools"]
+        }
+        assert {"create", "compose", "read"} <= available
+        if self.turns == 1:
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="create-next",
+                        name="create",
+                        arguments={
+                            "resource": "chapter",
+                            "title": "第二章 灯塔",
+                            "outline": "林岚抵达灯塔并发现新的异常。",
+                            "key_points": "潮汐表；错误时间亮灯",
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        if self.turns == 2:
+            created = json.loads(messages[-1]["content"])["result"]
+            assert created["path"] == "book/manuscript/chapters/002.md"
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="read-next",
+                        name="read",
+                        arguments={"path": created["path"]},
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        if self.turns == 3:
+            reading = json.loads(messages[-1]["content"])["result"]
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="compose-next",
+                        name="compose",
+                        arguments={
+                            "path": reading["path"],
+                            "instruction": "承接上一章，让林岚抵达灯塔。",
+                            "expected_revision": reading["revision"],
+                            "mode": "replace",
+                            "target_chars": 1500,
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        return AssistantModelTurn(
+            content="新章节已创建并写入工作稿。",
+            reasoning="",
+            tool_calls=(),
+            finish_reason="stop",
+        )
+
+
+class ScriptedNativeTaskModel(MockAgentModel):
+    def __init__(self):
+        self.turns = 0
+
+    async def native_turn(self, **kwargs):
+        self.turns += 1
+        messages = kwargs["messages"]
+        available = {
+            item["function"]["name"] for item in kwargs["tools"]
+        }
+        assert "task" in available
+        if self.turns == 1:
+            return AssistantModelTurn(
+                content="",
+                reasoning="",
+                tool_calls=(
+                    AssistantToolCall(
+                        id="task-continuity",
+                        name="task",
+                        arguments={
+                            "kind": "continuity",
+                            "objective": "核对第一章与作品核心设定是否矛盾",
+                            "paths": [
+                                "book/manuscript/chapters/001.md",
+                                "book/settings/core.json",
+                            ],
+                        },
+                    ),
+                ),
+                finish_reason="tool_calls",
+                input_tokens=8,
+                output_tokens=3,
+            )
+        task_result = json.loads(messages[-1]["content"])["result"]
+        assert task_result["resource_count"] == 2
+        assert "未发现直接矛盾" in task_result["report"]
+        return AssistantModelTurn(
+            content="第一章与当前核心设定没有直接矛盾。",
+            reasoning="",
+            tool_calls=(),
+            finish_reason="stop",
+            input_tokens=7,
+            output_tokens=5,
+        )
+
+
+class NativeSpecialistModel(MockAgentModel):
+    provider = "specialist-provider"
+    model = "specialist-model"
+
+    def __init__(self):
+        self.calls = []
+
+    async def native_turn(self, **kwargs):
+        self.calls.append(kwargs)
+        assert kwargs["tools"] == []
+        prompt = kwargs["messages"][1]["content"]
+        assert "book/manuscript/chapters/001.md" in prompt
+        assert "book/settings/core.json" in prompt
+        assert "conversation-history" not in prompt
+        return AssistantModelTurn(
+            content=(
+                "未发现直接矛盾。book/manuscript/chapters/001.md 中的旧信"
+                "符合 book/settings/core.json 的悬疑前提。"
+            ),
+            reasoning="",
+            tool_calls=(),
+            finish_reason="stop",
+            input_tokens=20,
+            output_tokens=12,
+        )
+
+
+class NativeProseModel(MockAgentModel):
+    provider = "prose-provider"
+    model = "prose-model"
+
+    def __init__(self):
+        self.requests = []
+
+    async def native_turn(self, **kwargs):
+        self.requests.append(kwargs)
+        content = (
+            "海雾贴着窗玻璃缓慢下沉。林岚把旧信折好，"
+            "在灯塔的位置画了一个圈。\n\n天亮前，她出了门。"
+        )
+        callback = kwargs.get("on_text_delta")
+        if callback is not None:
+            midpoint = len(content) // 2
+            for delta in (content[:midpoint], content[midpoint:]):
+                callback_result = callback(delta)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
+        return AssistantModelTurn(
+            content=content,
+            reasoning="先规划连续性",
+            tool_calls=(),
+            finish_reason="stop",
+            input_tokens=40,
+            output_tokens=30,
+        )
+
+
+class RevisingNativeAuditModel(MockAgentModel):
+    def __init__(self):
+        self.audit_calls = 0
+        self.last_context = None
+
+    async def audit_chapter_draft(self, **kwargs):
+        self.audit_calls += 1
+        self.last_context = kwargs["context"]
+        candidate = kwargs["draft"].content
+        revised = candidate.replace(
+            "天亮前，她出了门。",
+            "潮声盖过钟响时，她收紧围巾，朝灯塔走去。",
+        )
+        result = ChapterDraftAuditResult(
+            verdict="revised",
+            issues=[
+                ChapterDraftAuditIssue(
+                    category="specificity",
+                    description="结尾使用泛化时间和动作",
+                    evidence="天亮前，她出了门。",
+                )
+            ],
+            revised_content=revised,
+            summary="只替换了缺少场景锚点的结尾。",
+        )
+        return ChapterDraftAuditResponse(
+            result=result,
+            raw_response=result.model_dump_json(),
+            input_tokens=5,
+            output_tokens=4,
+        )
+
+
+def test_native_agent_prompt_combines_workspace_and_book_instructions():
+    prompt = compose_native_agent_system_prompt(
+        book_prompt="本书避免解释主题。",
         agent_role="writer",
     )
-    assert "create_chapter_draft" in agent_prompt
-    assert "本书先行动后解释" in agent_prompt
-    assert "不能覆盖服务端工具权限" in agent_prompt
-    assert "作者明确要求搜索、核实、最新信息或来源" in agent_prompt
-    assert "纯构思、创作或改写" in agent_prompt
-    assert "查询作品内部设定、章节和故事记忆" in agent_prompt
+    assert "不要暴露虚拟路径、revision" in prompt
+    assert "book/ 是服务端映射出的作品资源" in prompt
+    assert "本书避免解释主题" in prompt
 
 
-def test_json_answer_stream_exposes_only_finished_answer_text():
-    stream = JsonAnswerStream()
-    assert stream.feed('{"action":"call_tool","tool_call":{') is None
-    assert (
-        stream.feed(
-            '"name":"search_web","arguments":{"query":"天气"}},'
-            '"answer":null,"citations":[]}'
-        )
-        is None
-    )
-
-    stream = JsonAnswerStream()
-    assert stream.feed(
-        '{"action":"finish","tool_call":null,"answer":"第一段'
-    ) == "第一段"
-    assert stream.feed('\\n第二段和一个字：\\u4e2d') == "第一段\n第二段和一个字：中"
-    assert stream.feed('","citations":[]}') is None
-
-
-def test_deepseek_agent_step_streams_sse_answer(tmp_path: Path):
+def test_deepseek_native_turn_sends_real_tools_and_normalizes_call(tmp_path):
     seen = {}
-    decision = json.dumps(
-        {
-            "action": "finish",
-            "tool_call": None,
-            "answer": "先核对人物动机。\n再决定是否改写。",
-            "citations": [],
-        },
-        ensure_ascii=True,
-        separators=(",", ":"),
-    )
-    chunks = [
-        decision[:35],
-        decision[35:68],
-        decision[68:],
-    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["payload"] = json.loads(request.content.decode("utf-8"))
-        events = [
-            "data: "
-            + json.dumps(
-                {
-                    "choices": [
-                        {
-                            "delta": {"content": chunk},
-                            "finish_reason": (
-                                "stop" if index == len(chunks) - 1 else None
-                            ),
-                        }
-                    ]
-                }
-            )
-            for index, chunk in enumerate(chunks)
-        ]
-        events.append(
-            "data: "
-            + json.dumps(
-                {
-                    "choices": [],
-                    "usage": {
-                        "prompt_tokens": 17,
-                        "completion_tokens": 11,
-                    },
-                }
-            )
-        )
-        events.append("data: [DONE]")
+        seen["payload"] = json.loads(request.content)
         return httpx.Response(
             200,
-            content=("\n\n".join(events) + "\n\n").encode(),
-            headers={"content-type": "text/event-stream"},
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_read_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": (
+                                            '{"path":"book/settings/core.json"}'
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 21, "completion_tokens": 8},
+            },
         )
 
-    settings = replace(
-        make_settings(tmp_path),
-        deepseek_api_key="sk-stream-test",  # pragma: allowlist secret
-    )
-    model = DeepSeekAssistantChatModel(
-        settings,
-        transport=httpx.MockTransport(handler),
-    )
-    updates: list[str] = []
-
     async def scenario():
+        settings = replace(make_settings(tmp_path), model_api_key="key")
+        model = ProviderAgentModel(
+            settings, transport=httpx.MockTransport(handler)
+        )
         try:
-            return await model.next_action(
-                context={
-                    "scope": "novel_project",
-                    "project": {"id": "p1", "title": "测试小说"},
-                    "agent": agent_manifest("advisor"),
-                },
-                history=[],
-                question="讨论人物动机",
-                selected_quote="",
-                available_tools=[],
-                observations=[],
-                step=1,
-                provider_user_id="u_test",
-                on_answer_update=updates.append,
+            return await model.native_turn(
+                messages=[
+                    {"role": "system", "content": "按需使用工具"},
+                    {"role": "user", "content": "读取作品概览"},
+                ],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "description": "读取资源",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"}
+                                },
+                                "required": ["path"],
+                            },
+                        },
+                    }
+                ],
+                provider_user_id="user-1",
+                max_tokens=1000,
             )
         finally:
             await model.close()
 
-    response = asyncio.run(scenario())
-    assert response.decision.answer == "先核对人物动机。\n再决定是否改写。"
-    assert response.input_tokens == 17
-    assert response.output_tokens == 11
-    assert updates
-    assert updates[-1] == response.decision.answer
-    assert seen["payload"]["stream"] is True
-    assert seen["payload"]["stream_options"] == {"include_usage": True}
+    turn = asyncio.run(scenario())
+
+    assert seen["payload"]["tools"][0]["function"]["name"] == "read"
+    assert seen["payload"]["tool_choice"] == "auto"
+    assert turn.finish_reason == "tool_calls"
+    assert turn.tool_calls[0].name == "read"
+    assert turn.tool_calls[0].arguments == {
+        "path": "book/settings/core.json"
+    }
+    assert turn.input_tokens == 21
 
 
-def test_streaming_chat_accepts_provider_json_fallback(tmp_path: Path):
-    decision = {
-        "action": "finish",
-        "tool_call": None,
-        "answer": "兼容接口没有返回 SSE，但回复仍可用。",
-        "citations": [],
+
+
+def test_deepseek_draft_audit_returns_full_repaired_candidate(
+    tmp_path: Path,
+):
+    seen = {}
+    audit = {
+        "verdict": "revised",
+        "issues": [
+            {
+                "description": "磁带已经交给周启，随后又回到沈砚口袋",
+            }
+        ],
+        "revised_content": "周启把磁带按在内袋里，沈砚手中只剩纸页。",
+        "summary": "修正物品归属矛盾。",
     }
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
             json={
@@ -266,7 +588,7 @@ def test_streaming_chat_accepts_provider_json_fallback(tmp_path: Path):
                     {
                         "message": {
                             "content": json.dumps(
-                                decision,
+                                audit,
                                 ensure_ascii=False,
                             )
                         },
@@ -274,47 +596,220 @@ def test_streaming_chat_accepts_provider_json_fallback(tmp_path: Path):
                     }
                 ],
                 "usage": {
-                    "prompt_tokens": 9,
-                    "completion_tokens": 7,
+                    "prompt_tokens": 21,
+                    "completion_tokens": 13,
                 },
             },
         )
 
     settings = replace(
         make_settings(tmp_path),
-        deepseek_api_key="sk-json-fallback",  # pragma: allowlist secret
+        model_api_key="sk-audit-test",  # pragma: allowlist secret
     )
-    model = DeepSeekAssistantChatModel(
+    model = ProviderAgentModel(
         settings,
         transport=httpx.MockTransport(handler),
     )
-    updates: list[str] = []
 
     async def scenario():
         try:
-            return await model.next_action(
+            return await model.audit_chapter_draft(
                 context={
-                    "scope": "novel_project",
-                    "project": {"id": "p1", "title": "测试小说"},
-                    "agent": agent_manifest("advisor"),
+                    "chapter": {
+                        "id": "chapter-2",
+                        "position": 2,
+                        "title": "封锁",
+                    }
                 },
-                history=[],
-                question="测试兼容接口",
-                selected_quote="",
-                available_tools=[],
-                observations=[],
-                step=1,
+                question="磁带交给周启后不能再出现在沈砚手中。",
+                draft=AssistantDraftProposal(
+                    content=(
+                        "沈砚把磁带交给周启。"
+                        "片刻后，沈砚从内袋掏出磁带。"
+                    ),
+                    rationale="承接上一章。",
+                ),
+                observations=[
+                    {
+                        "tool_name": "read_chapter",
+                        "status": "completed",
+                        "result": {
+                            "chapter_context": {
+                                "previous_chapter_excerpt": (
+                                    "周启伸手接过磁带。"
+                                )
+                            }
+                        },
+                    }
+                ],
                 provider_user_id="u_test",
-                on_answer_update=updates.append,
             )
         finally:
             await model.close()
 
     response = asyncio.run(scenario())
-    assert response.decision.answer == decision["answer"]
-    assert updates == [decision["answer"]]
-    assert response.input_tokens == 9
-    assert response.output_tokens == 7
+    assert response.result.verdict == "revised"
+    assert response.result.revised_content == audit["revised_content"]
+    assert response.result.issues[0].category == "instruction"
+    assert (
+        response.result.issues[0].evidence
+        == "磁带已经交给周启，随后又回到沈砚口袋"
+    )
+    assert response.input_tokens == 21
+    assert response.output_tokens == 13
+    request_text = json.dumps(
+        seen["payload"]["messages"],
+        ensure_ascii=False,
+    )
+    assert "落稿前小说编辑" in request_text
+    assert "周启伸手接过磁带" in request_text
+    assert "沈砚从内袋掏出磁带" in request_text
+
+
+def test_draft_audit_repairs_likely_accidental_exact_dialogue_repetition(
+    tmp_path: Path,
+):
+    repeated = "总比两个人都困在这里好。"
+    candidate = (
+        f"“{repeated}”沈砚把磁带递给周启。\n\n"
+        f"“{repeated}”她侧身钻进通风井。"
+    )
+    revised = (
+        f"“{repeated}”沈砚把磁带递给周启。\n\n"
+        "她侧身钻进通风井。"
+    )
+    findings = _exact_repetition_findings(candidate)
+    assert findings == [
+        {
+            "kind": "dialogue",
+            "text": repeated,
+            "occurrences": 2,
+            "lines": [1, 3],
+            "assessment": "likely_accidental",
+            "echo_cues": [],
+        }
+    ]
+
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        requests.append(payload)
+        result = {
+            "verdict": "pass",
+            "issues": [],
+            "revised_content": None,
+            "summary": "没有发现需要修正的问题。",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                result,
+                                ensure_ascii=False,
+                            )
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                },
+            },
+        )
+
+    settings = replace(
+        make_settings(tmp_path),
+        model_api_key="sk-audit-repeat",  # pragma: allowlist secret
+    )
+    model = ProviderAgentModel(
+        settings,
+        transport=httpx.MockTransport(handler),
+    )
+
+    async def scenario():
+        try:
+            return await model.audit_chapter_draft(
+                context={"chapter": {"id": "chapter-3"}},
+                question="做最小整章修订。",
+                draft=AssistantDraftProposal(
+                    content=candidate,
+                    rationale="保留原有情节。",
+                ),
+                observations=[],
+                provider_user_id="u_test",
+            )
+        finally:
+            await model.close()
+
+    response = asyncio.run(scenario())
+    assert len(requests) == 1
+    assert "deterministic_repetition_findings" in json.dumps(
+        requests[0]["messages"],
+        ensure_ascii=False,
+    )
+    assert response.result.verdict == "revised"
+    assert response.result.revised_content == revised
+    assert response.input_tokens == 10
+    assert response.output_tokens == 5
+
+
+def test_exact_repeat_with_explicit_echo_cue_is_preserved():
+    repeated = "塔顶不用上去，守住所有出口。"
+    content = (
+        f"磁带里响起命令：“{repeated}”\n\n"
+        "沈砚倒回去再听一遍，确认两段录音一字不差。\n\n"
+        f"楼下的对讲机随即响起：“{repeated}”"
+    )
+    findings = _exact_repetition_findings(content)
+    assert len(findings) == 1
+    assert findings[0]["assessment"] == "needs_context_review"
+    assert "一字不差" in findings[0]["echo_cues"]
+    revised, repaired = _repair_likely_accidental_repetitions(
+        content,
+        findings,
+    )
+    assert revised == content
+    assert repaired == []
+    assert (
+        _unresolved_repetition_findings(
+            content,
+            findings,
+            summary="",
+        )
+        == []
+    )
+
+
+def test_near_duplicate_rewrite_is_removed_after_exact_repeat_audit():
+    repeated = "总比两个人都困在这里好。"
+    content = (
+        f"“{repeated}”沈砚把磁带交给周启。\n\n"
+        "“总比都困在这里强。”沈砚侧身钻进通风井。"
+    )
+    finding = {
+        "kind": "dialogue",
+        "text": repeated,
+        "occurrences": 2,
+        "lines": [1, 3],
+        "assessment": "likely_accidental",
+        "echo_cues": [],
+    }
+    revised, repaired = _repair_likely_accidental_repetitions(
+        content,
+        [finding],
+    )
+    assert revised == (
+        f"“{repeated}”沈砚把磁带交给周启。\n\n"
+        "沈砚侧身钻进通风井。"
+    )
+    assert repaired == [finding]
+
+
 
 
 def test_structured_intent_dispatch_enforces_scope_and_permissions():
@@ -323,8 +818,8 @@ def test_structured_intent_dispatch_enforces_scope_and_permissions():
     assert PROPOSE_SETTINGS_PATCH not in agent_capabilities("advisor")
     assert PROPOSE_SETTINGS_PATCH not in agent_capabilities("writer")
     assert PROPOSE_SETTINGS_PATCH not in agent_capabilities("editor")
-    assert CREATE_CANDIDATE_DRAFT in agent_capabilities("writer")
-    assert PROPOSE_TEXT_PATCH in agent_capabilities("editor")
+    assert WRITE_CHAPTER in agent_capabilities("writer")
+    assert WRITE_CHAPTER in agent_capabilities("editor")
     reference = resolve_agent_dispatch(
         requested_role="auto",
         scope_type="reference_chapter",
@@ -345,6 +840,23 @@ def test_structured_intent_dispatch_enforces_scope_and_permissions():
     assert (revision.role, revision.goal) == (
         "editor",
         "replace_selected_text",
+    )
+    whole_chapter_revision = resolve_agent_dispatch(
+        requested_role="auto",
+        scope_type="chapter",
+        intent="revise_prose",
+        has_quote=False,
+    )
+    assert (
+        whole_chapter_revision.role,
+        whole_chapter_revision.intent,
+        whole_chapter_revision.reason,
+        whole_chapter_revision.goal,
+    ) == (
+        "editor",
+        "revise_prose",
+        "whole_chapter_revision",
+        "create_chapter_draft",
     )
     draft = resolve_agent_dispatch(
         requested_role="auto",
@@ -431,93 +943,53 @@ def test_structured_intent_dispatch_enforces_scope_and_permissions():
     )
 
 
-def test_deepseek_agent_step_receives_tool_catalog_not_full_manuscript(
-    tmp_path: Path,
-):
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        payload = json.loads(request.content.decode("utf-8"))
-        seen["payload"] = payload
-        decision = {
-            "action": "call_tool",
-            "tool_call": {
-                "name": "read_chapter",
-                "arguments": {},
-            },
-            "answer": None,
-            "citations": [],
-        }
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                decision, ensure_ascii=False
-                            )
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 21,
-                    "completion_tokens": 8,
-                },
-            },
-        )
-
-    settings = replace(
-        make_settings(tmp_path),
-        deepseek_api_key="sk-agent-loop-test",
+def test_explicit_commands_route_locally_but_discussion_stays_ambiguous():
+    next_chapter = _explicit_intent_decision(
+        question="请直接写下一章，承接现在的封锁现场。",
+        scope="novel_chapter",
+        has_selected_quote=False,
     )
-    model = DeepSeekAssistantChatModel(
-        settings, transport=httpx.MockTransport(handler)
+    assert next_chapter and next_chapter.intent == "draft_new_chapter"
+
+    revision = _explicit_intent_decision(
+        question="请只修改本章结尾，其他段落保持不变。",
+        scope="novel_chapter",
+        has_selected_quote=False,
+    )
+    assert revision and revision.intent == "revise_prose"
+
+    settings = _explicit_intent_decision(
+        question="把林岚的人物设定改为遇事先核对物证。",
+        scope="novel_project",
+        has_selected_quote=False,
+    )
+    assert settings and settings.intent == "update_settings"
+
+    read_only = _explicit_intent_decision(
+        question="你觉得本章应该怎么修改？先讨论，不要动正文。",
+        scope="novel_chapter",
+        has_selected_quote=False,
+    )
+    assert read_only and read_only.intent == "discuss"
+
+    scoped_edit = _explicit_intent_decision(
+        question="不要改世界，只把林岚的人物动机写清楚。",
+        scope="novel_project",
+        has_selected_quote=False,
+    )
+    assert scoped_edit and scoped_edit.intent == "update_settings"
+
+
+def test_settings_deletion_requires_a_positive_author_command():
+    assert _author_explicitly_requested_deletion("删除林岚的人物卡")
+    assert _author_explicitly_requested_deletion(
+        "保留林岚，去掉重复的临时人物卡"
+    )
+    assert not _author_explicitly_requested_deletion(
+        "不要删除林岚，只修改她的内在动机"
     )
 
-    async def scenario():
-        try:
-            return await model.next_action(
-                context={
-                    "scope": "novel_chapter",
-                    "project": {"id": "p1", "title": "测试小说"},
-                    "chapter": {"id": "c1", "title": "第一章"},
-                    "current_chapter_excerpt": "绝不能直接进入调度请求的正文",
-                    "agent": agent_manifest("writer"),
-                    "assistant_boundaries": {
-                        "may_modify_canon": False,
-                    },
-                },
-                history=[],
-                question="请续写本章",
-                selected_quote="",
-                available_tools=[
-                    {
-                        "name": "read_chapter",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                        },
-                    }
-                ],
-                observations=[],
-                step=1,
-                provider_user_id="u_test",
-            )
-        finally:
-            await model.close()
 
-    response = asyncio.run(scenario())
-    assert response.decision.tool_call.name == "read_chapter"
-    assert response.input_tokens == 21
-    body = seen["payload"]
-    assert body["response_format"] == {"type": "json_object"}
-    serialized_messages = json.dumps(
-        body["messages"], ensure_ascii=False
-    )
-    assert "read_chapter" in serialized_messages
-    assert "绝不能直接进入调度请求的正文" not in serialized_messages
 
 
 def test_deepseek_intent_router_returns_structured_intent_only(
@@ -557,9 +1029,9 @@ def test_deepseek_intent_router_returns_structured_intent_only(
 
     settings = replace(
         make_settings(tmp_path),
-        deepseek_api_key="sk-intent-router-test",
+        model_api_key="sk-intent-router-test",
     )
-    model = DeepSeekAssistantChatModel(
+    model = ProviderAgentModel(
         settings, transport=httpx.MockTransport(handler)
     )
 
@@ -660,7 +1132,7 @@ def seed_novel(
     with database.connection() as connection:
         connection.execute(
             """
-            UPDATE novel_chapters SET canonical_version_id=?
+            UPDATE novel_chapters SET head_version_id=?
             WHERE id=?
             """,
             (version_id, chapter_id),
@@ -668,13 +1140,273 @@ def seed_novel(
         connection.execute(
             """
             UPDATE novel_chapter_versions
-            SET status='canonical', quality_status='pass'
+            SET quality_status='pass'
             WHERE id=?
             """,
             (version_id,),
         )
         connection.commit()
     return user_id, project_id, chapter_id, version_id, content
+
+
+def test_native_agent_loop_round_trips_tool_results_and_edits_workspace(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="chapter",
+        title="局部修订",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="把第一句的直接总结改成动作，其他内容别动。",
+        provider="mock",
+        model="native-test-model",
+        credential_source="default",
+        agent_role="editor",
+        auto_commit=True,
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    payload = service.build_job_payload(claimed)
+    model = ScriptedNativeEditModel()
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=model,
+            item=claimed,
+            payload=payload,
+            provider_user_id="u_test",
+        )
+    )
+
+    assert model.turns == 3
+    assert response.result.draft is not None
+    assert response.result.draft.content.startswith("她把信纸翻到背面。")
+    assert [item["tool_name"] for item in response.agent_trace] == [
+        "read",
+        "edit",
+    ]
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+    chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
+    assert Path(chapter["content_path"]).read_text(
+        encoding="utf-8"
+    ).startswith("她把信纸翻到背面。")
+
+
+def test_native_agent_task_is_bounded_read_only_and_non_recursive(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, _version_id, content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="chapter",
+        title="连续性核对",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="只分析第一章和核心设定是否存在矛盾，不要修改。",
+        provider="mock",
+        model="native-agent-model",
+        credential_source="default",
+        agent_role="analyst",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    agent_model = ScriptedNativeTaskModel()
+    specialist_model = NativeSpecialistModel()
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=agent_model,
+            routing_model=specialist_model,
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+
+    assert agent_model.turns == 2
+    assert len(specialist_model.calls) == 1
+    assert response.result.draft is None
+    assert response.result.settings_patch is None
+    assert response.agent_trace == [
+        {
+            "sequence": 1,
+            "tool_name": "task",
+            "label": "委托专项分析",
+            "status": "completed",
+            "read_only": True,
+            "category": "agent_action",
+        }
+    ]
+    assert response.input_tokens >= 35
+    chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
+    assert Path(chapter["content_path"]).read_text(encoding="utf-8") == content
+
+
+def test_native_agent_delegates_long_chapter_text_to_plain_prose_pipeline(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="chapter",
+        title="重写第一章",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="重写这一章，让林岚最后决定去灯塔。",
+        provider="mock",
+        model="native-agent-model",
+        credential_source="default",
+        agent_role="writer",
+        auto_commit=True,
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    payload = service.build_job_payload(claimed)
+    agent_model = ScriptedNativeDraftModel()
+    prose_model = NativeProseModel()
+    audit_model = RevisingNativeAuditModel()
+    answer_updates = []
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=agent_model,
+            routing_model=audit_model,
+            prose_model=prose_model,
+            item=claimed,
+            payload=payload,
+            provider_user_id="u_test",
+            on_answer_update=answer_updates.append,
+        )
+    )
+
+    assert agent_model.turns == 3
+    assert len(prose_model.requests) == 1
+    assert prose_model.requests[0]["tools"] == []
+    assert "只返回正文" in prose_model.requests[0]["messages"][1][
+        "content"
+    ]
+    assert response.result.draft is not None
+    assert response.result.draft.content.startswith("海雾贴着窗玻璃")
+    assert response.result.draft.content.endswith("朝灯塔走去。")
+    assert len(answer_updates) == 3
+    assert answer_updates[-1] == response.result.draft.content
+    assert [item["tool_name"] for item in response.agent_trace] == [
+        "read",
+        "compose",
+        "draft_quality_audit",
+    ]
+    assert audit_model.audit_calls == 1
+    assert audit_model.last_context["quality_mode"] == "standard"
+    assert audit_model.last_context["writing_packet"]["scene_contract"]
+    assert response.input_tokens >= 45
+    assert response.output_tokens >= 34
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+    with database.connection() as connection:
+        memory_job = connection.execute(
+            """
+            SELECT operation, project_id, chapter_id, status
+            FROM generation_jobs
+            WHERE operation='extract_story_delta'
+            """
+        ).fetchone()
+    assert memory_job is not None
+    assert memory_job["project_id"] == project_id
+    assert memory_job["chapter_id"] == chapter_id
+    assert memory_job["status"] == "queued"
+
+
+def test_low_quality_native_prose_skips_second_pass_audit(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="chapter",
+        title="快速续写",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="快速重写这一章。",
+        provider="mock",
+        model="native-agent-model",
+        credential_source="default",
+        agent_role="writer",
+        auto_commit=True,
+        quality_mode="low",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    audit_model = RevisingNativeAuditModel()
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=ScriptedNativeDraftModel(),
+            routing_model=audit_model,
+            prose_model=NativeProseModel(),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+
+    assert audit_model.audit_calls == 0
+    assert response.result.draft is not None
+    assert response.result.draft.content.endswith("天亮前，她出了门。")
+    assert [item["tool_name"] for item in response.agent_trace] == [
+        "read",
+        "compose",
+    ]
 
 
 def test_chat_message_length_uses_only_a_high_server_safety_limit(
@@ -827,7 +1559,7 @@ def test_long_conversation_keeps_memory_and_searches_complete_history(
         title="长期构思",
         project_id=project_id,
     )
-    model = MockAssistantChatModel()
+    model = MockAgentModel()
 
     for index in range(10):
         question = (
@@ -846,10 +1578,7 @@ def test_long_conversation_keeps_memory_and_searches_complete_history(
         )
         claimed = service.claim_next_message()
         assert claimed and claimed["id"] == message_id
-        payload = service.build_job_payload(claimed)
-        response = asyncio.run(
-            model.reply(**payload, provider_user_id="u_test")
-        )
+        response = run_agent(service, claimed, model=model)
         assert service.complete_message(
             message_id=message_id,
             claim_token=claimed["claim_token"],
@@ -881,32 +1610,13 @@ def test_long_conversation_keeps_memory_and_searches_complete_history(
     assert conversation["memory_message_count"] == 20
     assert "青铜钥匙" in conversation["memory_summary"]
 
-    execution = AgentToolExecutor(database).execute(
-        user_id=user_id,
-        tool_name="search_conversation_history",
-        arguments={"query": "青铜钥匙", "max_results": 5},
-        context=payload["context"],
-        sources=payload["sources"],
-        selected_quote="",
+    orchestrated = run_agent(
+        service,
+        claimed,
+        model=FixedIntentModel("discuss"),
     )
-    assert execution.result["matched_count"] >= 1
-    assert any(
-        "旧收音机" in item["quote"]
-        for item in execution.result["matches"]
-    )
-    orchestrated = asyncio.run(
-        AssistantAgentOrchestrator(service).run(
-            model=FixedIntentModel("discuss"),
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-    assert any(
-        item["tool_name"] == "search_conversation_history"
-        and item["status"] == "completed"
-        for item in orchestrated.agent_trace
-    )
+    assert "旧收音机" in orchestrated.result.answer
+    assert orchestrated.agent_trace == []
 
 
 def test_project_writing_request_creates_blank_chapter_and_draft(
@@ -997,7 +1707,7 @@ def test_project_writing_request_creates_blank_chapter_and_draft(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["working_version_id"]
+    assert chapter["head_version_id"]
     assert Path(chapter["content_path"]).read_text(encoding="utf-8")
 
 
@@ -1045,15 +1755,7 @@ def test_new_chapter_request_creates_next_chapter_without_touching_previous(
     )
     claimed = service.claim_next_message()
     assert claimed and claimed["id"] == message_id
-    model = RecordingMockAssistantChatModel()
-    response = asyncio.run(
-        AssistantAgentOrchestrator(service).run(
-            model=model,
-            item=claimed,
-            payload=service.build_job_payload(claimed),
-            provider_user_id="u_test",
-        )
-    )
+    response = run_agent(service, claimed)
 
     chapters = database.list_novel_chapters(user_id, project_id)
     assert len(chapters) == 2
@@ -1065,23 +1767,6 @@ def test_new_chapter_request_creates_next_chapter_without_touching_previous(
     assert conversation["scope_type"] == "chapter"
     assert conversation["novel_chapter_id"] == next_chapter_id
     assert response.result.draft
-    assert response.result.draft.mode == "replace"
-
-    chapter_contexts = [
-        observation["result"]["chapter_context"]
-        for snapshot in model.observation_snapshots
-        for observation in snapshot
-        if observation.get("tool_name") == "read_chapter"
-        and observation.get("status") == "completed"
-    ]
-    assert chapter_contexts
-    continuity = chapter_contexts[0]
-    assert continuity["continuity_contract"]["operation"] == (
-        "create_next_chapter"
-    )
-    assert continuity["previous_chapter_excerpt"] == content[-16_000:]
-    assert continuity.get("current_chapter_excerpt", "") == ""
-
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -1090,12 +1775,12 @@ def test_new_chapter_request_creates_next_chapter_without_touching_previous(
     previous = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert previous["canonical_version_id"] == version_id
+    assert previous["head_version_id"] == version_id
     assert Path(previous["content_path"]).read_text(encoding="utf-8") == content
     generated = database.get_novel_chapter(
         user_id, project_id, next_chapter_id
     )
-    assert generated["canonical_version_id"]
+    assert generated["head_version_id"]
     assert Path(generated["content_path"]).read_text(
         encoding="utf-8"
     ).strip()
@@ -1117,7 +1802,81 @@ def test_new_chapter_request_creates_next_chapter_without_touching_previous(
         ).fetchone()
     assert memory_job
     assert memory_job["status"] == "queued"
-    assert memory_job["version_id"] == generated["canonical_version_id"]
+    assert memory_job["version_id"] == generated["head_version_id"]
+
+
+def test_writer_can_create_then_compose_next_chapter_in_one_agent_run(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="chapter",
+        title="自主创建下一章",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="另开一章写林岚抵达灯塔。",
+        provider="mock",
+        model="native-agent-model",
+        credential_source="default",
+        agent_role="writer",
+        auto_commit=True,
+        quality_mode="low",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    agent_model = ScriptedNativeCreateThenComposeModel()
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=agent_model,
+            prose_model=NativeProseModel(),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+
+    assert agent_model.turns == 4
+    assert response.result.draft is not None
+    assert [item["tool_name"] for item in response.agent_trace] == [
+        "create",
+        "read",
+        "compose",
+    ]
+    chapters = database.list_novel_chapters(user_id, project_id)
+    assert len(chapters) == 2
+    created = chapters[1]
+    assert created["title"] == "第二章 灯塔"
+    assert created["outline"].startswith("林岚抵达灯塔")
+    conversation = service.get_conversation(
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    assert conversation["novel_chapter_id"] == created["id"]
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+    saved = database.get_novel_chapter(
+        user_id,
+        project_id,
+        str(created["id"]),
+    )
+    assert saved["head_version_id"]
+    assert Path(saved["content_path"]).read_text(encoding="utf-8")
 
 
 def test_unwritten_project_script_can_create_first_chapter_directly(
@@ -1202,556 +1961,9 @@ def test_unwritten_project_script_can_create_first_chapter_directly(
     assert len(chapters) == 1
 
 
-def test_writer_cannot_finish_before_creating_requested_draft(
-    tmp_path: Path,
-):
-    database = Database(tmp_path / "app.db")
-    database.initialize()
-    user_id, project_id, chapter_id, _version_id, _content = seed_novel(
-        database, tmp_path
-    )
-    service = AssistantChatService(
-        database, tmp_path / "novels", tmp_path / "documents"
-    )
-    conversation_id = service.create_conversation(
-        user_id=user_id,
-        scope_type="chapter",
-        title="必须真正创作",
-        project_id=project_id,
-        novel_chapter_id=chapter_id,
-    )
-    message_id = service.queue_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        question="请写出这一章的下一段正文。",
-        provider="mock",
-        model="mock-creative-chat",
-        credential_source="default",
-        agent_role="writer",
-    )
-    claimed = service.claim_next_message()
-    assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-
-    class PrematureFinishModel(MockAssistantChatModel):
-        async def next_action(self, **kwargs):
-            explicit_observations = [
-                item
-                for item in kwargs["observations"]
-                if not item.get("automatic")
-            ]
-            if not kwargs["available_tools"]:
-                raw = {
-                    "action": "finish",
-                    "tool_call": None,
-                    "answer": "候选正文已经创建。",
-                    "citations": [],
-                }
-            elif not explicit_observations:
-                raw = {
-                    "action": "finish",
-                    "tool_call": None,
-                    "answer": "我已经写好了。",
-                    "citations": [],
-                }
-            else:
-                raw = {
-                    "action": "call_tool",
-                    "tool_call": {
-                        "name": "create_chapter_draft",
-                        "arguments": {
-                            "mode": "append",
-                            "content": "门外的脚步停在第三块地砖上。",
-                            "rationale": "把威胁转成可听见的动作。",
-                        },
-                    },
-                    "answer": None,
-                    "citations": [],
-                }
-            decision = AgentLoopDecision.model_validate(raw)
-            return AgentDecisionResponse(
-                decision=decision,
-                raw_response=decision.model_dump_json(),
-                input_tokens=1,
-                output_tokens=1,
-            )
-
-    response = asyncio.run(
-        AssistantAgentOrchestrator(service).run(
-            model=PrematureFinishModel(),
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-
-    assert response.result.draft is not None
-    assert response.result.draft.content == "门外的脚步停在第三块地砖上。"
-    running_message = service.get_message(
-        user_id=user_id, message_id=message_id
-    )
-    assert [
-        (item["action"], item["outcome_status"])
-        for item in running_message["agent_steps"]
-    ] == [
-        ("finish", "denied"),
-        ("call_tool", "completed"),
-        ("finish", "completed"),
-    ]
-    assert "任务目标尚未完成" in (
-        running_message["agent_steps"][0]["error"]
-    )
 
 
-def test_agent_loop_calls_domain_tools_and_auto_commits_working_copy(
-    tmp_path: Path,
-):
-    database = Database(tmp_path / "app.db")
-    database.initialize()
-    user_id, project_id, chapter_id, version_id, content = seed_novel(
-        database, tmp_path
-    )
-    service = AssistantChatService(
-        database, tmp_path / "novels", tmp_path / "documents"
-    )
-    conversation_id = service.create_conversation(
-        user_id=user_id,
-        scope_type="chapter",
-        title="自动续写",
-        project_id=project_id,
-        novel_chapter_id=chapter_id,
-    )
-    message_id = service.queue_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        question="请续写这一章，让林岚先核对录音来源。",
-        provider="mock",
-        model="mock-creative-chat",
-        credential_source="default",
-        agent_role="auto",
-        auto_commit=True,
-    )
-    claimed = service.claim_next_message()
-    assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-    assert payload["context"]["agent"]["role"] == "advisor"
-    assert payload["context"]["dispatch"] == {
-        "requested_role": "auto",
-        "resolved_role": "pending",
-        "intent": "pending",
-        "reason": "model_intent_pending",
-        "goal": "classify_intent",
-            "settings_ready": True,
-            "ui_surface": "chapter",
-            "scope_preflight": {},
-    }
-    orchestrator = AssistantAgentOrchestrator(service)
-    response = asyncio.run(
-        orchestrator.run(
-            model=FixedIntentModel("draft_prose"),
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-    assert response.result.draft is not None
-    assert [item["tool_name"] for item in response.agent_trace] == [
-        "read_book_settings",
-        "create_chapter_draft",
-    ]
-    assert service.complete_message(
-        message_id=message_id,
-        claim_token=claimed["claim_token"],
-        response=response,
-    )
-    message = service.get_message(
-        user_id=user_id, message_id=message_id
-    )
-    assert message["response"]["agent"]["role"] == "writer"
-    assert message["response"]["auto_commit"]["status"] == "applied"
-    assert [item["tool_name"] for item in message["tool_calls"]] == [
-        "read_book_settings",
-        "create_chapter_draft",
-    ]
-    assert all(
-        item["status"] == "completed" for item in message["tool_calls"]
-    )
-    assert [
-        (item["action"], item["outcome_status"])
-        for item in message["agent_steps"]
-    ] == [
-        ("call_tool", "completed"),
-        ("call_tool", "completed"),
-        ("finish", "completed"),
-    ]
-    chapter = database.get_novel_chapter(
-        user_id, project_id, chapter_id
-    )
-    assert chapter["canonical_version_id"] == chapter["working_version_id"]
-    assert chapter["working_version_id"] != version_id
-    working = database.get_chapter_version(
-        user_id,
-        project_id,
-        chapter_id,
-        str(chapter["working_version_id"]),
-    )
-    working_text = Path(working["content_path"]).read_text(
-        encoding="utf-8"
-    )
-    assert working_text.startswith(content)
-    assert "雨声先落在窗外" in working_text
-
-
-def test_agent_loop_records_and_blocks_forbidden_tool_call(
-    tmp_path: Path,
-):
-    database = Database(tmp_path / "app.db")
-    database.initialize()
-    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
-        database, tmp_path
-    )
-    service = AssistantChatService(
-        database, tmp_path / "novels", tmp_path / "documents"
-    )
-    conversation_id = service.create_conversation(
-        user_id=user_id,
-        scope_type="project",
-        title="只读讨论",
-        project_id=project_id,
-    )
-    message_id = service.queue_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        question="讨论一下开场，不要写正文。",
-        provider="mock",
-        model="mock-creative-chat",
-        credential_source="default",
-        agent_role="advisor",
-    )
-    claimed = service.claim_next_message()
-    assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-
-    class ForbiddenToolModel(MockAssistantChatModel):
-        async def next_action(self, **kwargs):
-            observations = kwargs["observations"]
-            if not observations:
-                decision = AgentLoopDecision.model_validate(
-                    {
-                        "action": "call_tool",
-                        "tool_call": {
-                            "name": "create_chapter_draft",
-                            "arguments": {
-                                "mode": "replace",
-                                "content": "不应被接受",
-                                "rationale": "越权测试",
-                            },
-                        },
-                        "answer": None,
-                        "citations": [],
-                    }
-                )
-            else:
-                decision = AgentLoopDecision.model_validate(
-                    {
-                        "action": "finish",
-                        "tool_call": None,
-                        "answer": "越权工具已被服务端拦截。",
-                        "citations": [],
-                    }
-                )
-            return AgentDecisionResponse(
-                decision=decision,
-                raw_response=decision.model_dump_json(),
-                input_tokens=0,
-                output_tokens=0,
-            )
-
-    response = asyncio.run(
-        AssistantAgentOrchestrator(service).run(
-            model=ForbiddenToolModel(),
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-    assert response.result.draft is None
-    assert service.complete_message(
-        message_id=message_id,
-        claim_token=claimed["claim_token"],
-        response=response,
-    )
-    message = service.get_message(
-        user_id=user_id, message_id=message_id
-    )
-    assert len(message["tool_calls"]) == 1
-    assert message["tool_calls"][0]["status"] == "denied"
-    assert message["tool_calls"][0]["tool_name"] == "create_chapter_draft"
-    assert message["applied_version_id"] is None
-
-
-def test_agent_loop_has_no_tool_call_count_budget(tmp_path: Path):
-    database = Database(tmp_path / "app.db")
-    database.initialize()
-    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
-        database, tmp_path
-    )
-    service = AssistantChatService(
-        database, tmp_path / "novels", tmp_path / "documents"
-    )
-    conversation_id = service.create_conversation(
-        user_id=user_id,
-        scope_type="project",
-        title="联网预算",
-        project_id=project_id,
-    )
-    message_id = service.queue_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        question="请联网核实八项外部资料。",
-        provider="mock",
-        model="mock-creative-chat",
-        credential_source="default",
-        agent_role="advisor",
-    )
-    claimed = service.claim_next_message()
-    assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-    assert payload["context"]["web_search_available"] is True
-    searches = []
-
-    class OverSearchingModel(MockAssistantChatModel):
-        def __init__(self):
-            self.turn = 0
-
-        async def next_action(self, **kwargs):
-            self.turn += 1
-            if self.turn <= 8 and kwargs["available_tools"]:
-                raw = {
-                    "action": "call_tool",
-                    "tool_call": {
-                        "name": "search_web",
-                        "arguments": {
-                            "query": f"外部资料 {self.turn}",
-                            "max_results": 2,
-                        },
-                    },
-                    "answer": None,
-                    "citations": [],
-                }
-            else:
-                raw = {
-                    "action": "finish",
-                    "tool_call": None,
-                    "answer": "已根据八次搜索取得的资料完成回答。",
-                    "citations": [],
-                }
-            decision = AgentLoopDecision.model_validate(raw)
-            return AgentDecisionResponse(
-                decision=decision,
-                raw_response=decision.model_dump_json(),
-                input_tokens=1,
-                output_tokens=1,
-            )
-
-    response = asyncio.run(
-        AssistantAgentOrchestrator(
-            service,
-            web_search=lambda _user_id, query, _limit: searches.append(
-                query
-            )
-            or [
-                {
-                    "title": query,
-                    "url": "https://example.com/" + str(len(searches)),
-                    "snippet": "外部资料摘要。",
-                }
-            ],
-        ).run(
-            model=OverSearchingModel(),
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-    assert searches == [f"外部资料 {index}" for index in range(1, 9)]
-    assert response.result.answer == "已根据八次搜索取得的资料完成回答。"
-    running_message = service.get_message(
-        user_id=user_id, message_id=message_id
-    )
-    assert [
-        (item["tool_name"], item["status"])
-        for item in running_message["tool_calls"]
-    ] == [("search_web", "completed")] * 8
-
-
-def test_agent_loop_stops_repeated_call_and_forces_final_answer(
-    tmp_path: Path,
-):
-    database = Database(tmp_path / "app.db")
-    database.initialize()
-    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
-        database, tmp_path
-    )
-    service = AssistantChatService(
-        database, tmp_path / "novels", tmp_path / "documents"
-    )
-    conversation_id = service.create_conversation(
-        user_id=user_id,
-        scope_type="project",
-        title="循环收束",
-        project_id=project_id,
-    )
-    message_id = service.queue_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        question="梳理现在的作品设定。",
-        provider="mock",
-        model="mock-creative-chat",
-        credential_source="default",
-        agent_role="advisor",
-    )
-    claimed = service.claim_next_message()
-    assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-
-    class SlowFinishingModel(MockAssistantChatModel):
-        def __init__(self):
-            self.seen_tools = []
-
-        async def next_action(self, **kwargs):
-            available_tools = kwargs["available_tools"]
-            self.seen_tools.append(
-                [item["name"] for item in available_tools]
-            )
-            if available_tools:
-                decision = AgentLoopDecision.model_validate(
-                    {
-                        "action": "call_tool",
-                        "tool_call": {
-                            "name": "read_book_settings",
-                            "arguments": {},
-                        },
-                        "answer": None,
-                        "citations": [],
-                    }
-                )
-            else:
-                assert kwargs["step"] == 3
-                assert (
-                    kwargs["observations"][-1]["status"]
-                    == "finalization_required"
-                )
-                decision = AgentLoopDecision.model_validate(
-                    {
-                        "action": "finish",
-                        "tool_call": None,
-                        "answer": "已根据现有资料完成收束。",
-                        "citations": [],
-                    }
-                )
-            return AgentDecisionResponse(
-                decision=decision,
-                raw_response=decision.model_dump_json(),
-                input_tokens=1,
-                output_tokens=1,
-            )
-
-    model = SlowFinishingModel()
-    response = asyncio.run(
-        AssistantAgentOrchestrator(service).run(
-            model=model,
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-
-    assert response.result.answer == "已根据现有资料完成收束。"
-    assert len(model.seen_tools) == 3
-    assert model.seen_tools[-1] == []
-    assert response.input_tokens == 3
-    assert response.output_tokens == 3
-    assert len(response.agent_trace) == 2
-    assert response.agent_trace[0]["status"] == "completed"
-    assert response.agent_trace[1]["status"] == "denied"
-    running_message = service.get_message(
-        user_id=user_id, message_id=message_id
-    )
-    assert [
-        (item["action"], item["outcome_status"])
-        for item in running_message["agent_steps"]
-    ] == [
-        ("call_tool", "completed"),
-        ("call_tool", "denied"),
-        ("finish", "completed"),
-    ]
-
-
-def test_agent_loop_returns_fallback_if_model_ignores_forced_finish(
-    tmp_path: Path,
-):
-    database = Database(tmp_path / "app.db")
-    database.initialize()
-    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
-        database, tmp_path
-    )
-    service = AssistantChatService(
-        database, tmp_path / "novels", tmp_path / "documents"
-    )
-    conversation_id = service.create_conversation(
-        user_id=user_id,
-        scope_type="project",
-        title="异常循环收束",
-        project_id=project_id,
-    )
-    message_id = service.queue_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        question="读取作品设定。",
-        provider="mock",
-        model="mock-creative-chat",
-        credential_source="default",
-        agent_role="advisor",
-    )
-    claimed = service.claim_next_message()
-    assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-
-    class NeverFinishingModel(MockAssistantChatModel):
-        async def next_action(self, **kwargs):
-            decision = AgentLoopDecision.model_validate(
-                {
-                    "action": "call_tool",
-                    "tool_call": {
-                        "name": "read_book_settings",
-                        "arguments": {},
-                    },
-                    "answer": None,
-                    "citations": [],
-                }
-            )
-            return AgentDecisionResponse(
-                decision=decision,
-                raw_response=decision.model_dump_json(),
-                input_tokens=0,
-                output_tokens=0,
-            )
-
-    response = asyncio.run(
-        AssistantAgentOrchestrator(service, max_model_turns=2).run(
-            model=NeverFinishingModel(),
-            item=claimed,
-            payload=payload,
-            provider_user_id="u_test",
-        )
-    )
-    assert "自动收束" in response.result.answer
-    assert "Agent 在" not in response.result.answer
-    assert response.result.draft is None
-
-
-def test_quote_bound_chat_saves_candidate_without_changing_canon(
+def test_quote_bound_edit_saves_full_draft_without_changing_canon(
     tmp_path: Path,
 ):
     database = Database(tmp_path / "app.db")
@@ -1793,12 +2005,7 @@ def test_quote_bound_chat_saves_candidate_without_changing_canon(
     )
     claimed = service.claim_next_message()
     assert claimed and claimed["id"] == message_id
-    payload = service.build_job_payload(claimed)
-    response = asyncio.run(
-        MockAssistantChatModel().reply(
-            **payload, provider_user_id="u_test"
-        )
-    )
+    response = run_agent(service, claimed)
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -1810,20 +2017,17 @@ def test_quote_bound_chat_saves_candidate_without_changing_canon(
     )
     assistant_message = conversation["messages"][-1]
     assert assistant_message["status"] == "completed"
-    assert assistant_message["response"]["citations"][0]["quote"] == selected
-    assert "/source?start=0" in assistant_message["response"][
-        "citations"
-    ][0]["url"]
-    assert assistant_message["response"]["rewrite"]
+    assert "动作停在答案之前" in assistant_message["response"]["draft"][
+        "content"
+    ]
 
-    saved = service.save_rewrite_candidate(
+    saved = service.commit_draft_to_head(
         user_id=user_id, assistant_message_id=message_id
     )
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == version_id
-    assert chapter["working_version_id"] == saved["version_id"]
+    assert chapter["head_version_id"] == saved["version_id"]
     candidate = database.get_chapter_version(
         user_id, project_id, chapter_id, saved["version_id"]
     )
@@ -1836,7 +2040,7 @@ def test_quote_bound_chat_saves_candidate_without_changing_canon(
     assert candidate_text != content
     assert "动作停在答案之前" in candidate_text
 
-    second = service.save_rewrite_candidate(
+    second = service.commit_draft_to_head(
         user_id=user_id, assistant_message_id=message_id
     )
     assert second["version_id"] == saved["version_id"]
@@ -1996,7 +2200,7 @@ def test_chat_rejects_stale_or_cross_scope_quote(tmp_path: Path):
     assert hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def test_advisor_is_read_only_for_text_rewrite(tmp_path: Path):
+def test_advisor_is_read_only_for_text_edit(tmp_path: Path):
     database = Database(tmp_path / "app.db")
     database.initialize()
     user_id, project_id, chapter_id, version_id, content = seed_novel(
@@ -2035,12 +2239,7 @@ def test_advisor_is_read_only_for_text_rewrite(tmp_path: Path):
         },
     )
     claimed = service.claim_next_message()
-    response = asyncio.run(
-        MockAssistantChatModel().reply(
-            **service.build_job_payload(claimed),
-            provider_user_id="u_test",
-        )
-    )
+    response = run_agent(service, claimed)
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -2050,7 +2249,7 @@ def test_advisor_is_read_only_for_text_rewrite(tmp_path: Path):
         user_id=user_id, message_id=message_id
     )
     assert message["response"]["agent"]["role"] == "advisor"
-    assert message["response"]["rewrite"] is None
+    assert message["response"]["draft"] is None
 
 
 def test_project_chat_proposes_and_applies_settings_candidate(
@@ -2128,7 +2327,136 @@ def test_project_chat_proposes_and_applies_settings_candidate(
     assert second["already_applied"] is True
 
 
-def test_settings_candidate_files_specific_material_in_five_part_archive(
+def test_project_chat_directly_applies_settings_by_default(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id = database.create_user(
+        "direct-settings-writer", hash_password("password-123")
+    )
+    project_id = "d" * 32
+    database.create_novel_project(
+        user_id=user_id,
+        project_id=project_id,
+        title="",
+        genre="",
+        premise="",
+        world_setting="",
+        style_guide="",
+        point_of_view="第三人称限知",
+        target_chapter_chars=3000,
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="直接整理新书",
+        project_id=project_id,
+    )
+    question = "我想写一个记者在雨夜收到七年前来信的悬疑故事。"
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question=question,
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="auto",
+        ui_surface="settings",
+        auto_commit=True,
+    )
+    claimed = service.claim_next_message()
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=FixedIntentModel("update_settings"),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+    project = database.get_novel_project(user_id, project_id)
+    assert project["premise"] == question
+    assert project["genre"] == "悬疑"
+    message = service.get_message(user_id=user_id, message_id=message_id)
+    assert message["response"]["settings_patch_status"] == "applied"
+    assert (
+        message["response"]["boundary"]["project_settings_unchanged"]
+        is False
+    )
+    stream = service.get_message_stream_state(
+        user_id=user_id, message_id=message_id
+    )
+    assert stream and stream["terminal"] is True
+
+
+def test_explicit_discussion_only_never_writes_settings(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id = database.create_user(
+        "readonly-settings-writer", hash_password("password-123")
+    )
+    project_id = "r" * 32
+    database.create_novel_project(
+        user_id=user_id,
+        project_id=project_id,
+        title="只读讨论",
+        genre="",
+        premise="",
+        world_setting="",
+        style_guide="",
+        point_of_view="第三人称限知",
+        target_chapter_chars=3000,
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="只讨论",
+        project_id=project_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="只讨论一下这个构思，不要写入作品资料。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="auto",
+        ui_surface="settings",
+        auto_commit=True,
+    )
+    claimed = service.claim_next_message()
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=MockAgentModel(),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+
+    project = database.get_novel_project(user_id, project_id)
+    assert project["premise"] == ""
+    message = service.get_message(user_id=user_id, message_id=message_id)
+    assert message["response"]["agent"]["role"] == "advisor"
+    assert message["response"]["settings_patch"] is None
+
+
+def test_settings_candidate_creates_structured_character_card(
     tmp_path: Path,
 ):
     database = Database(tmp_path / "app.db")
@@ -2168,18 +2496,36 @@ def test_settings_candidate_files_specific_material_in_five_part_archive(
         agent_role="auto",
     )
     claimed = service.claim_next_message()
+    class ExplicitSettingsModel(MockAgentModel):
+        def __init__(self):
+            self.native_turn_calls = 0
+
+        async def classify_intent(self, **kwargs):
+            raise AssertionError("明确设定命令不应调用模型分类")
+
+        async def native_turn(self, **kwargs):
+            self.native_turn_calls += 1
+            return await super().native_turn(**kwargs)
+
+    model = ExplicitSettingsModel()
     response = asyncio.run(
         AssistantAgentOrchestrator(service).run(
-            model=FixedIntentModel("update_settings"),
+            model=model,
             item=claimed,
             payload=service.build_job_payload(claimed),
             provider_user_id="u_test",
         )
     )
+    assert model.native_turn_calls >= 1
     assert response.result.settings_patch is not None
     proposed = response.result.settings_patch.model_dump(exclude_none=True)
     assert "world_setting" not in proposed
-    assert proposed["archive_rules"][0]["category"] == "character"
+    assert "archive_rules" not in proposed
+    edit = proposed["structured_edits"][0]
+    assert edit["entity_type"] == "character"
+    assert edit["action"] == "create"
+    assert edit["changes"]["name"] == "林悦"
+    assert edit["changes"]["role"] == "调查记者"
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -2190,18 +2536,54 @@ def test_settings_candidate_files_specific_material_in_five_part_archive(
         user_id=user_id,
         assistant_message_id=message_id,
     )
-    assert applied["changed_fields"] == ["archive_rules"]
+    assert applied["changed_fields"] == ["structured_edits"]
     project = database.get_novel_project(user_id, project_id)
     assert project["world_setting"] == "当代海港。"
-    work = database.get_work_for_project(user_id, project_id)
-    entries = database.list_work_archive_entries(user_id, work["id"])
-    rule = next(
-        item for item in entries if item["entry_type"] == "creative_rule"
+    structured = service.structured_settings_editor.snapshot(
+        user_id=user_id,
+        project_id=project_id,
     )
-    assert rule["category"] == "character"
-    assert rule["content"] == question
-    assert rule["status"] == "confirmed"
-    assert rule["provenance"] == "assistant"
+    character = structured["characters"][0]
+    assert character["name"] == "林悦"
+    assert character["role"] == "调查记者"
+    assert character["traits"] == "遇事先核对物证"
+
+
+def test_mock_character_micro_edit_uses_only_requested_value():
+    question = (
+        "请只修改林澄的人物卡：把内在需求改为"
+        "‘承认自己害怕再次误判，并学会让同伴复核’，"
+        "其他字段不要动。"
+    )
+    intent = asyncio.run(
+        MockAgentModel().classify_intent(
+            context={
+                "scope": "novel_project",
+                "dispatch": {
+                    "ui_surface": "settings",
+                    "settings_ready": True,
+                },
+            },
+            history=[],
+            question=question,
+            has_selected_quote=False,
+            provider_user_id="u_test",
+        )
+    )
+    patch = _mock_settings_patch(
+        {
+            "project": {},
+            "structured_settings": {
+                "characters": [{"id": "character-1", "name": "林澄"}]
+            },
+        },
+        question,
+    )
+
+    assert intent.decision.intent == "update_settings"
+    assert patch["structured_edits"][0]["changes"] == {
+        "internal_need": "承认自己害怕再次误判，并学会让同伴复核"
+    }
 
 
 def test_project_chat_proposes_and_applies_versioned_story_plan(
@@ -2279,6 +2661,71 @@ def test_project_chat_proposes_and_applies_versioned_story_plan(
     assert second["already_applied"] is True
 
 
+def test_project_chat_directly_applies_story_plan_by_default(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id = database.create_user(
+        "direct-plan-writer", hash_password("password-123")
+    )
+    project_id = "q" * 32
+    database.create_novel_project(
+        user_id=user_id,
+        project_id=project_id,
+        title="雾港来信",
+        genre="悬疑",
+        premise="记者收到一封不可能出现的七年前来信。",
+        world_setting="冬季海港。",
+        style_guide="克制，以行动承担情绪。",
+        point_of_view="第三人称限知",
+        target_chapter_chars=3000,
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="直接规划全书",
+        project_id=project_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="请规划全书的核心悬问、关键转折和最后兑现。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+        agent_role="auto",
+        ui_surface="settings",
+        auto_commit=True,
+    )
+    claimed = service.claim_next_message()
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=FixedIntentModel("plan_story"),
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+        )
+    )
+    assert service.complete_message(
+        message_id=message_id,
+        claim_token=claimed["claim_token"],
+        response=response,
+    )
+
+    message = service.get_message(user_id=user_id, message_id=message_id)
+    assert message["response"]["story_plan_status"] == "applied"
+    plan = StoryPlanningService(database).get_blueprint(
+        user_id=user_id, project_id=project_id
+    )
+    assert plan["confirmed_version_id"] == (
+        message["response"]["story_plan_version_id"]
+    )
+
+
 def test_writer_creates_candidate_without_overwriting_canon(
     tmp_path: Path,
 ):
@@ -2307,12 +2754,7 @@ def test_writer_creates_candidate_without_overwriting_canon(
         agent_role="writer",
     )
     claimed = service.claim_next_message()
-    response = asyncio.run(
-        MockAssistantChatModel().reply(
-            **service.build_job_payload(claimed),
-            provider_user_id="u_test",
-        )
-    )
+    response = run_agent(service, claimed)
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -2321,7 +2763,7 @@ def test_writer_creates_candidate_without_overwriting_canon(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == version_id
+    assert chapter["head_version_id"] == version_id
     assert Path(chapter["content_path"]).read_text(
         encoding="utf-8"
     ) == content
@@ -2329,21 +2771,20 @@ def test_writer_creates_candidate_without_overwriting_canon(
         user_id=user_id, message_id=message_id
     )
     assert message["response"]["agent"]["role"] == "writer"
-    assert message["response"]["draft"]["mode"] == "append"
+    assert message["response"]["draft"]["content"].startswith(content)
 
-    saved = service.save_draft_candidate(
+    saved = service.commit_draft_to_head(
         user_id=user_id, assistant_message_id=message_id
     )
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == version_id
-    assert chapter["working_version_id"] == saved["version_id"]
+    assert chapter["head_version_id"] == saved["version_id"]
     candidate = database.get_chapter_version(
         user_id, project_id, chapter_id, saved["version_id"]
     )
     assert candidate["kind"] == "assistant_draft"
-    assert candidate["status"] == "candidate"
+    assert candidate["head_version_id"] == candidate["id"]
     candidate_text = Path(candidate["content_path"]).read_text(
         encoding="utf-8"
     )
@@ -2380,12 +2821,7 @@ def test_writer_auto_commits_working_copy_and_can_revert(
         auto_commit=True,
     )
     claimed = service.claim_next_message()
-    response = asyncio.run(
-        MockAssistantChatModel().reply(
-            **service.build_job_payload(claimed),
-            provider_user_id="u_test",
-        )
-    )
+    response = run_agent(service, claimed)
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -2394,9 +2830,9 @@ def test_writer_auto_commits_working_copy_and_can_revert(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    auto_version_id = str(chapter["working_version_id"])
+    auto_version_id = str(chapter["head_version_id"])
     assert auto_version_id != version_id
-    assert chapter["canonical_version_id"] == auto_version_id
+    assert chapter["head_version_id"] == auto_version_id
     auto_content = Path(chapter["content_path"]).read_text(
         encoding="utf-8"
     )
@@ -2414,8 +2850,8 @@ def test_writer_auto_commits_working_copy_and_can_revert(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == reverted["version_id"]
-    assert chapter["working_version_id"] == reverted["version_id"]
+    assert chapter["head_version_id"] == reverted["version_id"]
+    assert chapter["head_version_id"] == reverted["version_id"]
     assert Path(chapter["content_path"]).read_text(
         encoding="utf-8"
     ) == content
@@ -2474,12 +2910,7 @@ def test_editor_auto_commits_validated_selection(tmp_path: Path):
         },
     )
     claimed = service.claim_next_message()
-    response = asyncio.run(
-        MockAssistantChatModel().reply(
-            **service.build_job_payload(claimed),
-            provider_user_id="u_test",
-        )
-    )
+    response = run_agent(service, claimed)
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -2493,13 +2924,13 @@ def test_editor_auto_commits_validated_selection(tmp_path: Path):
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["canonical_version_id"] == message["applied_version_id"]
+    assert chapter["head_version_id"] == message["applied_version_id"]
     changed = Path(chapter["content_path"]).read_text(encoding="utf-8")
     assert changed != content
     assert "动作停在答案之前" in changed
 
 
-def test_reference_chapter_chat_uses_source_but_cannot_create_rewrite(
+def test_reference_chapter_chat_uses_source_but_cannot_create_draft(
     tmp_path: Path,
 ):
     database = Database(tmp_path / "app.db")
@@ -2573,11 +3004,7 @@ def test_reference_chapter_chat_uses_source_but_cannot_create_rewrite(
     claimed = service.claim_next_message()
     payload = service.build_job_payload(claimed)
     assert payload["sources"][0]["kind"] == "reference_chapter"
-    response = asyncio.run(
-        MockAssistantChatModel().reply(
-            **payload, provider_user_id="u_test"
-        )
-    )
+    response = run_agent(service, claimed)
     assert service.complete_message(
         message_id=message_id,
         claim_token=claimed["claim_token"],
@@ -2586,16 +3013,15 @@ def test_reference_chapter_chat_uses_source_but_cannot_create_rewrite(
     message = service.get_message(
         user_id=user_id, message_id=message_id
     )
-    assert message["response"]["citations"][0]["quote"] == selected
     assert message["response"]["agent"]["role"] == "researcher"
-    assert message["response"]["rewrite"] is None
-    with pytest.raises(ValueError, match="没有可保存"):
-        service.save_rewrite_candidate(
+    assert message["response"]["draft"] is None
+    with pytest.raises(ValueError, match="没有可提交"):
+        service.commit_draft_to_head(
             user_id=user_id, assistant_message_id=message_id
         )
 
 
-def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
+def test_novel_chat_web_flow_and_draft_action(tmp_path: Path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         register = client.get("/register")
@@ -2639,7 +3065,8 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
         chapter_location = response.headers["location"]
         chapter_id = chapter_location.split("chapter_id=", 1)[1]
         chapter_url = f"{project_url}/chapters/{chapter_id}"
-        chapter_page = client.get(chapter_url)
+        assert client.get(chapter_url).status_code == 404
+        chapter_page = client.get(chapter_location)
         content = (
             "她立刻明白了一切。"
             + "海雾落在窗外，邮戳仍是湿的。" * 220
@@ -2654,7 +3081,7 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        saved_page = client.get(chapter_url)
+        saved_page = client.get(response.headers["location"])
         assert "共创对话" in saved_page.text
         assert 'class="studio-manuscript-view"' in saved_page.text
         assert "引用正文问 AI" not in saved_page.text
@@ -2665,13 +3092,9 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
         assistant_redirect = client.get(
             assistant_url, follow_redirects=False
         )
-        assert assistant_redirect.status_code == 303
-        assert (
-            assistant_redirect.headers["location"]
-            == f"{project_url}/workbench?chapter_id={chapter_id}"
-        )
+        assert assistant_redirect.status_code == 404
         assistant_page = client.get(
-            assistant_redirect.headers["location"]
+            f"{project_url}/workbench?chapter_id={chapter_id}"
         )
         assert assistant_page.status_code == 200
         assert "共创对话" in assistant_page.text
@@ -2732,13 +3155,12 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
         while time.monotonic() < deadline:
             rendered = client.get(conversation_url).text
             if (
-                "局部修订提交" in rendered
+                "章节提交" in rendered
                 and "已自动保存为当前版本" in rendered
             ):
                 break
             time.sleep(0.03)
-        assert "回答依据" in rendered
-        assert "局部修订提交" in rendered
+        assert "章节提交" in rendered
         assert "已自动保存为当前版本" in rendered
         assert 'aria-label="历史对话"' in rendered
         assert (
@@ -2754,15 +3176,6 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             r'action="/assistant/messages/[a-f0-9]+/regenerate"',
             rendered,
         )
-        source_link = re.search(
-            r'href="([^"]+/source\?start=0&amp;end=\d+)"',
-            rendered,
-        )
-        assert source_link
-        source_page = client.get(source_link.group(1).replace("&amp;", "&"))
-        assert source_page.status_code == 200
-        assert "cited-selection" in source_page.text
-
         action = re.search(
             r'action="/assistant/messages/([a-f0-9]+)/revert-auto-commit"',
             rendered,
@@ -2784,10 +3197,10 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             int(user["id"]),
             project_id,
             chapter_id,
-            str(chapter["working_version_id"]),
+            str(chapter["head_version_id"]),
         )
         assert candidate["source"] == "assistant_chat"
-        assert candidate["status"] == "canonical"
+        assert candidate["head_version_id"] == candidate["id"]
 
         spare_conversation_id = (
             application.state.assistant_chat_service.create_conversation(
@@ -2830,7 +3243,7 @@ def test_novel_chat_web_flow_and_rewrite_action(tmp_path: Path):
             chapter_id,
             str(candidate["id"]),
         )
-        assert still_present["status"] == "canonical"
+        assert still_present["head_version_id"] == still_present["id"]
 
 
 def test_edit_and_regenerate_create_branches_without_mutating_history(
@@ -2864,12 +3277,7 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
         )
         claimed = service.claim_next_message()
         assert claimed and claimed["id"] == message_id
-        response = asyncio.run(
-            MockAssistantChatModel().reply(
-                **service.build_job_payload(claimed),
-                provider_user_id="u_test",
-            )
-        )
+        response = run_agent(service, claimed)
         assert service.complete_message(
             message_id=message_id,
             claim_token=claimed["claim_token"],
@@ -2935,7 +3343,6 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
         )
         == version_count
     )
-
     assert service.delete_conversation(
         user_id=user_id,
         conversation_id=str(edited["conversation_id"]),
@@ -2958,3 +3365,170 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
         )
         == version_count
     )
+
+
+def test_queued_assistant_message_can_be_cancelled(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="取消测试",
+        project_id=project_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="先不要开始。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+    )
+
+    result = service.request_message_cancellation(
+        user_id=user_id,
+        message_id=message_id,
+    )
+
+    assert result["cancelled"] is True
+    state = service.get_message_stream_state(
+        user_id=user_id,
+        message_id=message_id,
+    )
+    assert state
+    assert state["status"] == "failed"
+    assert state["run_state"] == "cancelled"
+    assert state["terminal"] is True
+    assert [event["event_type"] for event in state["events"]] == [
+        "run.cancelled"
+    ]
+
+
+def test_running_assistant_message_cancellation_is_a_terminal_event(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="运行中取消",
+        project_id=project_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="请分析人物动机。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+
+    requested = service.request_message_cancellation(
+        user_id=user_id,
+        message_id=message_id,
+    )
+    assert requested["run_state"] == "cancelling"
+    assert service.is_message_cancel_requested(
+        message_id=message_id,
+        claim_token=str(claimed["claim_token"]),
+    )
+    assert service.cancel_running_message(
+        message_id=message_id,
+        claim_token=str(claimed["claim_token"]),
+    )
+
+    state = service.get_message_stream_state(
+        user_id=user_id,
+        message_id=message_id,
+    )
+    assert state and state["cancelled"] is True
+    assert [event["event_type"] for event in state["events"]][-2:] == [
+        "run.cancelling",
+        "run.cancelled",
+    ]
+
+
+def test_expired_agent_lease_recovers_and_closes_running_tools(
+    tmp_path: Path,
+):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, _chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.create_conversation(
+        user_id=user_id,
+        scope_type="project",
+        title="租约恢复",
+        project_id=project_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="读取作品资料。",
+        provider="mock",
+        model="mock-creative-chat",
+        credential_source="default",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    call_id = service.start_tool_call(
+        message_id=message_id,
+        claim_token=str(claimed["claim_token"]),
+        sequence=1,
+        agent_role="advisor",
+        tool_name="read_book_settings",
+        tool_label="读取作品设定",
+        capability="read_project",
+        read_only=True,
+        arguments={},
+    )
+    with database.connection() as connection:
+        connection.execute(
+            """
+            UPDATE assistant_messages
+            SET lease_expires_at='2000-01-01T00:00:00+00:00'
+            WHERE id=?
+            """,
+            (message_id,),
+        )
+        connection.commit()
+
+    recovered = service.claim_next_message()
+    assert recovered and recovered["id"] == message_id
+    assert recovered["claim_token"] != claimed["claim_token"]
+    with database.connection() as connection:
+        tool = connection.execute(
+            """
+            SELECT status, error FROM assistant_tool_calls WHERE id=?
+            """,
+            (call_id,),
+        ).fetchone()
+    assert tool["status"] == "failed"
+    assert "租约过期" in tool["error"]
+    state = service.get_message_stream_state(
+        user_id=user_id,
+        message_id=message_id,
+    )
+    assert state
+    event_types = [event["event_type"] for event in state["events"]]
+    assert "run.recovered" in event_types
+    assert event_types[-1] == "run.claimed"

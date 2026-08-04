@@ -7,7 +7,9 @@ from .model_provider import ReasoningPolicy
 
 
 QualityMode = Literal["low", "standard", "max"]
-ModelTaskPolicy = Literal["fast", "discussion", "reasoning", "deep"]
+ModelTaskPolicy = Literal[
+    "fast", "discussion", "reasoning", "deep", "prose"
+]
 ModelRole = Literal["fast", "quality"]
 
 QUALITY_MODES: tuple[QualityMode, ...] = ("low", "standard", "max")
@@ -51,6 +53,8 @@ def route_model_task(
         return ModelRoutingDecision("fast", "fast")
     if task_policy == "discussion":
         return ModelRoutingDecision("fast", "reasoning")
+    if task_policy == "prose":
+        return ModelRoutingDecision("quality", "fast")
     if task_policy == "reasoning":
         return ModelRoutingDecision("quality", "reasoning")
     return ModelRoutingDecision("quality", "deep")

@@ -2,7 +2,7 @@
 {% block title %}{{ document.title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260728-2">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260804-1">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -281,7 +281,14 @@
                   <blockquote>{{ message.quote.quote_text }}</blockquote>
                 {% endif %}
                 {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
-                  <p data-stream-content>正在读取原文与分析记录……</p>
+                  <div class="studio-agent-runtime">
+                    <span data-agent-run-status>{{ message.run_state_label or '正在理解请求' }}</span>
+                    <button type="button" data-cancel-assistant aria-label="停止本轮生成">停止</button>
+                  </div>
+                  <p data-stream-content>{{ message.stream_content or '正在理解请求……' }}</p>
+                {% elif message.role == 'assistant' and message.run_state == 'cancelled' %}
+                  <div class="studio-agent-runtime"><span>已停止</span></div>
+                  <p>{{ message.stream_content or '本轮生成已停止。' }}</p>
                 {% elif message.status == 'failed' %}
                   <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
                 {% else %}
@@ -310,14 +317,13 @@
                         <li class="{{ step.outcome_status }}">
                           <span>
                             {% if step.action == 'finish' %}整理最终回答
-                            {% elif step.action == 'fallback' %}自动收束
                             {% else %}{{ step.tool_label or step.tool_name or '工具调用' }}{% endif %}
                           </span>
                           <small>
                             {% if step.outcome_status == 'completed' %}完成
                             {% elif step.outcome_status == 'failed' %}失败
                             {% elif step.outcome_status == 'denied' %}已拦截
-                            {% else %}已收束{% endif %}
+                            {% else %}未知{% endif %}
                           </small>
                         </li>
                       {% endfor %}
@@ -393,5 +399,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260728-3" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260804-1" defer></script>
 {% endblock %}

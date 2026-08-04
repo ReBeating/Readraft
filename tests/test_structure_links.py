@@ -37,15 +37,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-chat",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-chat",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -334,11 +334,10 @@ def test_causal_link_direction_duplicate_archive_and_owner_boundaries(
         user_id, chapters[0]
     )["planned_causal_links"] == []
 
-    database.create_generation_job(
+    database.create_chapter_planning_job(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapters[0],
-        operation="draft",
         instruction="",
         provider="mock",
         model="mock-novel-writer",
@@ -378,12 +377,11 @@ def test_canonical_boundary_hands_realized_link_back_to_memory(
             char_count=18,
         )
         assert version_id
-        database.accept_chapter_version(
+        database.set_chapter_head(
             user_id=user_id,
             project_id=project_id,
             chapter_id=chapter_id,
             version_id=version_id,
-            override_reason="作者确认该短文本仅用于正史边界测试",
         )
 
     make_canonical(chapters[1], "canon-2")

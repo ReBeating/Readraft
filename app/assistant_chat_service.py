@@ -12,27 +12,52 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .agent_capabilities import (
-    CREATE_CANDIDATE_DRAFT,
+    WRITE_CHAPTER,
+    CREATE_CHAPTER,
+    CREATE_TECHNIQUE_CARD,
+    MANAGE_CHAPTERS,
+    MANAGE_NOTES,
     PROPOSE_SETTINGS_PATCH,
     PROPOSE_STORY_PLAN,
-    PROPOSE_TEXT_PATCH,
     agent_capabilities,
     agent_manifest,
     normalize_requested_agent_role,
     resolve_agent_dispatch,
 )
-from .agent_loop_schema import AssistantIntentDecision
+from .agent_intent import AssistantIntentDecision
 from .assistant_chat_schema import (
+    AssistantChapterPatch,
     AssistantChatResponse,
     AssistantDraftProposal,
+    AssistantNotePatch,
     AssistantSettingsPatch,
     AssistantStoryPlanProposal,
+    AssistantTechniquePatch,
+    AssistantVersionRestoreProposal,
+)
+from .assistant_result import (
+    compact_analysis,
+    decode_agent_step,
+    decode_message,
+    decode_tool_call,
+    normalize_assistant_response,
 )
 from .context_compiler import build_writing_context_snapshot
+from .conversation_memory import (
+    compile_conversation_context,
+)
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    load_json as _load_json,
+)
 from .model_routing import normalize_quality_mode
-from .text_metrics import effective_char_count
 from .story_planning_service import StoryPlanningService
+from .structured_settings import (
+    StructuredSettingsEditor,
+    filter_structured_edits,
+)
+from .text_metrics import effective_char_count
 
 
 logger = logging.getLogger(__name__)
@@ -46,10 +71,6 @@ CONVERSATION_SCOPES = {
 }
 
 MAX_USER_MESSAGE_CHARS = 100_000
-RECENT_CONVERSATION_MESSAGE_LIMIT = 16
-RECENT_CONVERSATION_CHAR_BUDGET = 48_000
-CONVERSATION_MEMORY_CHAR_BUDGET = 32_000
-
 SETTING_FIELD_LABELS = {
     "title": "书名",
     "genre": "题材",
@@ -63,26 +84,65 @@ SETTING_FIELD_LABELS = {
     "style_guide": "叙事风格规范",
     "point_of_view": "叙事视角",
     "archive_rules": "分类作品资料",
+    "structured_edits": "结构化资料修改",
 }
 
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+
+def _author_explicitly_requested_deletion(question: str) -> bool:
+    clean = re.sub(r"\s+", " ", str(question or "")).strip()
+    clean = re.sub(
+        r"(?:不要|别|不能|不可|不许|无需|不用).{0,8}"
+        r"(?:删掉|删除|移除|去掉|撤销)",
+        "",
+        clean,
     )
+    return bool(re.search(r"(?:删掉|删除|移除|去掉|撤销)", clean))
 
 
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
+def _author_explicitly_requested_restore(question: str) -> bool:
+    clean = str(question or "").strip()
+    clean = re.sub(
+        r"(?:不要|别|不能|不可|不许|无需|不用).{0,10}"
+        r"(?:恢复|还原|回退|退回|撤回)",
+        "",
+        clean,
+    )
+    return bool(re.search(r"(?:恢复|还原|回退|退回|撤回到)", clean))
 
+
+def _author_explicitly_requested_technique_card(question: str) -> bool:
+    clean = str(question or "").strip()
+    clean = re.sub(
+        r"(?:不要|别|不能|不可|不许|无需|不用).{0,12}"
+        r"(?:技法卡|保存技法|提炼技法|沉淀技法)",
+        "",
+        clean,
+    )
+    return bool(
+        re.search(
+            r"(?:技法卡|保存.{0,8}技法|提炼.{0,8}技法|沉淀.{0,8}技法)",
+            clean,
+        )
+    )
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _chapter_metadata_revision(chapter: Mapping[str, Any]) -> str:
+    content = json.dumps(
+        {
+            "chapter_id": str(chapter["id"]),
+            "position": int(chapter["position"]),
+            "title": str(chapter.get("title") or ""),
+            "outline": str(chapter.get("outline") or ""),
+            "key_points": str(chapter.get("key_points") or ""),
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    return _sha256(content)
 
 
 def _read_text(path: Any) -> str:
@@ -90,83 +150,6 @@ def _read_text(path: Any) -> str:
         return Path(str(path)).read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return ""
-
-
-def _clip_conversation_text(text: Any, limit: int) -> str:
-    value = str(text or "").strip()
-    if len(value) <= limit:
-        return value
-    marker = "\n……（中间内容已压缩，可检索完整对话）……\n"
-    remaining = max(0, limit - len(marker))
-    head = max(1, round(remaining * 0.72))
-    tail = max(0, remaining - head)
-    return value[:head] + marker + (value[-tail:] if tail else "")
-
-
-def _compile_conversation_context(
-    rows: Sequence[Mapping[str, Any]],
-) -> tuple[List[Dict[str, str]], str]:
-    """Compile accurate recent history plus an extractive older memory."""
-    normalized_rows = [dict(row) for row in rows]
-    selected_recent: List[Dict[str, str]] = []
-    remaining = RECENT_CONVERSATION_CHAR_BUDGET
-    recent_candidates = normalized_rows[
-        -RECENT_CONVERSATION_MESSAGE_LIMIT:
-    ]
-    for row in reversed(recent_candidates):
-        if remaining < 800:
-            break
-        cap = min(16_000, remaining)
-        content = _clip_conversation_text(row.get("content"), cap)
-        selected_recent.append(
-            {
-                "role": str(row.get("role") or ""),
-                "content": content,
-            }
-        )
-        remaining -= len(content)
-    selected_recent.reverse()
-
-    older_count = max(0, len(normalized_rows) - len(selected_recent))
-    older_rows = normalized_rows[:older_count]
-    if not older_rows:
-        return selected_recent, ""
-
-    first = older_rows[0]
-    first_entry = {
-        "index": 0,
-        "text": (
-            ("作者" if str(first.get("role")) == "user" else "AI")
-            + "："
-            + _clip_conversation_text(first.get("content"), 8_000)
-        ),
-    }
-    selected_memory = [first_entry]
-    memory_chars = len(first_entry["text"])
-    for index in range(len(older_rows) - 1, 0, -1):
-        row = older_rows[index]
-        per_message = 3_000 if str(row.get("role")) == "user" else 1_800
-        text = (
-            ("作者" if str(row.get("role")) == "user" else "AI")
-            + "："
-            + _clip_conversation_text(row.get("content"), per_message)
-        )
-        if memory_chars + len(text) > CONVERSATION_MEMORY_CHAR_BUDGET:
-            continue
-        selected_memory.append({"index": index, "text": text})
-        memory_chars += len(text)
-    selected_memory.sort(key=lambda item: int(item["index"]))
-    omitted = len(older_rows) - len(selected_memory)
-    header = (
-        "较早对话的压缩记忆。它只记录原话摘录；需要准确措辞或遗漏细节时，"
-        "请调用 search_conversation_history。"
-    )
-    if omitted:
-        header += f" 中间另有 {omitted} 条消息未展开。"
-    memory = header + "\n\n" + "\n\n".join(
-        str(item["text"]) for item in selected_memory
-    )
-    return selected_recent, memory
 
 
 def _atomic_write(path: Path, content: str, token: str) -> None:
@@ -239,6 +222,249 @@ class AssistantChatService:
         self.database = database
         self.novels_dir = novels_dir
         self.documents_dir = documents_dir
+        self.structured_settings_editor = StructuredSettingsEditor(database)
+
+    @staticmethod
+    def _append_agent_event(
+        connection: Any,
+        *,
+        message_id: str,
+        event_type: str,
+        phase: str,
+        status: str,
+        label: str,
+        payload: Mapping[str, Any] | None = None,
+        created_at: str | None = None,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT run_sequence FROM assistant_messages WHERE id=?
+            """,
+            (message_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("对话消息不存在")
+        sequence = int(row["run_sequence"] or 0) + 1
+        connection.execute(
+            """
+            UPDATE assistant_messages
+            SET run_sequence=?, run_state=?, run_state_label=?,
+                stream_sequence=stream_sequence+1
+            WHERE id=?
+            """,
+            (sequence, phase, label[:160], message_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO assistant_agent_events(
+                id, assistant_message_id, sequence, event_type, phase,
+                status, label, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                message_id,
+                sequence,
+                event_type[:120],
+                phase[:80],
+                status[:40],
+                label[:160],
+                _json(dict(payload or {})),
+                created_at or utc_now(),
+            ),
+        )
+        return sequence
+
+    def transition_agent_run(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        phase: str,
+        event_type: str,
+        status: str,
+        label: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> bool:
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            owner = connection.execute(
+                """
+                SELECT 1 FROM assistant_messages
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=?
+                """,
+                (message_id, claim_token),
+            ).fetchone()
+            if not owner:
+                connection.rollback()
+                return False
+            self._append_agent_event(
+                connection,
+                message_id=message_id,
+                event_type=event_type,
+                phase=phase,
+                status=status,
+                label=label,
+                payload=payload,
+            )
+            connection.commit()
+        return True
+
+    def is_message_cancel_requested(
+        self, *, message_id: str, claim_token: str
+    ) -> bool:
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT cancel_requested_at
+                FROM assistant_messages
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=?
+                """,
+                (message_id, claim_token),
+            ).fetchone()
+        return bool(row and row["cancel_requested_at"])
+
+    def request_message_cancellation(
+        self,
+        *,
+        user_id: int,
+        message_id: str,
+        reason: str = "作者停止生成",
+    ) -> Dict[str, Any]:
+        now = utc_now()
+        clean_reason = str(reason or "作者停止生成")[:500]
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT m.status, m.run_state, m.cancel_requested_at
+                FROM assistant_messages m
+                JOIN assistant_conversations c
+                  ON c.id=m.conversation_id
+                WHERE m.id=? AND m.role='assistant' AND c.user_id=?
+                """,
+                (message_id, user_id),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                raise ValueError("对话消息不存在")
+            current_status = str(row["status"])
+            if current_status in {"completed", "failed"}:
+                connection.commit()
+                return {
+                    "message_id": message_id,
+                    "status": current_status,
+                    "run_state": str(row["run_state"] or current_status),
+                    "cancelled": str(row["run_state"]) == "cancelled",
+                }
+            if current_status == "queued":
+                connection.execute(
+                    """
+                    UPDATE assistant_messages
+                    SET status='failed', cancel_requested_at=?,
+                        cancel_reason=?, error='已停止生成', finished_at=?,
+                        claim_token=NULL, lease_expires_at=NULL
+                    WHERE id=? AND status='queued'
+                    """,
+                    (now, clean_reason, now, message_id),
+                )
+                self._append_agent_event(
+                    connection,
+                    message_id=message_id,
+                    event_type="run.cancelled",
+                    phase="cancelled",
+                    status="cancelled",
+                    label="已停止",
+                    payload={"reason": clean_reason},
+                    created_at=now,
+                )
+                connection.commit()
+                return {
+                    "message_id": message_id,
+                    "status": "failed",
+                    "run_state": "cancelled",
+                    "cancelled": True,
+                }
+            connection.execute(
+                """
+                UPDATE assistant_messages
+                SET cancel_requested_at=COALESCE(cancel_requested_at, ?),
+                    cancel_reason=CASE WHEN cancel_reason='' THEN ?
+                                       ELSE cancel_reason END
+                WHERE id=? AND status='running'
+                """,
+                (now, clean_reason, message_id),
+            )
+            if not row["cancel_requested_at"]:
+                self._append_agent_event(
+                    connection,
+                    message_id=message_id,
+                    event_type="run.cancelling",
+                    phase="cancelling",
+                    status="running",
+                    label="正在停止",
+                    payload={"reason": clean_reason},
+                    created_at=now,
+                )
+            connection.commit()
+        return {
+            "message_id": message_id,
+            "status": "running",
+            "run_state": "cancelling",
+            "cancelled": False,
+        }
+
+    def cancel_running_message(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        reason: str = "作者停止生成",
+    ) -> bool:
+        now = utc_now()
+        clean_reason = str(reason or "作者停止生成")[:500]
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE assistant_messages
+                SET status='failed', cancel_requested_at=COALESCE(
+                        cancel_requested_at, ?
+                    ), cancel_reason=CASE WHEN cancel_reason='' THEN ?
+                                          ELSE cancel_reason END,
+                    error='已停止生成', finished_at=?, claim_token=NULL,
+                    lease_expires_at=NULL
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=?
+                """,
+                (now, clean_reason, now, message_id, claim_token),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                UPDATE assistant_tool_calls
+                SET status='failed', error='任务已停止', finished_at=?
+                WHERE assistant_message_id=? AND status='running'
+                """,
+                (now, message_id),
+            )
+            self._append_agent_event(
+                connection,
+                message_id=message_id,
+                event_type="run.cancelled",
+                phase="cancelled",
+                status="cancelled",
+                label="已停止",
+                payload={"reason": clean_reason},
+                created_at=now,
+            )
+            connection.commit()
+        return True
 
     def _create_empty_chapter(
         self, *, user_id: int, project_id: str
@@ -279,11 +505,17 @@ class AssistantChatService:
         *,
         user_id: int,
         conversation: Mapping[str, Any],
+        title: str = "",
+        outline: str = "",
+        key_points: str = "",
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         project_id = str(conversation.get("project_id") or "")
         conversation_id = str(conversation.get("id") or "")
         if not project_id or not conversation_id:
             raise ValueError("当前对话没有可写作的作品")
+        clean_title = _clean_title(str(title or ""), "")
+        clean_outline = str(outline or "").strip()[:6000]
+        clean_key_points = str(key_points or "").strip()[:6000]
 
         chapter_id = uuid.uuid4().hex
         chapter_dir = (
@@ -350,12 +582,15 @@ class AssistantChatService:
                             id, project_id, position, title, outline,
                             key_points, content_path, volume_id,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, '', '', '', ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             chapter_id,
                             project_id,
                             next_position,
+                            clean_title,
+                            clean_outline,
+                            clean_key_points,
                             str(content_path),
                             volume_id,
                             now,
@@ -405,7 +640,710 @@ class AssistantChatService:
             "previous_chapter_id": str(
                 conversation.get("novel_chapter_id") or ""
             ),
+            "title": clean_title,
+            "outline": clean_outline,
+            "key_points": clean_key_points,
         }
+
+    def create_next_chapter_for_agent(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        user_id: int,
+        title: str = "",
+        outline: str = "",
+        key_points: str = "",
+    ) -> Dict[str, Any]:
+        """Create and bind a next chapter during one active Agent run."""
+
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT m.context_snapshot_json, m.conversation_id
+                FROM assistant_messages m
+                JOIN assistant_conversations c
+                  ON c.id=m.conversation_id
+                WHERE m.id=? AND m.role='assistant' AND m.status='running'
+                  AND m.claim_token=? AND c.user_id=?
+                """,
+                (message_id, claim_token, user_id),
+            ).fetchone()
+        if not row:
+            raise ValueError("对话任务租约已经失效")
+        old_snapshot = _load_json(row["context_snapshot_json"], {})
+        old_context = dict(old_snapshot.get("context") or {})
+        capabilities = {
+            str(value)
+            for value in ((old_context.get("agent") or {}).get("capabilities") or [])
+        }
+        if CREATE_CHAPTER not in capabilities:
+            raise PermissionError("当前 Agent 没有创建章节权限")
+        project_id = str((old_context.get("project") or {}).get("id") or "")
+        if not project_id or not self.database.is_main_project(user_id, project_id):
+            raise PermissionError("只有 main 作品可以创建章节")
+        conversation = self.get_conversation(
+            user_id=user_id,
+            conversation_id=str(row["conversation_id"]),
+        )
+        if not conversation:
+            raise ValueError("对话不存在")
+        prepared, creation = self._create_and_bind_next_chapter(
+            user_id=user_id,
+            conversation=conversation,
+            title=title,
+            outline=outline,
+            key_points=key_points,
+        )
+        old_boundaries = dict(old_context.get("assistant_boundaries") or {})
+        old_dispatch = dict(old_context.get("dispatch") or {})
+        role = str((old_context.get("agent") or {}).get("role") or "writer")
+        snapshot = self._build_context_snapshot(
+            user_id=user_id,
+            conversation=prepared,
+            normalized_quote=None,
+            agent_role=role,
+            ui_surface=str(
+                old_dispatch.get("ui_surface")
+                or old_context.get("ui_surface")
+                or ""
+            ),
+            auto_commit=bool(
+                old_boundaries.get("auto_advance_main_head")
+            ),
+            settings_prerequisite=bool(
+                old_boundaries.get("settings_prerequisite")
+            ),
+        )
+        snapshot["context"]["dispatch"] = {
+            **old_dispatch,
+            "scope_preflight": creation,
+            "reason": "agent_created_next_chapter",
+        }
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE assistant_messages
+                SET context_snapshot_json=?
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=?
+                """,
+                (_json(snapshot), message_id, claim_token),
+            )
+            connection.commit()
+        if cursor.rowcount != 1:
+            raise ValueError("对话任务租约已经失效")
+        return {
+            "context": dict(snapshot.get("context") or {}),
+            "sources": list(snapshot.get("sources") or []),
+            "creation": creation,
+        }
+
+    def start_or_resume_chapter_workflow_for_agent(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        user_id: int,
+        chapters: Sequence[Mapping[str, Any]],
+        resume_latest: bool,
+    ) -> Dict[str, Any]:
+        """Create or resume one durable sequential chapter workflow."""
+
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                """
+                SELECT message.context_snapshot_json,
+                       message.conversation_id, conversation.project_id
+                FROM assistant_messages message
+                JOIN assistant_conversations conversation
+                  ON conversation.id=message.conversation_id
+                WHERE message.id=? AND message.role='assistant'
+                  AND message.status='running' AND message.claim_token=?
+                  AND conversation.user_id=?
+                  AND conversation.scope_type IN ('project', 'chapter')
+                """,
+                (message_id, claim_token, user_id),
+            ).fetchone()
+            if not active:
+                connection.rollback()
+                raise ValueError("对话任务租约已经失效")
+            snapshot = _load_json(active["context_snapshot_json"], {})
+            context = dict(snapshot.get("context") or {})
+            capabilities = {
+                str(value)
+                for value in (
+                    (context.get("agent") or {}).get("capabilities") or []
+                )
+            }
+            if not {CREATE_CHAPTER, WRITE_CHAPTER}.issubset(
+                capabilities
+            ):
+                connection.rollback()
+                raise PermissionError("当前 Agent 没有连续创作权限")
+            project_id = str(active["project_id"] or "")
+            if not project_id or not self.database.is_main_project(
+                user_id, project_id
+            ):
+                connection.rollback()
+                raise PermissionError("只有 main 作品可以连续创作")
+            now = utc_now()
+            if resume_latest:
+                workflow = connection.execute(
+                    """
+                    SELECT * FROM assistant_chapter_workflows
+                    WHERE user_id=? AND project_id=?
+                      AND status IN ('pending', 'running', 'paused')
+                    ORDER BY updated_at DESC, rowid DESC
+                    LIMIT 1
+                    """,
+                    (user_id, project_id),
+                ).fetchone()
+                if not workflow:
+                    connection.rollback()
+                    raise ValueError("没有可恢复的连续章节工作流")
+                workflow_id = str(workflow["id"])
+                connection.execute(
+                    """
+                    UPDATE assistant_chapter_workflow_items
+                    SET status='pending', error=''
+                    WHERE workflow_id=? AND status IN ('running', 'failed')
+                    """,
+                    (workflow_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE assistant_chapter_workflows
+                    SET conversation_id=?, status='running', error='',
+                        updated_at=?, finished_at=NULL
+                    WHERE id=?
+                    """,
+                    (
+                        active["conversation_id"],
+                        now,
+                        workflow_id,
+                    ),
+                )
+            else:
+                existing = connection.execute(
+                    """
+                    SELECT id FROM assistant_chapter_workflows
+                    WHERE source_message_id=?
+                    """,
+                    (message_id,),
+                ).fetchone()
+                if existing:
+                    workflow_id = str(existing["id"])
+                    connection.execute(
+                        """
+                        UPDATE assistant_chapter_workflow_items
+                        SET status='pending', error=''
+                        WHERE workflow_id=? AND status IN ('running', 'failed')
+                        """,
+                        (workflow_id,),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE assistant_chapter_workflows
+                        SET status='running', error='', updated_at=?
+                        WHERE id=? AND status<>'completed'
+                        """,
+                        (now, workflow_id),
+                    )
+                else:
+                    if not chapters:
+                        connection.rollback()
+                        raise ValueError("连续创作至少需要一个章节目标")
+                    workflow_id = uuid.uuid4().hex
+                    connection.execute(
+                        """
+                        INSERT INTO assistant_chapter_workflows(
+                            id, user_id, project_id, conversation_id,
+                            source_message_id, status, total_count,
+                            completed_count, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 'running', ?, 0, ?, ?)
+                        """,
+                        (
+                            workflow_id,
+                            user_id,
+                            project_id,
+                            active["conversation_id"],
+                            message_id,
+                            len(chapters),
+                            now,
+                            now,
+                        ),
+                    )
+                    for sequence, chapter in enumerate(chapters, start=1):
+                        connection.execute(
+                            """
+                            INSERT INTO assistant_chapter_workflow_items(
+                                id, workflow_id, sequence, title, outline,
+                                key_points, instruction, target_chars,
+                                status, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                            """,
+                            (
+                                uuid.uuid4().hex,
+                                workflow_id,
+                                sequence,
+                                str(chapter.get("title") or "")[:200],
+                                str(chapter.get("outline") or "")[:6000],
+                                str(chapter.get("key_points") or "")[:6000],
+                                str(chapter.get("instruction") or "")[:6000],
+                                chapter.get("target_chars"),
+                                now,
+                            ),
+                        )
+            connection.commit()
+        return self.get_chapter_workflow(
+            user_id=user_id,
+            workflow_id=workflow_id,
+        )
+
+    def get_chapter_workflow(
+        self,
+        *,
+        user_id: int,
+        workflow_id: str,
+    ) -> Dict[str, Any]:
+        with self.database.connection() as connection:
+            workflow = connection.execute(
+                """
+                SELECT * FROM assistant_chapter_workflows
+                WHERE id=? AND user_id=?
+                """,
+                (workflow_id, user_id),
+            ).fetchone()
+            items = connection.execute(
+                """
+                SELECT * FROM assistant_chapter_workflow_items
+                WHERE workflow_id=? ORDER BY sequence
+                """,
+                (workflow_id,),
+            ).fetchall()
+        if not workflow:
+            raise ValueError("连续章节工作流不存在")
+        return {
+            **dict(workflow),
+            "items": [dict(item) for item in items],
+        }
+
+    def prepare_next_chapter_workflow_item_for_agent(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        user_id: int,
+        workflow_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Bind or create exactly one pending chapter and refresh context."""
+
+        while True:
+            with self.database.connection() as connection:
+                active = connection.execute(
+                    """
+                    SELECT message.context_snapshot_json,
+                           message.conversation_id
+                    FROM assistant_messages message
+                    JOIN assistant_conversations conversation
+                      ON conversation.id=message.conversation_id
+                    JOIN assistant_chapter_workflows workflow
+                      ON workflow.id=? AND workflow.user_id=?
+                     AND workflow.project_id=conversation.project_id
+                    WHERE message.id=? AND message.role='assistant'
+                      AND message.status='running' AND message.claim_token=?
+                      AND conversation.user_id=?
+                    """,
+                    (
+                        workflow_id,
+                        user_id,
+                        message_id,
+                        claim_token,
+                        user_id,
+                    ),
+                ).fetchone()
+                item = connection.execute(
+                    """
+                    SELECT item.*, workflow.project_id
+                    FROM assistant_chapter_workflow_items item
+                    JOIN assistant_chapter_workflows workflow
+                      ON workflow.id=item.workflow_id
+                    WHERE item.workflow_id=? AND item.status='pending'
+                    ORDER BY item.sequence LIMIT 1
+                    """,
+                    (workflow_id,),
+                ).fetchone()
+                if not active:
+                    raise ValueError("对话任务租约已经失效")
+                if not item:
+                    return None
+                if item["version_id"]:
+                    persisted = connection.execute(
+                        """
+                        SELECT 1 FROM novel_chapters
+                        WHERE id=? AND head_version_id=?
+                        """,
+                        (item["chapter_id"], item["version_id"]),
+                    ).fetchone()
+                    if persisted:
+                        now = utc_now()
+                        connection.execute(
+                            """
+                            UPDATE assistant_chapter_workflow_items
+                            SET status='completed', error='', finished_at=?
+                            WHERE id=?
+                            """,
+                            (now, item["id"]),
+                        )
+                        connection.commit()
+                        self._refresh_chapter_workflow_counts(workflow_id)
+                        continue
+                    connection.execute(
+                        """
+                        UPDATE assistant_chapter_workflow_items
+                        SET version_id=NULL
+                        WHERE id=? AND status='pending'
+                        """,
+                        (item["id"],),
+                    )
+                    connection.commit()
+            conversation = self.get_conversation(
+                user_id=user_id,
+                conversation_id=str(active["conversation_id"]),
+            )
+            if not conversation:
+                raise ValueError("对话不存在")
+            creation: dict[str, Any] = {}
+            if item["chapter_id"]:
+                self._bind_conversation_to_chapter(
+                    user_id=user_id,
+                    conversation_id=str(active["conversation_id"]),
+                    project_id=str(item["project_id"]),
+                    chapter_id=str(item["chapter_id"]),
+                )
+                prepared = self.get_conversation(
+                    user_id=user_id,
+                    conversation_id=str(active["conversation_id"]),
+                )
+                if not prepared:
+                    raise ValueError("恢复章节工作范围失败")
+            else:
+                prepared, creation = self._create_and_bind_next_chapter(
+                    user_id=user_id,
+                    conversation=conversation,
+                    title=str(item["title"] or ""),
+                    outline=str(item["outline"] or ""),
+                    key_points=str(item["key_points"] or ""),
+                )
+            chapter_id = str(
+                item["chapter_id"] or creation.get("chapter_id") or ""
+            )
+            now = utc_now()
+            with self.database.connection() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE assistant_chapter_workflow_items
+                    SET chapter_id=?, status='running', attempts=attempts+1,
+                        error='', started_at=?
+                    WHERE id=? AND workflow_id=? AND status='pending'
+                    """,
+                    (chapter_id, now, item["id"], workflow_id),
+                )
+                connection.commit()
+            if cursor.rowcount != 1:
+                raise ValueError("连续章节工作项已经被其他任务处理")
+            old_snapshot = _load_json(active["context_snapshot_json"], {})
+            old_context = dict(old_snapshot.get("context") or {})
+            old_boundaries = dict(
+                old_context.get("assistant_boundaries") or {}
+            )
+            old_dispatch = dict(old_context.get("dispatch") or {})
+            role = str((old_context.get("agent") or {}).get("role") or "writer")
+            refreshed = self._build_context_snapshot(
+                user_id=user_id,
+                conversation=prepared,
+                normalized_quote=None,
+                agent_role=role,
+                ui_surface=str(
+                    old_dispatch.get("ui_surface")
+                    or old_context.get("ui_surface")
+                    or ""
+                ),
+                auto_commit=bool(
+                    old_boundaries.get("auto_advance_main_head")
+                ),
+                settings_prerequisite=False,
+            )
+            refreshed["context"]["dispatch"] = {
+                **old_dispatch,
+                "reason": "chapter_workflow",
+                "workflow_id": workflow_id,
+                "workflow_sequence": int(item["sequence"]),
+            }
+            with self.database.connection() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE assistant_messages SET context_snapshot_json=?
+                    WHERE id=? AND role='assistant' AND status='running'
+                      AND claim_token=?
+                    """,
+                    (_json(refreshed), message_id, claim_token),
+                )
+                connection.commit()
+            if cursor.rowcount != 1:
+                raise ValueError("对话任务租约已经失效")
+            return {
+                "item": {**dict(item), "chapter_id": chapter_id},
+                "context": dict(refreshed.get("context") or {}),
+                "sources": list(refreshed.get("sources") or []),
+            }
+
+    def complete_chapter_workflow_item_for_agent(
+        self,
+        *,
+        message_id: str,
+        claim_token: str,
+        user_id: int,
+        workflow_id: str,
+        item_id: str,
+        content: str,
+        change_summary: str,
+    ) -> Dict[str, Any]:
+        clean_content = str(content or "")
+        if not clean_content.strip():
+            raise ValueError("连续章节正文不能为空")
+        if len(clean_content) > 200_000:
+            raise ValueError("连续章节单章不能超过 200000 字")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT item.chapter_id, item.sequence, item.status,
+                       chapter.content_path AS cache_content_path,
+                       chapter.head_version_id,
+                       head.content_path AS head_content_path,
+                       head.content_hash AS head_content_hash,
+                       workflow.project_id, message.provider, message.model,
+                       message.credential_source
+                FROM assistant_chapter_workflow_items item
+                JOIN assistant_chapter_workflows workflow
+                  ON workflow.id=item.workflow_id
+                JOIN novel_chapters chapter ON chapter.id=item.chapter_id
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=chapter.head_version_id
+                JOIN assistant_messages message
+                  ON message.id=?
+                 AND message.conversation_id=workflow.conversation_id
+                JOIN assistant_conversations conversation
+                  ON conversation.id=message.conversation_id
+                WHERE item.id=? AND item.workflow_id=?
+                  AND item.status='running' AND workflow.user_id=?
+                  AND message.status='running' AND message.claim_token=?
+                  AND conversation.user_id=workflow.user_id
+                  AND conversation.project_id=workflow.project_id
+                """,
+                (
+                    message_id,
+                    item_id,
+                    workflow_id,
+                    user_id,
+                    claim_token,
+                ),
+            ).fetchone()
+        if not row:
+            raise ValueError("连续章节工作项或任务租约已经失效")
+        chapter_path = Path(str(row["cache_content_path"]))
+        previous_content = _read_text(row["head_content_path"])
+        if row["head_version_id"] and _sha256(previous_content) != str(
+            row["head_content_hash"] or ""
+        ):
+            raise ValueError("当前章节文件与工作版本不一致，请先恢复后再续写")
+        token = secrets.token_hex(16)
+        version_id = uuid.uuid4().hex
+        version_path = (
+            chapter_path.parent / "versions" / f"assistant-series-{token}.txt"
+        )
+        _atomic_write(version_path, clean_content, token)
+        now = utc_now()
+        count = len(clean_content)
+        effective_count = effective_char_count(clean_content)
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                latest = connection.execute(
+                    """
+                    SELECT item.status, item.chapter_id,
+                           chapter.head_version_id
+                    FROM assistant_chapter_workflow_items item
+                    JOIN novel_chapters chapter ON chapter.id=item.chapter_id
+                    WHERE item.id=? AND item.workflow_id=?
+                    """,
+                    (item_id, workflow_id),
+                ).fetchone()
+                if not latest or str(latest["status"]) != "running":
+                    raise ValueError("连续章节工作项状态已经变化")
+                if str(latest["head_version_id"] or "") != str(
+                    row["head_version_id"] or ""
+                ):
+                    raise ValueError("章节正文版本已经变化，请从断点重新执行")
+                connection.execute(
+                    """
+                    INSERT INTO novel_chapter_versions(
+                        id, chapter_id, kind, content_path, char_count,
+                        created_at, parent_version_id, source,
+                        content_hash, change_summary, created_by,
+                        quality_status, effective_char_count, hard_issue_count
+                    ) VALUES (
+                        ?, ?, 'assistant_series', ?, ?, ?, ?,
+                        'assistant_chat', ?, ?, 'assistant', 'pass', ?, 0
+                    )
+                    """,
+                    (
+                        version_id,
+                        row["chapter_id"],
+                        str(version_path),
+                        count,
+                        now,
+                        row["head_version_id"],
+                        _sha256(clean_content),
+                        str(change_summary or "连续章节创作")[:1000],
+                        effective_count,
+                    ),
+                )
+                advanced = self.database.set_chapter_head_in_transaction(
+                    connection,
+                    user_id=user_id,
+                    project_id=str(row["project_id"]),
+                    chapter_id=str(row["chapter_id"]),
+                    version_id=version_id,
+                    expected_old_head_version_id=str(
+                        row["head_version_id"] or ""
+                    ),
+                    now=now,
+                )
+                if not advanced:
+                    raise ValueError("连续章节版本没有成为 main HEAD")
+                cursor = connection.execute(
+                    """
+                    UPDATE assistant_chapter_workflow_items
+                    SET version_id=?, status='completed', error='',
+                        finished_at=?
+                    WHERE id=? AND workflow_id=? AND status='running'
+                    """,
+                    (version_id, now, item_id, workflow_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("连续章节工作项状态已经变化")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                version_path.unlink(missing_ok=True)
+                raise
+        try:
+            _atomic_write(chapter_path, clean_content, secrets.token_hex(16))
+        except Exception:
+            logger.warning(
+                "failed to refresh non-authoritative chapter cache",
+                exc_info=True,
+            )
+        try:
+            targets = self.database.list_memory_refresh_targets(
+                user_id=user_id,
+                project_id=str(row["project_id"]),
+                chapter_id=str(row["chapter_id"]),
+            )
+            for target in targets:
+                self.database.create_memory_extraction_job(
+                    user_id=user_id,
+                    project_id=str(row["project_id"]),
+                    chapter_id=str(target["chapter_id"]),
+                    version_id=str(target["head_version_id"]),
+                    provider=str(row["provider"]),
+                    model=str(row["model"]),
+                    credential_source=str(row["credential_source"]),
+                )
+        except Exception:
+            logger.exception(
+                "failed to queue chapter workflow memory refresh workflow=%s item=%s",
+                workflow_id,
+                item_id,
+            )
+        self._refresh_chapter_workflow_counts(workflow_id)
+        return {
+            "workflow_id": workflow_id,
+            "item_id": item_id,
+            "sequence": int(row["sequence"]),
+            "chapter_id": str(row["chapter_id"]),
+            "version_id": version_id,
+            "char_count": count,
+        }
+
+    def pause_chapter_workflow_for_agent(
+        self,
+        *,
+        user_id: int,
+        workflow_id: str,
+        item_id: str,
+        error: str,
+    ) -> Dict[str, Any]:
+        now = utc_now()
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE assistant_chapter_workflow_items
+                SET status='failed', error=?, finished_at=?
+                WHERE id=? AND workflow_id=? AND status='running'
+                """,
+                (str(error)[:2000], now, item_id, workflow_id),
+            )
+            connection.execute(
+                """
+                UPDATE assistant_chapter_workflows
+                SET status='paused', error=?, updated_at=?
+                WHERE id=? AND user_id=?
+                """,
+                (str(error)[:2000], now, workflow_id, user_id),
+            )
+            connection.commit()
+        return self.get_chapter_workflow(
+            user_id=user_id,
+            workflow_id=workflow_id,
+        )
+
+    def _refresh_chapter_workflow_counts(self, workflow_id: str) -> None:
+        now = utc_now()
+        with self.database.connection() as connection:
+            counts = connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END)
+                           AS completed
+                FROM assistant_chapter_workflow_items
+                WHERE workflow_id=?
+                """,
+                (workflow_id,),
+            ).fetchone()
+            total = int(counts["total"] or 0)
+            completed = int(counts["completed"] or 0)
+            status = "completed" if total and completed == total else "running"
+            connection.execute(
+                """
+                UPDATE assistant_chapter_workflows
+                SET completed_count=?, status=?, error='', updated_at=?,
+                    finished_at=?
+                WHERE id=?
+                """,
+                (
+                    completed,
+                    status,
+                    now,
+                    now if status == "completed" else None,
+                    workflow_id,
+                ),
+            )
+            connection.commit()
 
     def _bind_conversation_to_chapter(
         self,
@@ -433,7 +1371,7 @@ class AssistantChatService:
                 UPDATE assistant_conversations
                 SET scope_type='chapter', novel_chapter_id=?, updated_at=?
                 WHERE id=? AND user_id=? AND project_id=?
-                  AND scope_type='project'
+                  AND scope_type IN ('project', 'chapter')
                 """,
                 (
                     chapter_id,
@@ -930,9 +1868,10 @@ class AssistantChatService:
                         id, conversation_id, role, content,
                         parent_user_message_id, status, provider, model,
                         credential_source, quality_mode, response_json, input_tokens,
-                        output_tokens, created_at, started_at, finished_at
+                        output_tokens, created_at, started_at, finished_at,
+                        run_state, run_state_label
                     ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, 0, 0,
-                              ?, NULL, ?)
+                              ?, NULL, ?, 'completed', '已完成')
                     """,
                     (
                         copied_id,
@@ -1085,20 +2024,20 @@ class AssistantChatService:
             ).fetchall()
         tool_calls_by_message: dict[str, list[dict[str, Any]]] = {}
         for tool_row in tool_rows:
-            decoded = self._decode_tool_call(dict(tool_row))
+            decoded = decode_tool_call(dict(tool_row))
             tool_calls_by_message.setdefault(
                 str(tool_row["assistant_message_id"]), []
             ).append(decoded)
         steps_by_message: dict[str, list[dict[str, Any]]] = {}
         for step_row in step_rows:
-            decoded = self._decode_agent_step(dict(step_row))
+            decoded = decode_agent_step(dict(step_row))
             steps_by_message.setdefault(
                 str(step_row["assistant_message_id"]), []
             ).append(decoded)
         result = dict(row)
         result["messages"] = []
         for message in messages:
-            decoded = self._decode_message(dict(message))
+            decoded = decode_message(dict(message))
             decoded["tool_calls"] = tool_calls_by_message.get(
                 str(message["id"]), []
             )
@@ -1347,10 +2286,9 @@ class AssistantChatService:
                 INSERT INTO assistant_messages(
                     id, conversation_id, role, content, status,
                     provider, model, credential_source, quality_mode,
-                    created_at,
-                    finished_at
+                    created_at, finished_at, run_state, run_state_label
                 ) VALUES (?, ?, 'user', ?, 'completed', '', '', 'default',
-                          ?, ?, ?)
+                          ?, ?, ?, 'completed', '')
                 """,
                 (
                     user_message_id,
@@ -1393,8 +2331,10 @@ class AssistantChatService:
                 INSERT INTO assistant_messages(
                     id, conversation_id, role, parent_user_message_id,
                     status, provider, model, credential_source,
-                    quality_mode, context_snapshot_json, created_at
-                ) VALUES (?, ?, 'assistant', ?, 'queued', ?, ?, ?, ?, ?, ?)
+                    quality_mode, context_snapshot_json, created_at,
+                    run_state, run_state_label
+                ) VALUES (?, ?, 'assistant', ?, 'queued', ?, ?, ?, ?, ?, ?,
+                          'queued', '等待处理')
                 """,
                 (
                     assistant_message_id,
@@ -1578,7 +2518,7 @@ class AssistantChatService:
             agent_role=dispatch.role,
             ui_surface=ui_surface,
             auto_commit=bool(
-                boundaries.get("auto_commit_working_copy")
+                boundaries.get("auto_advance_main_head")
             ),
             settings_prerequisite=dispatch.settings_prerequisite,
         )
@@ -1627,18 +2567,75 @@ class AssistantChatService:
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             now = utc_now()
-            connection.execute(
+            expired_rows = connection.execute(
                 """
-                UPDATE assistant_messages
-                SET status='queued', started_at=NULL, claim_token=NULL,
-                    lease_expires_at=NULL,
-                    error='上一次处理租约已过期，已自动重新排队'
+                SELECT id, cancel_requested_at, cancel_reason
+                FROM assistant_messages
                 WHERE role='assistant' AND status='running'
                   AND lease_expires_at IS NOT NULL
                   AND lease_expires_at<=?
                 """,
                 (now,),
-            )
+            ).fetchall()
+            for expired in expired_rows:
+                expired_id = str(expired["id"])
+                connection.execute(
+                    """
+                    UPDATE assistant_tool_calls
+                    SET status='failed',
+                        error='任务租约过期，工具执行结果已丢弃',
+                        finished_at=?
+                    WHERE assistant_message_id=? AND status='running'
+                    """,
+                    (now, expired_id),
+                )
+                if expired["cancel_requested_at"]:
+                    connection.execute(
+                        """
+                        UPDATE assistant_messages
+                        SET status='failed', started_at=NULL,
+                            claim_token=NULL, lease_expires_at=NULL,
+                            error='已停止生成', finished_at=?
+                        WHERE id=? AND status='running'
+                        """,
+                        (now, expired_id),
+                    )
+                    self._append_agent_event(
+                        connection,
+                        message_id=expired_id,
+                        event_type="run.cancelled",
+                        phase="cancelled",
+                        status="cancelled",
+                        label="已停止",
+                        payload={
+                            "reason": str(
+                                expired["cancel_reason"]
+                                or "停止请求在恢复任务时生效"
+                            )
+                        },
+                        created_at=now,
+                    )
+                    continue
+                connection.execute(
+                    """
+                    UPDATE assistant_messages
+                    SET status='queued', started_at=NULL, claim_token=NULL,
+                        lease_expires_at=NULL,
+                        error='上一次处理租约已过期，已自动重新排队'
+                    WHERE id=? AND status='running'
+                    """,
+                    (expired_id,),
+                )
+                self._append_agent_event(
+                    connection,
+                    message_id=expired_id,
+                    event_type="run.recovered",
+                    phase="queued",
+                    status="queued",
+                    label="已恢复，等待重新处理",
+                    payload={"reason": "lease_expired"},
+                    created_at=now,
+                )
             row = connection.execute(
                 """
                 SELECT m.*, c.user_id, c.scope_type, c.project_id,
@@ -1660,7 +2657,9 @@ class AssistantChatService:
                 """
                 UPDATE assistant_messages
                 SET status='running', started_at=?, error=NULL,
-                    claim_token=?, lease_expires_at=?
+                    claim_token=?, lease_expires_at=?,
+                    cancel_requested_at=NULL, cancel_reason='',
+                    stream_content=''
                 WHERE id=? AND role='assistant' AND status='queued'
                 """,
                 (
@@ -1673,9 +2672,21 @@ class AssistantChatService:
             if cursor.rowcount != 1:
                 connection.rollback()
                 return None
+            self._append_agent_event(
+                connection,
+                message_id=str(row["id"]),
+                event_type="run.claimed",
+                phase="routing",
+                status="running",
+                label="正在理解请求",
+                payload={"recovered": bool(expired_rows)},
+                created_at=now,
+            )
             connection.commit()
         item = dict(row)
         item["claim_token"] = claim_token
+        item["run_state"] = "routing"
+        item["run_state_label"] = "正在理解请求"
         return item
 
     def build_job_payload(self, item: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1707,17 +2718,21 @@ class AssistantChatService:
                 """,
                 (item["conversation_id"], user_row["rowid"]),
             ).fetchall()
-            history, conversation_memory = _compile_conversation_context(
-                history_rows
-            )
+            (
+                history,
+                conversation_memory,
+                conversation_memory_state,
+            ) = compile_conversation_context(history_rows)
             connection.execute(
                 """
                 UPDATE assistant_conversations
-                SET memory_summary=?, memory_message_count=?
+                SET memory_summary=?, memory_state_json=?,
+                    memory_message_count=?
                 WHERE id=?
                 """,
                 (
                     conversation_memory,
+                    _json(conversation_memory_state),
                     len(history_rows),
                     item["conversation_id"],
                 ),
@@ -1729,6 +2744,7 @@ class AssistantChatService:
             item["parent_user_message_id"]
         )
         context["conversation_memory"] = conversation_memory
+        context["conversation_memory_state"] = conversation_memory_state
         context["conversation_history_search_available"] = True
         return {
             "context": context,
@@ -1827,13 +2843,12 @@ class AssistantChatService:
         latency_ms: int,
         error: str = "",
     ) -> str:
-        if action not in {"call_tool", "finish", "fallback"}:
+        if action not in {"call_tool", "finish"}:
             raise ValueError("Agent 步骤动作无效")
         if outcome_status not in {
             "completed",
             "denied",
             "failed",
-            "fallback",
         }:
             raise ValueError("Agent 步骤结果无效")
         step_id = uuid.uuid4().hex
@@ -1936,10 +2951,10 @@ class AssistantChatService:
         response: AssistantChatResponse,
     ) -> bool:
         with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT m.context_snapshot_json, m.parent_user_message_id,
-                       c.user_id
+                SELECT m.context_snapshot_json, c.user_id
                 FROM assistant_messages m
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
@@ -1950,21 +2965,13 @@ class AssistantChatService:
             ).fetchone()
             if not row:
                 return False
-            quote = connection.execute(
-                """
-                SELECT * FROM assistant_message_quotes
-                WHERE message_id=?
-                """,
-                (row["parent_user_message_id"],),
-            ).fetchone()
             snapshot = _load_json(row["context_snapshot_json"], {})
-            normalized = self._normalize_response(
+            normalized = normalize_assistant_response(
                 response=response,
                 sources=[
                     *list(snapshot.get("sources") or []),
                     *list(response.accessed_sources or []),
                 ],
-                quote=dict(quote) if quote else None,
                 context=dict(snapshot.get("context") or {}),
             )
             cursor = connection.execute(
@@ -1977,7 +2984,7 @@ class AssistantChatService:
                     finished_at=?, claim_token=NULL, lease_expires_at=NULL,
                     error=NULL
                 WHERE id=? AND role='assistant' AND status='running'
-                  AND claim_token=?
+                  AND claim_token=? AND cancel_requested_at IS NULL
                 """,
                 (
                     normalized["answer"],
@@ -1993,10 +3000,29 @@ class AssistantChatService:
                     claim_token,
                 ),
             )
+            if cursor.rowcount == 1:
+                self._append_agent_event(
+                    connection,
+                    message_id=message_id,
+                    event_type="run.completed",
+                    phase="completed",
+                    status="completed",
+                    label="已完成",
+                    payload={
+                        "provider": response.provider,
+                        "model": response.model,
+                    },
+                )
             connection.commit()
         accepted = cursor.rowcount == 1
         if accepted:
             self._auto_commit_completed_message(
+                user_id=int(row["user_id"]),
+                assistant_message_id=message_id,
+                response=normalized,
+                context=dict(snapshot.get("context") or {}),
+            )
+            self._auto_apply_completed_message(
                 user_id=int(row["user_id"]),
                 assistant_message_id=message_id,
                 response=normalized,
@@ -2035,6 +3061,7 @@ class AssistantChatService:
         *,
         user_id: int,
         message_id: str,
+        after_event_sequence: int = 0,
     ) -> Optional[Dict[str, Any]]:
         with self.database.connection() as connection:
             row = connection.execute(
@@ -2042,6 +3069,8 @@ class AssistantChatService:
                 SELECT m.id, m.conversation_id, m.status, m.content,
                        m.stream_content, m.stream_sequence, m.error,
                        m.response_json, m.provider, m.model,
+                       m.run_state, m.run_state_label, m.run_sequence,
+                       m.cancel_requested_at,
                        c.scope_type, c.project_id, c.document_id,
                        c.novel_chapter_id, c.reference_chapter_id
                 FROM assistant_messages m
@@ -2051,12 +3080,52 @@ class AssistantChatService:
                 """,
                 (message_id, user_id),
             ).fetchone()
+            event_rows = (
+                connection.execute(
+                    """
+                    SELECT sequence, event_type, phase, status, label,
+                           payload_json, created_at
+                    FROM assistant_agent_events
+                    WHERE assistant_message_id=? AND sequence>?
+                    ORDER BY sequence
+                    """,
+                    (message_id, max(0, int(after_event_sequence))),
+                ).fetchall()
+                if row
+                else []
+            )
         if not row:
             return None
         result = dict(row)
         response = _load_json(result.pop("response_json"), {})
         auto_commit_status = str(
             (response.get("auto_commit") or {}).get("status") or ""
+        )
+        settings_patch_status = str(
+            response.get("settings_patch_status") or ""
+        )
+        story_plan_status = str(response.get("story_plan_status") or "")
+        chapter_patch_status = str(
+            response.get("chapter_patch_status") or ""
+        )
+        note_patch_status = str(response.get("note_patch_status") or "")
+        version_restore_status = str(
+            response.get("version_restore_status") or ""
+        )
+        technique_patch_status = str(
+            response.get("technique_patch_status") or ""
+        )
+        application_pending = any(
+            status == "pending"
+            for status in (
+                auto_commit_status,
+                settings_patch_status,
+                story_plan_status,
+                chapter_patch_status,
+                note_patch_status,
+                version_restore_status,
+                technique_patch_status,
+            )
         )
         message_status = str(result["status"])
         result["content"] = str(
@@ -2068,9 +3137,26 @@ class AssistantChatService:
             message_status == "failed"
             or (
                 message_status == "completed"
-                and auto_commit_status != "pending"
+                and not application_pending
             )
         )
+        result["cancel_requested"] = bool(
+            result.pop("cancel_requested_at", None)
+        )
+        result["cancelled"] = str(result.get("run_state") or "") == (
+            "cancelled"
+        )
+        result["events"] = [
+            {
+                **{
+                    key: value
+                    for key, value in dict(event).items()
+                    if key != "payload_json"
+                },
+                "payload": _load_json(event["payload_json"], {}),
+            }
+            for event in event_rows
+        ]
         return result
 
     def _auto_commit_completed_message(
@@ -2082,32 +3168,18 @@ class AssistantChatService:
         context: Mapping[str, Any],
     ) -> None:
         boundaries = dict(context.get("assistant_boundaries") or {})
-        if not boundaries.get("auto_commit_working_copy"):
+        if not boundaries.get("auto_advance_main_head"):
             return
         kind = ""
         try:
             if isinstance(response.get("draft"), dict):
                 kind = "draft"
-                result = self.save_draft_candidate(
-                    user_id=user_id,
-                    assistant_message_id=assistant_message_id,
-                )
-            elif isinstance(response.get("rewrite"), dict):
-                kind = "rewrite"
-                result = self.save_rewrite_candidate(
+                result = self.commit_draft_to_head(
                     user_id=user_id,
                     assistant_message_id=assistant_message_id,
                 )
             else:
                 return
-            promoted = self.database.accept_chapter_version(
-                user_id=user_id,
-                project_id=str(result["project_id"]),
-                chapter_id=str(result["chapter_id"]),
-                version_id=str(result["version_id"]),
-            )
-            if not promoted:
-                raise ValueError("对话写作结果没有成为当前版本")
         except (OSError, UnicodeError, ValueError) as exc:
             self._record_auto_commit(
                 assistant_message_id=assistant_message_id,
@@ -2122,8 +3194,19 @@ class AssistantChatService:
             kind=kind,
             version_id=str(result["version_id"]),
         )
-        if int(promoted.get("char_count") or 0) <= 0:
-            return
+        self._queue_head_memory_refresh(
+            user_id=user_id,
+            assistant_message_id=assistant_message_id,
+            result=result,
+        )
+
+    def _queue_head_memory_refresh(
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+        result: Mapping[str, Any],
+    ) -> None:
         try:
             with self.database.connection() as connection:
                 runtime = connection.execute(
@@ -2136,15 +3219,21 @@ class AssistantChatService:
                 ).fetchone()
             if not runtime:
                 return
-            self.database.create_memory_extraction_job(
+            targets = self.database.list_memory_refresh_targets(
                 user_id=user_id,
                 project_id=str(result["project_id"]),
                 chapter_id=str(result["chapter_id"]),
-                version_id=str(result["version_id"]),
-                provider=str(runtime["provider"]),
-                model=str(runtime["model"]),
-                credential_source=str(runtime["credential_source"]),
             )
+            for target in targets:
+                self.database.create_memory_extraction_job(
+                    user_id=user_id,
+                    project_id=str(result["project_id"]),
+                    chapter_id=str(target["chapter_id"]),
+                    version_id=str(target["head_version_id"]),
+                    provider=str(runtime["provider"]),
+                    model=str(runtime["model"]),
+                    credential_source=str(runtime["credential_source"]),
+                )
         except Exception:
             logger.exception(
                 "failed to queue assistant chapter memory extraction "
@@ -2191,6 +3280,130 @@ class AssistantChatService:
             )
             connection.commit()
 
+    def _auto_apply_completed_message(
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+        response: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> None:
+        """Apply reversible settings work before exposing a completed turn."""
+
+        boundaries = dict(context.get("assistant_boundaries") or {})
+        operations = (
+            (
+                "technique_patch",
+                bool(boundaries.get("auto_apply_techniques")),
+                lambda: self.apply_technique_patch_candidate(
+                    user_id=user_id,
+                    assistant_message_id=assistant_message_id,
+                ),
+            ),
+            (
+                "version_restore",
+                bool(boundaries.get("auto_advance_main_head")),
+                lambda: self.apply_version_restore_candidate(
+                    user_id=user_id,
+                    assistant_message_id=assistant_message_id,
+                ),
+            ),
+            (
+                "note_patch",
+                bool(boundaries.get("auto_apply_notes")),
+                lambda: self.apply_note_patch_candidate(
+                    user_id=user_id,
+                    assistant_message_id=assistant_message_id,
+                ),
+            ),
+            (
+                "chapter_patch",
+                bool(boundaries.get("auto_apply_chapter_metadata")),
+                lambda: self.apply_chapter_patch_candidate(
+                    user_id=user_id,
+                    assistant_message_id=assistant_message_id,
+                ),
+            ),
+            (
+                "settings_patch",
+                bool(boundaries.get("auto_apply_settings")),
+                lambda: self.apply_settings_candidate(
+                    user_id=user_id,
+                    assistant_message_id=assistant_message_id,
+                ),
+            ),
+            (
+                "story_plan",
+                bool(boundaries.get("auto_apply_story_plan")),
+                lambda: self.apply_story_plan_candidate(
+                    user_id=user_id,
+                    assistant_message_id=assistant_message_id,
+                ),
+            ),
+        )
+        for kind, enabled, apply_operation in operations:
+            if not enabled or not isinstance(response.get(kind), dict):
+                continue
+            try:
+                applied = apply_operation()
+                if kind == "version_restore" and isinstance(applied, Mapping):
+                    self._queue_head_memory_refresh(
+                        user_id=user_id,
+                        assistant_message_id=assistant_message_id,
+                        result=applied,
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "failed to auto-apply assistant %s message=%s",
+                    kind,
+                    assistant_message_id,
+                )
+                self._record_auto_apply_failure(
+                    assistant_message_id=assistant_message_id,
+                    kind=kind,
+                    error=str(exc),
+                )
+
+    def _record_auto_apply_failure(
+        self,
+        *,
+        assistant_message_id: str,
+        kind: str,
+        error: str,
+    ) -> None:
+        status_field = {
+            "chapter_patch": "chapter_patch_status",
+            "settings_patch": "settings_patch_status",
+            "story_plan": "story_plan_status",
+            "note_patch": "note_patch_status",
+            "version_restore": "version_restore_status",
+            "technique_patch": "technique_patch_status",
+        }.get(kind)
+        if not status_field:
+            return
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT response_json FROM assistant_messages
+                WHERE id=? AND role='assistant' AND status='completed'
+                """,
+                (assistant_message_id,),
+            ).fetchone()
+            if not row:
+                return
+            stored = _load_json(row["response_json"], {})
+            stored[status_field] = "failed"
+            stored[f"{kind}_error"] = error[:1000] or "自动写入失败"
+            stored[f"{kind}_updated_at"] = utc_now()
+            connection.execute(
+                """
+                UPDATE assistant_messages SET response_json=?
+                WHERE id=?
+                """,
+                (_json(stored), assistant_message_id),
+            )
+            connection.commit()
+
     def fail_message(
         self,
         message_id: str,
@@ -2201,6 +3414,26 @@ class AssistantChatService:
         output_tokens: int = 0,
     ) -> bool:
         with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            owner = connection.execute(
+                """
+                SELECT cancel_requested_at, cancel_reason
+                FROM assistant_messages
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=?
+                """,
+                (message_id, claim_token),
+            ).fetchone()
+            if not owner:
+                connection.rollback()
+                return False
+            if owner["cancel_requested_at"]:
+                connection.rollback()
+                return self.cancel_running_message(
+                    message_id=message_id,
+                    claim_token=claim_token,
+                    reason=str(owner["cancel_reason"] or "作者停止生成"),
+                )
             cursor = connection.execute(
                 """
                 UPDATE assistant_messages
@@ -2220,6 +3453,24 @@ class AssistantChatService:
                     claim_token,
                 ),
             )
+            if cursor.rowcount == 1:
+                connection.execute(
+                    """
+                    UPDATE assistant_tool_calls
+                    SET status='failed', error=?, finished_at=?
+                    WHERE assistant_message_id=? AND status='running'
+                    """,
+                    (error[:2000], utc_now(), message_id),
+                )
+                self._append_agent_event(
+                    connection,
+                    message_id=message_id,
+                    event_type="run.failed",
+                    phase="failed",
+                    status="failed",
+                    label="生成失败",
+                    payload={"error": error[:500]},
+                )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -2227,16 +3478,56 @@ class AssistantChatService:
         self, message_id: str, claim_token: str, error: str
     ) -> bool:
         with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            owner = connection.execute(
+                """
+                SELECT cancel_requested_at, cancel_reason
+                FROM assistant_messages
+                WHERE id=? AND role='assistant' AND status='running'
+                  AND claim_token=?
+                """,
+                (message_id, claim_token),
+            ).fetchone()
+            if not owner:
+                connection.rollback()
+                return False
+            if owner["cancel_requested_at"]:
+                connection.rollback()
+                return self.cancel_running_message(
+                    message_id=message_id,
+                    claim_token=claim_token,
+                    reason=str(owner["cancel_reason"] or "作者停止生成"),
+                )
             cursor = connection.execute(
                 """
                 UPDATE assistant_messages
                 SET status='queued', started_at=NULL, claim_token=NULL,
-                    lease_expires_at=NULL, error=?
+                    lease_expires_at=NULL, error=?, stream_content=''
                 WHERE id=? AND role='assistant' AND status='running'
                   AND claim_token=?
                 """,
                 (error[:2000], message_id, claim_token),
             )
+            if cursor.rowcount == 1:
+                connection.execute(
+                    """
+                    UPDATE assistant_tool_calls
+                    SET status='failed',
+                        error='任务已重新排队，当前工具结果已丢弃',
+                        finished_at=?
+                    WHERE assistant_message_id=? AND status='running'
+                    """,
+                    (utc_now(), message_id),
+                )
+                self._append_agent_event(
+                    connection,
+                    message_id=message_id,
+                    event_type="run.requeued",
+                    phase="queued",
+                    status="queued",
+                    label="等待重新处理",
+                    payload={"reason": error[:500]},
+                )
             connection.commit()
         return cursor.rowcount == 1
 
@@ -2280,209 +3571,877 @@ class AssistantChatService:
             )
         if not row:
             return None
-        result = self._decode_message(dict(row))
+        result = decode_message(dict(row))
         result["tool_calls"] = [
-            self._decode_tool_call(dict(tool_row))
+            decode_tool_call(dict(tool_row))
             for tool_row in tool_rows
         ]
         result["agent_steps"] = [
-            self._decode_agent_step(dict(step_row))
+            decode_agent_step(dict(step_row))
             for step_row in step_rows
         ]
         return result
 
-    def save_rewrite_candidate(
-        self, *, user_id: int, assistant_message_id: str
-    ) -> Dict[str, str]:
+
+    def apply_chapter_patch_candidate(
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+    ) -> Dict[str, Any]:
+        """Atomically update chapter metadata and ordering on main."""
+
         with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT m.*, c.project_id,
-                       q.novel_chapter_id, q.version_id,
-                       q.start_offset, q.end_offset, q.quote_text,
-                       q.content_hash, ch.content_path AS chapter_content_path
+                SELECT m.response_json, m.context_snapshot_json,
+                       parent.content AS author_request,
+                       c.id AS conversation_id, c.project_id
                 FROM assistant_messages m
+                LEFT JOIN assistant_messages parent
+                  ON parent.id=m.parent_user_message_id
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
-                JOIN assistant_message_quotes q
-                  ON q.message_id=m.parent_user_message_id
-                JOIN novel_chapters ch
-                  ON ch.id=q.novel_chapter_id
-                JOIN novel_projects p ON p.id=ch.project_id
+                JOIN novel_projects p ON p.id=c.project_id
+                JOIN work_versions version
+                  ON version.project_id=c.project_id
+                 AND version.ref_type='branch'
+                 AND version.ref_name='main'
+                 AND version.is_editable=1
+                JOIN works work
+                  ON work.id=version.work_id AND work.user_id=c.user_id
                 WHERE m.id=? AND c.user_id=? AND p.user_id=?
                   AND m.role='assistant' AND m.status='completed'
-                  AND q.source_type='novel_version'
+                  AND c.scope_type IN ('project', 'chapter')
                 """,
                 (assistant_message_id, user_id, user_id),
             ).fetchone()
             if not row:
-                raise ValueError("这条回复没有可保存的选区改写")
-            if row["applied_version_id"]:
-                return {
-                    "project_id": str(row["project_id"]),
-                    "chapter_id": str(row["novel_chapter_id"]),
-                    "conversation_id": str(row["conversation_id"]),
-                    "version_id": str(row["applied_version_id"]),
-                }
+                connection.rollback()
+                raise ValueError("这条回复没有可应用的章节修改")
             response = _load_json(row["response_json"], {})
-            rewrite = response.get("rewrite")
-            if not isinstance(rewrite, dict):
-                raise ValueError("这条回复没有可保存的选区改写")
-            replacement = str(rewrite.get("replacement_text") or "")
-            if not replacement or len(replacement) > 20_000:
-                raise ValueError("改写候选内容无效")
-            source = connection.execute(
-                """
-                SELECT v.content_path
-                FROM novel_chapter_versions v
-                JOIN novel_chapters ch ON ch.id=v.chapter_id
-                JOIN novel_projects p ON p.id=ch.project_id
-                WHERE v.id=? AND ch.id=? AND p.user_id=?
-                """,
-                (row["version_id"], row["novel_chapter_id"], user_id),
-            ).fetchone()
-            if not source:
-                raise ValueError("引用的正文版本已不存在")
-        source_text = _read_text(source["content_path"])
-        start = int(row["start_offset"])
-        end = int(row["end_offset"])
-        if (
-            _sha256(source_text) != str(row["content_hash"])
-            or source_text[start:end] != str(row["quote_text"])
-        ):
-            raise ValueError("引用版本校验失败，未创建候选稿")
-        new_content = source_text[:start] + replacement + source_text[end:]
-        version_id = uuid.uuid4().hex
-        token = secrets.token_hex(16)
-        chapter_content_path = Path(str(row["chapter_content_path"]))
-        version_path = (
-            chapter_content_path.parent
-            / "versions"
-            / f"assistant-{token}.txt"
-        )
-        _atomic_write(version_path, new_content, token)
-        count = len(new_content)
-        effective_count = effective_char_count(new_content)
-        now = utc_now()
-        with self.database.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            active = connection.execute(
-                """
-                SELECT 1 FROM generation_jobs
-                WHERE chapter_id=? AND status IN ('queued', 'running')
-                    AND operation<>'extract_story_delta'
-                LIMIT 1
-                """,
-                (row["novel_chapter_id"],),
-            ).fetchone()
-            if active:
-                connection.rollback()
-                raise ValueError("AI 正在生成本章，请完成后再保存改写")
-            still_unapplied = connection.execute(
-                """
-                SELECT applied_version_id FROM assistant_messages
-                WHERE id=? AND status='completed'
-                """,
-                (assistant_message_id,),
-            ).fetchone()
-            if not still_unapplied:
-                connection.rollback()
-                raise ValueError("对话回复不存在")
-            if still_unapplied["applied_version_id"]:
-                connection.rollback()
+            if response.get("chapter_patch_status") == "applied":
+                connection.commit()
                 return {
                     "project_id": str(row["project_id"]),
-                    "chapter_id": str(row["novel_chapter_id"]),
                     "conversation_id": str(row["conversation_id"]),
-                    "version_id": str(
-                        still_unapplied["applied_version_id"]
+                    "changed_chapter_ids": list(
+                        response.get("chapter_patch_changed_ids") or []
                     ),
+                    "already_applied": True,
                 }
-            _atomic_write(chapter_content_path, new_content, token)
-            connection.execute(
-                """
-                INSERT INTO novel_chapter_versions(
-                    id, chapter_id, kind, content_path, char_count,
-                    created_at, parent_version_id, status, source,
-                    content_hash, change_summary, created_by,
-                    quality_status, effective_char_count, hard_issue_count
-                ) VALUES (
-                    ?, ?, 'assistant_rewrite', ?, ?, ?, ?, 'candidate',
-                    'assistant_chat', ?, ?, 'assistant', 'pass', ?, 0
+            raw_patch = response.get("chapter_patch")
+            if not isinstance(raw_patch, dict):
+                connection.rollback()
+                raise ValueError("这条回复没有可应用的章节修改")
+            try:
+                patch = AssistantChapterPatch.model_validate(raw_patch)
+            except ValueError as exc:
+                connection.rollback()
+                raise ValueError("章节修改结构无效") from exc
+            deleted_ids = {
+                edit.chapter_id for edit in patch.edits if edit.delete
+            }
+            if deleted_ids and not _author_explicitly_requested_deletion(
+                str(row["author_request"] or "")
+            ):
+                connection.rollback()
+                raise ValueError("删除章节前必须由作者明确提出删除目标")
+            snapshot = _load_json(row["context_snapshot_json"], {})
+            context = dict(snapshot.get("context") or {})
+            capabilities = {
+                str(value)
+                for value in (
+                    (context.get("agent") or {}).get("capabilities") or []
                 )
+            }
+            if MANAGE_CHAPTERS not in capabilities:
+                connection.rollback()
+                raise ValueError("生成这条回复的内部任务没有章节管理权限")
+            chapter_rows = connection.execute(
+                """
+                SELECT id, position, title, outline, key_points,
+                       content_path
+                FROM novel_chapters
+                WHERE project_id=?
+                ORDER BY position, created_at, id
                 """,
-                (
-                    version_id,
-                    row["novel_chapter_id"],
-                    str(version_path),
-                    count,
-                    now,
-                    row["version_id"],
-                    _sha256(new_content),
-                    str(rewrite.get("rationale") or "")[:1000],
-                    effective_count,
-                ),
-            )
+                (row["project_id"],),
+            ).fetchall()
+            chapters = [dict(chapter) for chapter in chapter_rows]
+            by_id = {str(chapter["id"]): chapter for chapter in chapters}
+            before: dict[str, dict[str, Any]] = {}
+            for edit in patch.edits:
+                current = by_id.get(edit.chapter_id)
+                if current is None:
+                    connection.rollback()
+                    raise ValueError("要修改的章节已经不存在")
+                if _chapter_metadata_revision(current) != (
+                    edit.expected_revision
+                ):
+                    connection.rollback()
+                    raise ValueError(
+                        "章节资料在讨论后已经变化，请重新读取后再修改"
+                    )
+                before[edit.chapter_id] = {
+                    "position": int(current["position"]),
+                    "title": str(current.get("title") or ""),
+                    "outline": str(current.get("outline") or ""),
+                    "key_points": str(current.get("key_points") or ""),
+                }
+                if edit.delete:
+                    active = connection.execute(
+                        """
+                        SELECT 1 FROM generation_jobs
+                        WHERE chapter_id=? AND status IN ('queued', 'running')
+                        LIMIT 1
+                        """,
+                        (edit.chapter_id,),
+                    ).fetchone()
+                    if active:
+                        connection.rollback()
+                        raise ValueError("AI 正在处理该章，不能删除")
+                    continue
+                for field in ("title", "outline", "key_points"):
+                    value = getattr(edit, field)
+                    if value is not None:
+                        current[field] = value
+
+            ordered_ids = [
+                str(chapter["id"])
+                for chapter in chapters
+                if str(chapter["id"]) not in deleted_ids
+            ]
+            for edit in patch.edits:
+                if edit.delete or edit.position is None:
+                    continue
+                target_index = int(edit.position) - 1
+                if target_index >= len(ordered_ids):
+                    connection.rollback()
+                    raise ValueError("章节目标位置超出当前目录范围")
+                ordered_ids.remove(edit.chapter_id)
+                ordered_ids.insert(target_index, edit.chapter_id)
+
+            now = utc_now()
+            for edit in patch.edits:
+                if edit.delete:
+                    continue
+                current = by_id[edit.chapter_id]
+                connection.execute(
+                    """
+                    UPDATE novel_chapters
+                    SET title=?, outline=?, key_points=?, updated_at=?
+                    WHERE id=? AND project_id=?
+                    """,
+                    (
+                        current["title"],
+                        current["outline"],
+                        current["key_points"],
+                        now,
+                        edit.chapter_id,
+                        row["project_id"],
+                    ),
+                )
+            recovery_paths: list[tuple[Path, Path]] = []
+            for chapter_id in deleted_ids:
+                current = by_id[chapter_id]
+                source = Path(str(current["content_path"])).parent
+                recovery = (
+                    self.novels_dir
+                    / str(user_id)
+                    / str(row["project_id"])
+                    / ".chapter-recovery"
+                    / f"{assistant_message_id}-{chapter_id}"
+                )
+                if recovery.exists():
+                    connection.rollback()
+                    raise ValueError("章节恢复副本已经存在，请先人工核对")
+                recovery.mkdir(parents=True, exist_ok=False, mode=0o700)
+                if source.exists():
+                    shutil.copytree(source, recovery / "files")
+                (recovery / "metadata.json").write_text(
+                    json.dumps(
+                        {
+                            "project_id": str(row["project_id"]),
+                            "chapter": current,
+                            "deleted_at": now,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    encoding="utf-8",
+                )
+                recovery_paths.append((source, recovery))
+                connection.execute(
+                    """
+                    UPDATE assistant_conversations
+                    SET scope_type='project', novel_chapter_id=NULL,
+                        updated_at=?
+                    WHERE novel_chapter_id=? AND project_id=?
+                    """,
+                    (now, chapter_id, row["project_id"]),
+                )
+                connection.execute(
+                    "DELETE FROM novel_chapters WHERE id=? AND project_id=?",
+                    (chapter_id, row["project_id"]),
+                )
+
+            current_order = [
+                str(chapter["id"])
+                for chapter in chapters
+                if str(chapter["id"]) not in deleted_ids
+            ]
+            if ordered_ids != current_order or deleted_ids:
+                for temporary_position, chapter_id in enumerate(
+                    ordered_ids, start=1
+                ):
+                    connection.execute(
+                        """
+                        UPDATE novel_chapters SET position=?
+                        WHERE id=? AND project_id=?
+                        """,
+                        (
+                            -temporary_position,
+                            chapter_id,
+                            row["project_id"],
+                        ),
+                    )
+                for position, chapter_id in enumerate(ordered_ids, start=1):
+                    connection.execute(
+                        """
+                        UPDATE novel_chapters
+                        SET position=?, updated_at=?
+                        WHERE id=? AND project_id=?
+                        """,
+                        (position, now, chapter_id, row["project_id"]),
+                    )
+            changed_ids = [edit.chapter_id for edit in patch.edits]
+            response["chapter_patch_status"] = "applied"
+            response["chapter_patch_applied_at"] = now
+            response["chapter_patch_before"] = before
+            response["chapter_patch_changed_ids"] = changed_ids
+            boundary = dict(response.get("boundary") or {})
+            boundary["chapter_metadata_unchanged"] = False
+            response["boundary"] = boundary
             connection.execute(
                 """
-                UPDATE novel_chapters
-                SET char_count=?, status=?, working_version_id=?,
-                    updated_at=?
+                UPDATE assistant_messages SET response_json=?
                 WHERE id=?
                 """,
-                (
-                    count,
-                    "draft" if count else "planned",
-                    version_id,
-                    now,
-                    row["novel_chapter_id"],
-                ),
+                (_json(response), assistant_message_id),
             )
             connection.execute(
-                """
-                UPDATE novel_projects SET updated_at=? WHERE id=?
-                """,
+                "UPDATE novel_projects SET updated_at=? WHERE id=?",
                 (now, row["project_id"]),
             )
-            auto_commit = dict(response.get("auto_commit") or {})
-            if auto_commit:
-                response["auto_commit"] = {
-                    **auto_commit,
-                    "status": "applied",
-                    "version_id": version_id,
-                    "error": None,
-                    "updated_at": now,
-                }
-            connection.execute(
+            connection.commit()
+        for source, _recovery in recovery_paths:
+            if source.exists():
+                shutil.rmtree(source, ignore_errors=True)
+        return {
+            "project_id": str(row["project_id"]),
+            "conversation_id": str(row["conversation_id"]),
+            "changed_chapter_ids": changed_ids,
+            "already_applied": False,
+            "deleted_chapter_ids": sorted(deleted_ids),
+        }
+
+    def apply_technique_patch_candidate(
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+    ) -> Dict[str, Any]:
+        """Persist evidence-linked technique cards from a reference turn."""
+
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
                 """
-                UPDATE assistant_messages
-                SET applied_version_id=?, response_json=?
-                WHERE id=? AND applied_version_id IS NULL
+                SELECT m.response_json, m.context_snapshot_json,
+                       parent.content AS author_request,
+                       conversation.id AS conversation_id,
+                       conversation.document_id
+                FROM assistant_messages m
+                LEFT JOIN assistant_messages parent
+                  ON parent.id=m.parent_user_message_id
+                JOIN assistant_conversations conversation
+                  ON conversation.id=m.conversation_id
+                JOIN documents document
+                  ON document.id=conversation.document_id
+                 AND document.user_id=conversation.user_id
+                WHERE m.id=? AND conversation.user_id=?
+                  AND m.role='assistant' AND m.status='completed'
+                  AND conversation.scope_type IN ('document', 'reference_chapter')
+                """,
+                (assistant_message_id, user_id),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                raise ValueError("这条回复没有可保存的参考技法")
+            response = _load_json(row["response_json"], {})
+            if response.get("technique_patch_status") == "applied":
+                connection.commit()
+                return {
+                    "conversation_id": str(row["conversation_id"]),
+                    "technique_ids": list(
+                        response.get("technique_patch_applied_ids") or []
+                    ),
+                    "already_applied": True,
+                }
+            raw_patch = response.get("technique_patch")
+            if not isinstance(raw_patch, dict):
+                connection.rollback()
+                raise ValueError("这条回复没有可保存的参考技法")
+            try:
+                patch = AssistantTechniquePatch.model_validate(raw_patch)
+            except ValueError as exc:
+                connection.rollback()
+                raise ValueError("参考技法卡结构无效") from exc
+            snapshot = _load_json(row["context_snapshot_json"], {})
+            context = dict(snapshot.get("context") or {})
+            capabilities = {
+                str(value)
+                for value in (
+                    (context.get("agent") or {}).get("capabilities") or []
+                )
+            }
+            if CREATE_TECHNIQUE_CARD not in capabilities:
+                connection.rollback()
+                raise ValueError("生成这条回复的内部任务没有技法卡权限")
+            if not _author_explicitly_requested_technique_card(
+                str(row["author_request"] or "")
+            ):
+                connection.rollback()
+                raise ValueError("保存技法卡前必须由作者明确提出提炼或保存要求")
+
+            now = utc_now()
+            technique_ids: list[str] = []
+            created_ids: list[str] = []
+            for card in patch.cards:
+                if card.source_document_id != str(row["document_id"]):
+                    connection.rollback()
+                    raise ValueError("技法卡来源不属于当前参考书")
+                source = connection.execute(
+                    """
+                    SELECT chapter.id, chapter.content_path
+                    FROM chapters chapter
+                    JOIN documents document
+                      ON document.id=chapter.document_id
+                    WHERE chapter.id=? AND chapter.document_id=?
+                      AND document.user_id=?
+                    """,
+                    (
+                        card.source_chapter_id,
+                        card.source_document_id,
+                        user_id,
+                    ),
+                ).fetchone()
+                if not source:
+                    connection.rollback()
+                    raise ValueError("技法卡的参考章节已经不存在")
+                if _sha256(_read_text(source["content_path"])) != (
+                    card.source_expected_revision
+                ):
+                    connection.rollback()
+                    raise ValueError("参考正文在分析后已经变化，请重新读取")
+                observation = card.observation
+                existing = connection.execute(
+                    """
+                    SELECT id FROM reference_technique_cards
+                    WHERE user_id=? AND source_chapter_id=? AND name=?
+                      AND execution_rule=? AND status='active'
+                    LIMIT 1
+                    """,
+                    (
+                        user_id,
+                        card.source_chapter_id,
+                        observation.name,
+                        observation.execution_rule,
+                    ),
+                ).fetchone()
+                if existing:
+                    technique_ids.append(str(existing["id"]))
+                    continue
+                technique_id = uuid.uuid4().hex
+                connection.execute(
+                    """
+                    INSERT INTO reference_technique_cards(
+                        id, user_id, source_document_id, source_chapter_id,
+                        name, dimension, source_location, observation, effect,
+                        suitable_for_json, unsuitable_for_json,
+                        execution_rule, originality_boundary, author_note,
+                        status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              'active', ?, ?)
+                    """,
+                    (
+                        technique_id,
+                        user_id,
+                        card.source_document_id,
+                        card.source_chapter_id,
+                        observation.name,
+                        observation.dimension,
+                        observation.source_location,
+                        observation.observation,
+                        observation.effect,
+                        _json(observation.suitable_for),
+                        _json(observation.unsuitable_for),
+                        observation.execution_rule,
+                        observation.originality_boundary,
+                        card.author_note,
+                        now,
+                        now,
+                    ),
+                )
+                technique_ids.append(technique_id)
+                created_ids.append(technique_id)
+
+            response["technique_patch_status"] = "applied"
+            response["technique_patch_applied_at"] = now
+            response["technique_patch_applied_ids"] = technique_ids
+            response["technique_patch_created_ids"] = created_ids
+            boundary = dict(response.get("boundary") or {})
+            boundary["technique_library_unchanged"] = False
+            response["boundary"] = boundary
+            connection.execute(
+                "UPDATE assistant_messages SET response_json=? WHERE id=?",
+                (_json(response), assistant_message_id),
+            )
+            connection.commit()
+        return {
+            "conversation_id": str(row["conversation_id"]),
+            "technique_ids": technique_ids,
+            "created_ids": created_ids,
+            "already_applied": False,
+        }
+
+    def apply_version_restore_candidate(
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+    ) -> Dict[str, Any]:
+        """Copy an immutable historical version into a new working version."""
+
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT m.response_json, m.context_snapshot_json,
+                       parent.content AS author_request,
+                       c.id AS conversation_id, c.project_id
+                FROM assistant_messages m
+                LEFT JOIN assistant_messages parent
+                  ON parent.id=m.parent_user_message_id
+                JOIN assistant_conversations c
+                  ON c.id=m.conversation_id
+                JOIN novel_projects project ON project.id=c.project_id
+                JOIN work_versions work_version
+                  ON work_version.project_id=c.project_id
+                 AND work_version.ref_type='branch'
+                 AND work_version.ref_name='main'
+                 AND work_version.is_editable=1
+                JOIN works work
+                  ON work.id=work_version.work_id AND work.user_id=c.user_id
+                WHERE m.id=? AND c.user_id=? AND project.user_id=?
+                  AND m.role='assistant' AND m.status='completed'
+                  AND c.scope_type IN ('project', 'chapter')
+                """,
+                (assistant_message_id, user_id, user_id),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                raise ValueError("这条回复没有可恢复的历史版本")
+            response = _load_json(row["response_json"], {})
+            if response.get("version_restore_status") == "applied":
+                connection.commit()
+                return {
+                    "project_id": str(row["project_id"]),
+                    "conversation_id": str(row["conversation_id"]),
+                    "chapter_id": str(
+                        response.get("version_restore_chapter_id") or ""
+                    ),
+                    "version_id": str(
+                        response.get("version_restore_applied_version_id")
+                        or ""
+                    ),
+                    "already_applied": True,
+                }
+            raw_restore = response.get("version_restore")
+            if not isinstance(raw_restore, dict):
+                connection.rollback()
+                raise ValueError("这条回复没有可恢复的历史版本")
+            try:
+                proposal = AssistantVersionRestoreProposal.model_validate(
+                    raw_restore
+                )
+            except ValueError as exc:
+                connection.rollback()
+                raise ValueError("历史版本恢复结构无效") from exc
+            snapshot = _load_json(row["context_snapshot_json"], {})
+            context = dict(snapshot.get("context") or {})
+            capabilities = {
+                str(value)
+                for value in (
+                    (context.get("agent") or {}).get("capabilities") or []
+                )
+            }
+            if WRITE_CHAPTER not in capabilities:
+                connection.rollback()
+                raise ValueError("生成这条回复的内部任务没有正文恢复权限")
+            if not _author_explicitly_requested_restore(
+                str(row["author_request"] or "")
+            ):
+                connection.rollback()
+                raise ValueError("恢复历史版本前必须由作者明确提出恢复要求")
+            chapter = connection.execute(
+                """
+                SELECT chapter.id, chapter.content_path,
+                       chapter.head_version_id,
+                       head.content_path AS active_content_path
+                FROM novel_chapters chapter
+                JOIN novel_projects project
+                  ON project.id=chapter.project_id
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=chapter.head_version_id
+                WHERE chapter.id=? AND chapter.project_id=?
+                  AND project.user_id=?
+                """,
+                (proposal.chapter_id, row["project_id"], user_id),
+            ).fetchone()
+            source = connection.execute(
+                """
+                SELECT version.id, version.content_path
+                FROM novel_chapter_versions version
+                JOIN novel_chapters chapter
+                  ON chapter.id=version.chapter_id
+                WHERE version.id=? AND version.chapter_id=?
+                  AND chapter.project_id=?
                 """,
                 (
-                    version_id,
-                    _json(response),
-                    assistant_message_id,
+                    proposal.version_id,
+                    proposal.chapter_id,
+                    row["project_id"],
                 ),
+            ).fetchone()
+            if not chapter or not source:
+                connection.rollback()
+                raise ValueError("章节或历史版本已经不存在")
+            current_head_id = str(chapter["head_version_id"] or "")
+            if current_head_id != str(proposal.head_version_id or ""):
+                connection.rollback()
+                raise ValueError("main HEAD 在讨论后已经变化，请重新比较")
+            source_content = _read_text(source["content_path"])
+            current_content = _read_text(chapter["active_content_path"])
+            if _sha256(source_content) != proposal.source_expected_revision:
+                connection.rollback()
+                raise ValueError("历史版本文件校验失败，不能恢复")
+            if _sha256(current_content) != proposal.head_expected_revision:
+                connection.rollback()
+                raise ValueError("当前正文在讨论后已经变化，请重新读取")
+            if source_content == current_content:
+                connection.rollback()
+                raise ValueError("所选历史版本与当前正文完全相同")
+
+            token = secrets.token_hex(16)
+            version_id = uuid.uuid4().hex
+            chapter_content_path = Path(str(chapter["content_path"]))
+            version_path = (
+                chapter_content_path.parent
+                / "versions"
+                / f"assistant-restore-{token}.txt"
+            )
+            now = utc_now()
+            count = len(source_content)
+            effective_count = effective_char_count(source_content)
+            version_written = False
+            try:
+                _atomic_write(version_path, source_content, token)
+                version_written = True
+                connection.execute(
+                    """
+                    INSERT INTO novel_chapter_versions(
+                        id, chapter_id, kind, content_path, char_count,
+                        created_at, parent_version_id, source,
+                        content_hash, change_summary, created_by,
+                        quality_status, effective_char_count, hard_issue_count
+                    ) VALUES (
+                        ?, ?, 'assistant_restore', ?, ?, ?, ?,
+                        'assistant_chat', ?, ?, 'author', 'pass', ?, 0
+                    )
+                    """,
+                    (
+                        version_id,
+                        proposal.chapter_id,
+                        str(version_path),
+                        count,
+                        now,
+                        current_head_id or None,
+                        _sha256(source_content),
+                        proposal.rationale[:1000],
+                        effective_count,
+                    ),
+                )
+                advanced = self.database.set_chapter_head_in_transaction(
+                    connection,
+                    user_id=user_id,
+                    project_id=str(row["project_id"]),
+                    chapter_id=proposal.chapter_id,
+                    version_id=version_id,
+                    expected_old_head_version_id=current_head_id,
+                    now=now,
+                )
+                if not advanced:
+                    raise ValueError("恢复版本没有成为 main HEAD")
+                response["version_restore_status"] = "applied"
+                response["version_restore_applied_at"] = now
+                response["version_restore_chapter_id"] = proposal.chapter_id
+                response["version_restore_source_version_id"] = proposal.version_id
+                response["version_restore_applied_version_id"] = version_id
+                boundary = dict(response.get("boundary") or {})
+                boundary["main_head_unchanged"] = False
+                response["boundary"] = boundary
+                connection.execute(
+                    """
+                    UPDATE assistant_messages
+                    SET response_json=?, applied_version_id=?
+                    WHERE id=?
+                    """,
+                    (_json(response), version_id, assistant_message_id),
+                )
+                connection.execute(
+                    "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                    (now, row["project_id"]),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                if version_written:
+                    version_path.unlink(missing_ok=True)
+                raise
+        try:
+            _atomic_write(
+                chapter_content_path,
+                source_content,
+                secrets.token_hex(16),
+            )
+        except Exception:
+            logger.warning(
+                "failed to refresh non-authoritative chapter cache",
+                exc_info=True,
+            )
+        return {
+            "project_id": str(row["project_id"]),
+            "conversation_id": str(row["conversation_id"]),
+            "chapter_id": proposal.chapter_id,
+            "version_id": version_id,
+            "source_version_id": proposal.version_id,
+            "already_applied": False,
+        }
+
+    def apply_note_patch_candidate(
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+    ) -> Dict[str, Any]:
+        """Atomically persist author-requested project notes on main."""
+
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT m.response_json, m.context_snapshot_json,
+                       parent.content AS author_request,
+                       c.id AS conversation_id, c.project_id
+                FROM assistant_messages m
+                LEFT JOIN assistant_messages parent
+                  ON parent.id=m.parent_user_message_id
+                JOIN assistant_conversations c
+                  ON c.id=m.conversation_id
+                JOIN novel_projects project ON project.id=c.project_id
+                JOIN work_versions version
+                  ON version.project_id=c.project_id
+                 AND version.ref_type='branch'
+                 AND version.ref_name='main'
+                 AND version.is_editable=1
+                JOIN works work
+                  ON work.id=version.work_id AND work.user_id=c.user_id
+                WHERE m.id=? AND c.user_id=? AND project.user_id=?
+                  AND m.role='assistant' AND m.status='completed'
+                  AND c.scope_type IN ('project', 'chapter')
+                """,
+                (assistant_message_id, user_id, user_id),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                raise ValueError("这条回复没有可应用的作者笔记")
+            response = _load_json(row["response_json"], {})
+            if response.get("note_patch_status") == "applied":
+                connection.commit()
+                return {
+                    "project_id": str(row["project_id"]),
+                    "conversation_id": str(row["conversation_id"]),
+                    "changed_note_keys": list(
+                        response.get("note_patch_changed_keys") or []
+                    ),
+                    "already_applied": True,
+                }
+            raw_patch = response.get("note_patch")
+            if not isinstance(raw_patch, dict):
+                connection.rollback()
+                raise ValueError("这条回复没有可应用的作者笔记")
+            try:
+                patch = AssistantNotePatch.model_validate(raw_patch)
+            except ValueError as exc:
+                connection.rollback()
+                raise ValueError("作者笔记修改结构无效") from exc
+            snapshot = _load_json(row["context_snapshot_json"], {})
+            context = dict(snapshot.get("context") or {})
+            capabilities = {
+                str(value)
+                for value in (
+                    (context.get("agent") or {}).get("capabilities") or []
+                )
+            }
+            if MANAGE_NOTES not in capabilities:
+                connection.rollback()
+                raise ValueError("生成这条回复的内部任务没有笔记管理权限")
+            if any(edit.action == "delete" for edit in patch.edits) and not (
+                _author_explicitly_requested_deletion(
+                    str(row["author_request"] or "")
+                )
+            ):
+                connection.rollback()
+                raise ValueError("删除作者笔记前必须由作者明确提出删除目标")
+
+            existing_rows = connection.execute(
+                """
+                SELECT id, note_key, title, content, source_message_id,
+                       created_at, updated_at
+                FROM novel_author_notes
+                WHERE project_id=?
+                """,
+                (row["project_id"],),
+            ).fetchall()
+            by_key = {str(item["note_key"]): dict(item) for item in existing_rows}
+            by_id = {str(item["id"]): dict(item) for item in existing_rows}
+            before: dict[str, Any] = {}
+            now = utc_now()
+            changed_keys: list[str] = []
+            for edit in patch.edits:
+                current = by_key.get(edit.note_key)
+                if edit.action == "create":
+                    if current is not None:
+                        connection.rollback()
+                        raise ValueError(
+                            f"作者笔记 {edit.note_key} 已存在，请重新读取后修改"
+                        )
+                    note_id = uuid.uuid4().hex
+                    connection.execute(
+                        """
+                        INSERT INTO novel_author_notes(
+                            id, project_id, note_key, title, content,
+                            source_message_id, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            note_id,
+                            row["project_id"],
+                            edit.note_key,
+                            str(edit.title or edit.note_key),
+                            str(edit.content or ""),
+                            assistant_message_id,
+                            now,
+                            now,
+                        ),
+                    )
+                    before[edit.note_key] = None
+                else:
+                    current_by_id = by_id.get(str(edit.note_id or ""))
+                    if current is None or current_by_id is None or (
+                        str(current["id"]) != str(current_by_id["id"])
+                    ):
+                        connection.rollback()
+                        raise ValueError("要修改的作者笔记已经不存在或路径已变化")
+                    if _sha256(str(current["content"] or "")) != (
+                        edit.expected_revision
+                    ):
+                        connection.rollback()
+                        raise ValueError(
+                            "作者笔记在讨论后已经变化，请重新读取后再修改"
+                        )
+                    before[edit.note_key] = current
+                    if edit.action == "delete":
+                        connection.execute(
+                            """
+                            DELETE FROM novel_author_notes
+                            WHERE id=? AND project_id=?
+                            """,
+                            (edit.note_id, row["project_id"]),
+                        )
+                    else:
+                        connection.execute(
+                            """
+                            UPDATE novel_author_notes
+                            SET title=?, content=?, source_message_id=?,
+                                updated_at=?
+                            WHERE id=? AND project_id=?
+                            """,
+                            (
+                                str(edit.title or current["title"] or edit.note_key),
+                                str(edit.content or ""),
+                                assistant_message_id,
+                                now,
+                                edit.note_id,
+                                row["project_id"],
+                            ),
+                        )
+                changed_keys.append(edit.note_key)
+
+            response["note_patch_status"] = "applied"
+            response["note_patch_applied_at"] = now
+            response["note_patch_before"] = before
+            response["note_patch_changed_keys"] = changed_keys
+            boundary = dict(response.get("boundary") or {})
+            boundary["author_notes_unchanged"] = False
+            response["boundary"] = boundary
+            connection.execute(
+                "UPDATE assistant_messages SET response_json=? WHERE id=?",
+                (_json(response), assistant_message_id),
+            )
+            connection.execute(
+                "UPDATE novel_projects SET updated_at=? WHERE id=?",
+                (now, row["project_id"]),
             )
             connection.commit()
         return {
             "project_id": str(row["project_id"]),
-            "chapter_id": str(row["novel_chapter_id"]),
             "conversation_id": str(row["conversation_id"]),
-            "version_id": version_id,
+            "changed_note_keys": changed_keys,
+            "already_applied": False,
         }
 
     def apply_settings_candidate(
-        self, *, user_id: int, assistant_message_id: str
+        self,
+        *,
+        user_id: int,
+        assistant_message_id: str,
+        selected_paths: Optional[set[str]] = None,
     ) -> Dict[str, Any]:
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
                 SELECT m.response_json, m.context_snapshot_json,
+                       parent.content AS author_request,
                        c.id AS conversation_id, c.project_id, c.scope_type
                 FROM assistant_messages m
+                LEFT JOIN assistant_messages parent
+                  ON parent.id=m.parent_user_message_id
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
                 JOIN novel_projects p ON p.id=c.project_id
@@ -2511,9 +4470,10 @@ class AssistantChatService:
                 connection.rollback()
                 raise ValueError("这条回复没有可应用的作品设定")
             try:
-                patch = AssistantSettingsPatch.model_validate(
+                validated_patch = AssistantSettingsPatch.model_validate(
                     raw_patch
-                ).model_dump(exclude_none=True)
+                )
+                patch = validated_patch.model_dump(exclude_none=True)
             except ValueError as exc:
                 connection.rollback()
                 raise ValueError("候选设定结构无效") from exc
@@ -2539,6 +4499,37 @@ class AssistantChatService:
                 connection.rollback()
                 raise ValueError("小说项目不存在")
             archive_rules = list(patch.pop("archive_rules", []))
+            patch.pop("structured_edits", None)
+            structured_edits = list(
+                validated_patch.structured_edits or []
+            )
+            if (
+                any(edit.action == "delete" for edit in structured_edits)
+                and not _author_explicitly_requested_deletion(
+                    str(row["author_request"] or "")
+                )
+            ):
+                connection.rollback()
+                raise ValueError(
+                    "删除作品资料前必须由作者明确提出删除目标"
+                )
+            if selected_paths is not None:
+                patch = {
+                    key: value
+                    for key, value in patch.items()
+                    if f"project:{key}" in selected_paths
+                }
+                archive_rules = [
+                    rule
+                    for index, rule in enumerate(archive_rules)
+                    if f"archive-rule:{index}" in selected_paths
+                ]
+                structured_edits = filter_structured_edits(
+                    structured_edits, selected_paths
+                )
+                if not patch and not archive_rules and not structured_edits:
+                    connection.rollback()
+                    raise ValueError("请至少选择一项要应用的修改")
             current = dict(project)
             baseline = dict(context.get("project") or {})
             stale_fields = [
@@ -2640,14 +4631,44 @@ class AssistantChatService:
                     "UPDATE works SET updated_at=? WHERE id=?",
                     (now, main["work_id"]),
                 )
+            applied_structured_edits: list[dict[str, Any]] = []
+            if structured_edits:
+                baseline_structured = context.get("structured_settings")
+                if not isinstance(baseline_structured, Mapping):
+                    baseline_structured = (
+                        self.structured_settings_editor.snapshot_in_connection(
+                            connection,
+                            user_id=user_id,
+                            project_id=str(row["project_id"]),
+                        )
+                    )
+                applied_structured_edits = (
+                    self.structured_settings_editor.apply_in_connection(
+                        connection,
+                        user_id=user_id,
+                        project_id=str(row["project_id"]),
+                        edits=structured_edits,
+                        baseline_snapshot=baseline_structured,
+                    )
+                )
             applied_values = dict(patch)
             if archive_rules:
                 applied_values["archive_rules"] = archive_rules
                 before["archive_rules"] = []
+            if applied_structured_edits:
+                applied_values["structured_edits"] = (
+                    applied_structured_edits
+                )
+                before["structured_edits"] = [
+                    item.get("before") for item in applied_structured_edits
+                ]
             response["settings_patch_status"] = "applied"
             response["settings_patch_applied_at"] = now
             response["settings_patch_before"] = before
             response["settings_patch_applied_values"] = applied_values
+            boundary = dict(response.get("boundary") or {})
+            boundary["project_settings_unchanged"] = False
+            response["boundary"] = boundary
             connection.execute(
                 """
                 UPDATE assistant_messages SET response_json=?
@@ -2761,7 +4782,7 @@ class AssistantChatService:
             "already_applied": False,
         }
 
-    def save_draft_candidate(
+    def commit_draft_to_head(
         self, *, user_id: int, assistant_message_id: str
     ) -> Dict[str, Any]:
         with self.database.connection() as connection:
@@ -2770,11 +4791,15 @@ class AssistantChatService:
                 SELECT m.response_json, m.context_snapshot_json,
                        m.applied_version_id, c.id AS conversation_id,
                        c.project_id, c.novel_chapter_id,
-                       ch.content_path, ch.working_version_id
+                       ch.content_path AS cache_content_path,
+                       ch.head_version_id,
+                       head.content_path AS head_content_path
                 FROM assistant_messages m
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
                 JOIN novel_chapters ch ON ch.id=c.novel_chapter_id
+                LEFT JOIN novel_chapter_versions head
+                  ON head.id=ch.head_version_id
                 JOIN novel_projects p ON p.id=ch.project_id
                 WHERE m.id=? AND c.user_id=? AND p.user_id=?
                   AND m.role='assistant' AND m.status='completed'
@@ -2783,7 +4808,7 @@ class AssistantChatService:
                 (assistant_message_id, user_id, user_id),
             ).fetchone()
             if not row:
-                raise ValueError("这条回复没有可保存的章节候选稿")
+                raise ValueError("这条回复没有可提交的章节正文")
             if row["applied_version_id"]:
                 return {
                     "project_id": str(row["project_id"]),
@@ -2795,11 +4820,11 @@ class AssistantChatService:
             response = _load_json(row["response_json"], {})
             raw_draft = response.get("draft")
             if not isinstance(raw_draft, dict):
-                raise ValueError("这条回复没有可保存的章节候选稿")
+                raise ValueError("这条回复没有可提交的章节正文")
             try:
                 draft = AssistantDraftProposal.model_validate(raw_draft)
             except ValueError as exc:
-                raise ValueError("章节候选稿结构无效") from exc
+                raise ValueError("章节正文结构无效") from exc
             snapshot = _load_json(row["context_snapshot_json"], {})
             context = dict(snapshot.get("context") or {})
             capabilities = {
@@ -2808,24 +4833,17 @@ class AssistantChatService:
                     (context.get("agent") or {}).get("capabilities") or []
                 )
             }
-            if CREATE_CANDIDATE_DRAFT not in capabilities:
-                raise ValueError("生成这条回复的角色没有创作候选稿权限")
+            if WRITE_CHAPTER not in capabilities:
+                raise ValueError("生成这条回复的角色没有正文写入权限")
 
-        chapter_content_path = Path(str(row["content_path"]))
-        current_content = _read_text(chapter_content_path)
+        chapter_content_path = Path(str(row["cache_content_path"]))
+        current_content = _read_text(row["head_content_path"])
         expected_hash = str(
             context.get("current_chapter_hash") or _sha256("")
         )
         if _sha256(current_content) != expected_hash:
-            raise ValueError("正文在生成候选稿后已经变化，请重新生成")
-        if draft.mode == "append" and current_content.strip():
-            new_content = (
-                current_content.rstrip()
-                + "\n\n"
-                + draft.content.lstrip()
-            )
-        else:
-            new_content = draft.content
+            raise ValueError("正文在生成结果后已经变化，请重新生成")
+        new_content = draft.content
         if len(new_content) > 200_000:
             raise ValueError("应用后单章正文会超过 200000 字")
 
@@ -2853,10 +4871,10 @@ class AssistantChatService:
             ).fetchone()
             if active:
                 connection.rollback()
-                raise ValueError("AI 正在生成本章，请完成后再保存候选稿")
+                raise ValueError("AI 正在生成本章，请完成后再提交正文")
             latest = connection.execute(
                 """
-                SELECT m.applied_version_id, ch.working_version_id
+                SELECT m.applied_version_id, ch.head_version_id
                 FROM assistant_messages m
                 JOIN assistant_conversations c
                   ON c.id=m.conversation_id
@@ -2877,21 +4895,20 @@ class AssistantChatService:
                     "version_id": str(latest["applied_version_id"]),
                     "already_applied": True,
                 }
-            if str(latest["working_version_id"] or "") != str(
-                row["working_version_id"] or ""
+            if str(latest["head_version_id"] or "") != str(
+                row["head_version_id"] or ""
             ):
                 connection.rollback()
-                raise ValueError("正文版本已经变化，请重新生成候选稿")
-            _atomic_write(chapter_content_path, new_content, token)
+                raise ValueError("main HEAD 已经变化，请重新生成正文")
             connection.execute(
                 """
                 INSERT INTO novel_chapter_versions(
                     id, chapter_id, kind, content_path, char_count,
-                    created_at, parent_version_id, status, source,
+                    created_at, parent_version_id, source,
                     content_hash, change_summary, created_by,
                     quality_status, effective_char_count, hard_issue_count
                 ) VALUES (
-                    ?, ?, 'assistant_draft', ?, ?, ?, ?, 'candidate',
+                    ?, ?, 'assistant_draft', ?, ?, ?, ?,
                     'assistant_chat', ?, ?, 'assistant', 'pass', ?, 0
                 )
                 """,
@@ -2901,26 +4918,26 @@ class AssistantChatService:
                     str(version_path),
                     count,
                     now,
-                    row["working_version_id"],
+                    row["head_version_id"],
                     _sha256(new_content),
                     draft.rationale[:1000],
                     effective_count,
                 ),
             )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET char_count=?, status='draft', working_version_id=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (
-                    count,
-                    version_id,
-                    now,
-                    row["novel_chapter_id"],
+            advanced = self.database.set_chapter_head_in_transaction(
+                connection,
+                user_id=user_id,
+                project_id=str(row["project_id"]),
+                chapter_id=str(row["novel_chapter_id"]),
+                version_id=version_id,
+                expected_old_head_version_id=str(
+                    row["head_version_id"] or ""
                 ),
+                now=now,
             )
+            if not advanced:
+                connection.rollback()
+                raise ValueError("正文没有成为 main HEAD")
             response["draft_status"] = "applied"
             response["draft_applied_at"] = now
             auto_commit = dict(response.get("auto_commit") or {})
@@ -2944,11 +4961,18 @@ class AssistantChatService:
                     assistant_message_id,
                 ),
             )
-            connection.execute(
-                "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                (now, row["project_id"]),
-            )
             connection.commit()
+        try:
+            _atomic_write(
+                chapter_content_path,
+                new_content,
+                secrets.token_hex(16),
+            )
+        except Exception:
+            logger.warning(
+                "failed to refresh non-authoritative chapter cache",
+                exc_info=True,
+            )
         return {
             "project_id": str(row["project_id"]),
             "chapter_id": str(row["novel_chapter_id"]),
@@ -2966,7 +4990,7 @@ class AssistantChatService:
                 SELECT m.response_json, m.applied_version_id,
                        c.id AS conversation_id, c.project_id,
                        c.novel_chapter_id, ch.content_path,
-                       ch.working_version_id, ch.canonical_version_id,
+                       ch.head_version_id,
                        v.parent_version_id
                 FROM assistant_messages m
                 JOIN assistant_conversations c
@@ -3001,7 +5025,7 @@ class AssistantChatService:
             if auto_commit.get("status") != "applied":
                 raise ValueError("这条回复不是自动提交，无法在这里撤回")
             applied_version_id = str(row["applied_version_id"])
-            if str(row["working_version_id"] or "") != applied_version_id:
+            if str(row["head_version_id"] or "") != applied_version_id:
                 raise ValueError("后面已有新的正文版本，请从版本历史恢复")
             parent_version_id = str(row["parent_version_id"] or "")
             parent = None
@@ -3044,7 +5068,7 @@ class AssistantChatService:
             connection.execute("BEGIN IMMEDIATE")
             latest = connection.execute(
                 """
-                SELECT ch.working_version_id, ch.canonical_version_id,
+                SELECT ch.head_version_id,
                        m.response_json
                 FROM assistant_messages m
                 JOIN assistant_conversations c
@@ -3076,19 +5100,18 @@ class AssistantChatService:
                     "agent_role": agent_role,
                     "already_reverted": True,
                 }
-            if str(latest["working_version_id"] or "") != applied_version_id:
+            if str(latest["head_version_id"] or "") != applied_version_id:
                 connection.rollback()
                 raise ValueError("后面已有新的正文版本，请从版本历史恢复")
-            _atomic_write(chapter_content_path, restored_content, token)
             connection.execute(
                 """
                 INSERT INTO novel_chapter_versions(
                     id, chapter_id, kind, content_path, char_count,
-                    created_at, parent_version_id, status, source,
+                    created_at, parent_version_id, source,
                     content_hash, change_summary, created_by,
                     quality_status, effective_char_count, hard_issue_count
                 ) VALUES (
-                    ?, ?, 'assistant_revert', ?, ?, ?, ?, 'candidate',
+                    ?, ?, 'assistant_revert', ?, ?, ?, ?,
                     'assistant_chat', ?, ?, 'author', ?, ?, ?
                 )
                 """,
@@ -3106,21 +5129,18 @@ class AssistantChatService:
                     hard_issue_count,
                 ),
             )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET char_count=?, status=?, working_version_id=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (
-                    count,
-                    "draft" if count else "planned",
-                    version_id,
-                    now,
-                    row["novel_chapter_id"],
-                ),
+            advanced = self.database.set_chapter_head_in_transaction(
+                connection,
+                user_id=user_id,
+                project_id=str(row["project_id"]),
+                chapter_id=str(row["novel_chapter_id"]),
+                version_id=version_id,
+                expected_old_head_version_id=applied_version_id,
+                now=now,
             )
+            if not advanced:
+                connection.rollback()
+                raise ValueError("撤回版本没有成为 main HEAD")
             latest_response["auto_commit"] = {
                 **latest_auto_commit,
                 "status": "reverted",
@@ -3141,14 +5161,17 @@ class AssistantChatService:
                 (now, row["project_id"]),
             )
             connection.commit()
-        promoted = self.database.accept_chapter_version(
-            user_id=user_id,
-            project_id=str(row["project_id"]),
-            chapter_id=str(row["novel_chapter_id"]),
-            version_id=version_id,
-        )
-        if not promoted:
-            raise ValueError("撤回版本没有成为当前正文")
+        try:
+            _atomic_write(
+                chapter_content_path,
+                restored_content,
+                secrets.token_hex(16),
+            )
+        except Exception:
+            logger.warning(
+                "failed to refresh non-authoritative chapter cache",
+                exc_info=True,
+            )
         return {
             "project_id": str(row["project_id"]),
             "chapter_id": str(row["novel_chapter_id"]),
@@ -3386,28 +5409,47 @@ class AssistantChatService:
             search_settings is None or search_settings.get("enabled")
         )
         context["agent"] = manifest
+        auto_apply_settings = bool(
+            auto_commit and PROPOSE_SETTINGS_PATCH in capabilities
+        )
+        auto_apply_story_plan = bool(
+            auto_commit and PROPOSE_STORY_PLAN in capabilities
+        )
+        auto_apply_chapter_metadata = bool(
+            auto_commit and MANAGE_CHAPTERS in capabilities
+        )
+        auto_apply_notes = bool(
+            auto_commit and MANAGE_NOTES in capabilities
+        )
+        auto_apply_techniques = bool(
+            auto_commit and CREATE_TECHNIQUE_CARD in capabilities
+        )
         context["assistant_boundaries"] = {
             "may_modify_canon": False,
             "may_modify_story_memory": False,
             "may_modify_task_cards": False,
-            "may_apply_settings": False,
-            "may_apply_text_patch": False,
+            "may_apply_settings": auto_apply_settings,
             "may_propose_settings_patch": (
                 PROPOSE_SETTINGS_PATCH in capabilities
-            ),
-            "may_propose_text_patch": (
-                PROPOSE_TEXT_PATCH in capabilities
             ),
             "may_propose_story_plan": (
                 PROPOSE_STORY_PLAN in capabilities
             ),
-            "may_create_candidate_draft": (
-                CREATE_CANDIDATE_DRAFT in capabilities
+            "may_write_chapter": (
+                WRITE_CHAPTER in capabilities
             ),
-            "auto_commit_working_copy": bool(auto_commit),
-            "rewrite_requires_author_action": not auto_commit,
-            "settings_patch_requires_author_action": True,
-            "story_plan_requires_author_action": True,
+            "auto_advance_main_head": bool(auto_commit),
+            "auto_apply_settings": auto_apply_settings,
+            "auto_apply_story_plan": auto_apply_story_plan,
+            "auto_apply_chapter_metadata": auto_apply_chapter_metadata,
+            "auto_apply_notes": auto_apply_notes,
+            "auto_apply_techniques": auto_apply_techniques,
+            "settings_patch_requires_author_action": (
+                not auto_apply_settings
+            ),
+            "story_plan_requires_author_action": (
+                not auto_apply_story_plan
+            ),
             "settings_prerequisite": bool(settings_prerequisite),
             "must_propose_settings_before_writing": bool(
                 settings_prerequisite
@@ -3479,7 +5521,7 @@ class AssistantChatService:
                         "id": str(row["chapter_id"]),
                         "position": int(row["position"]),
                         "title": str(row["title"]),
-                        "analysis": self._compact_analysis(
+                        "analysis": compact_analysis(
                             _load_json(row["result_json"], {})
                         ),
                         "excerpt": (
@@ -3538,8 +5580,8 @@ class AssistantChatService:
             chapter = raw_context["chapter"]
             current_content = ""
             current_version_id = str(
-                chapter.get("working_version_id")
-                or chapter.get("canonical_version_id")
+                chapter.get("head_version_id")
+                or chapter.get("head_version_id")
                 or ""
             )
             if current_version_id:
@@ -3591,6 +5633,12 @@ class AssistantChatService:
                 current_content
             )
             snapshot["current_version_id"] = current_version_id
+            snapshot["structured_settings"] = (
+                self.structured_settings_editor.snapshot(
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+            )
             snapshot.update(
                 self._build_linked_work_context(
                     user_id=user_id, project_id=project_id
@@ -3623,7 +5671,7 @@ class AssistantChatService:
             chapters = connection.execute(
                 """
                 SELECT id, position, title, outline, key_points, status,
-                       canonical_version_id, working_version_id
+                       head_version_id
                 FROM novel_chapters
                 WHERE project_id=? ORDER BY position LIMIT 120
                 """,
@@ -3670,13 +5718,10 @@ class AssistantChatService:
                 """
                 SELECT v.*, ch.position, ch.title AS chapter_title,
                        p.title AS project_title,
-                       ch.canonical_version_id, ch.working_version_id
+                       ch.head_version_id
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
-                JOIN novel_chapter_versions v
-                  ON v.id=COALESCE(
-                    ch.canonical_version_id, ch.working_version_id
-                  )
+                JOIN novel_chapter_versions v ON v.id=ch.head_version_id
                 WHERE ch.project_id=?
                 ORDER BY ch.position DESC LIMIT 6
                 """,
@@ -3724,6 +5769,10 @@ class AssistantChatService:
         linked_work_context = self._build_linked_work_context(
             user_id=user_id, project_id=project_id
         )
+        structured_settings = self.structured_settings_editor.snapshot(
+            user_id=user_id,
+            project_id=project_id,
+        )
         return (
             {
                 "scope": "novel_project",
@@ -3733,6 +5782,7 @@ class AssistantChatService:
                 "confirmed_story_blueprint": blueprint_item,
                 "confirmed_plot_arcs": arc_items,
                 "canonical_recent_memory": memory_items,
+                "structured_settings": structured_settings,
                 **linked_work_context,
             },
             sources,
@@ -3799,7 +5849,7 @@ class AssistantChatService:
         sources: List[Dict[str, Any]] = []
         for row in rows:
             result = _load_json(row["result_json"], {})
-            compact = self._compact_analysis(result)
+            compact = compact_analysis(result)
             chapter_items.append(
                 {
                     "id": row["id"],
@@ -3944,10 +5994,10 @@ class AssistantChatService:
     ) -> Dict[str, Any]:
         bounded, base = _bounded_source(text, max_chars=max_chars)
         state = (
-            "正史"
-            if str(version.get("canonical_version_id") or "")
+            "main HEAD"
+            if str(version.get("head_version_id") or "")
             == str(version["id"])
-            else "候选"
+            else "历史"
         )
         return {
             "source_id": f"novel-version:{version['id']}",
@@ -3979,7 +6029,7 @@ class AssistantChatService:
             row = connection.execute(
                 """
                 SELECT v.*, ch.position, ch.title AS chapter_title,
-                       ch.canonical_version_id, ch.working_version_id,
+                       ch.head_version_id,
                        p.title AS project_title
                 FROM novel_chapter_versions v
                 JOIN novel_chapters ch ON ch.id=v.chapter_id
@@ -3991,215 +6041,3 @@ class AssistantChatService:
                 (content_path, chapter_id, project_id, user_id),
             ).fetchone()
         return dict(row) if row else None
-
-    @staticmethod
-    def _compact_analysis(result: Any) -> Dict[str, Any]:
-        if not isinstance(result, dict):
-            return {}
-        return {
-            key: result.get(key)
-            for key in (
-                "chapter_title",
-                "summary",
-                "characters",
-                "scenes",
-                "key_events",
-                "foreshadowing",
-                "conflicts",
-                "ending_hook",
-                "techniques",
-            )
-            if result.get(key) not in (None, "", [])
-        }
-
-    def _normalize_response(
-        self,
-        *,
-        response: AssistantChatResponse,
-        sources: Sequence[Mapping[str, Any]],
-        quote: Optional[Mapping[str, Any]],
-        context: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        source_map = {
-            str(source.get("source_id") or ""): source
-            for source in sources
-            if source.get("source_id")
-        }
-        citations = []
-        for proposal in response.result.citations:
-            source = source_map.get(proposal.source_id)
-            if not source:
-                continue
-            source_text = str(source.get("text") or "")
-            local_start = source_text.find(proposal.quote)
-            if local_start < 0:
-                continue
-            absolute_start = int(source.get("base_offset") or 0) + local_start
-            absolute_end = absolute_start + len(proposal.quote)
-            url = str(source.get("url") or "")
-            external = str(source.get("kind") or "") == "web"
-            separator = "&" if "?" in url else "?"
-            if url and not external:
-                url = (
-                    f"{url}{separator}start={absolute_start}"
-                    f"&end={absolute_end}"
-                )
-            citations.append(
-                {
-                    "source_id": proposal.source_id,
-                    "label": str(source.get("label") or "来源"),
-                    "quote": proposal.quote,
-                    "note": proposal.note,
-                    "url": url,
-                    "external": external,
-                    "start_offset": absolute_start,
-                    "end_offset": absolute_end,
-                }
-            )
-        capabilities = {
-            str(item)
-            for item in (
-                (context.get("agent") or {}).get("capabilities") or []
-            )
-        }
-        rewrite = None
-        if (
-            PROPOSE_TEXT_PATCH in capabilities
-            and
-            response.result.rewrite is not None
-            and quote
-            and str(quote.get("source_type")) == "novel_version"
-        ):
-            rewrite = response.result.rewrite.model_dump(mode="json")
-        settings_patch = None
-        if (
-            PROPOSE_SETTINGS_PATCH in capabilities
-            and str(context.get("scope") or "")
-            in {"novel_project", "novel_chapter"}
-            and response.result.settings_patch is not None
-        ):
-            settings_patch = response.result.settings_patch.model_dump(
-                mode="json", exclude_none=True
-            )
-        story_plan = None
-        if (
-            PROPOSE_STORY_PLAN in capabilities
-            and str(context.get("scope") or "")
-            in {"novel_project", "novel_chapter"}
-            and response.result.story_plan is not None
-        ):
-            story_plan = response.result.story_plan.model_dump(
-                mode="json"
-            )
-        draft = None
-        if (
-            CREATE_CANDIDATE_DRAFT in capabilities
-            and str(context.get("scope") or "") == "novel_chapter"
-            and response.result.draft is not None
-        ):
-            draft = response.result.draft.model_dump(mode="json")
-        agent = dict(context.get("agent") or {})
-        auto_commit_requested = bool(
-            (context.get("assistant_boundaries") or {}).get(
-                "auto_commit_working_copy"
-            )
-        )
-        auto_commit: Dict[str, Any] = {}
-        if auto_commit_requested and (draft or rewrite):
-            auto_commit = {
-                "status": "pending",
-                "kind": "draft" if draft else "rewrite",
-                "version_id": None,
-                "reverted_version_id": None,
-                "error": None,
-                "updated_at": utc_now(),
-            }
-        return {
-            "answer": response.result.answer,
-            "citations": citations,
-            "rewrite": rewrite,
-            "draft": draft,
-            "draft_status": "candidate" if draft else None,
-            "settings_patch": settings_patch,
-            "settings_patch_status": (
-                "candidate" if settings_patch else None
-            ),
-            "story_plan": story_plan,
-            "story_plan_status": (
-                "candidate" if story_plan else None
-            ),
-            "auto_commit": auto_commit,
-            "provider": response.provider,
-            "model": response.model,
-            "agent": {
-                "role": str(agent.get("role") or "advisor"),
-                "label": str(agent.get("label") or "讨论"),
-                "capabilities": sorted(capabilities),
-            },
-            "agent_run": {
-                "dispatch": dict(context.get("dispatch") or {}),
-                "tool_calls": list(response.agent_trace or []),
-            },
-            "boundary": {
-                "canon_unchanged": True,
-                "story_memory_unchanged": True,
-                "task_card_unchanged": True,
-                "project_settings_unchanged": True,
-                "story_plan_unchanged": True,
-            },
-        }
-
-    @staticmethod
-    def _decode_message(message: Dict[str, Any]) -> Dict[str, Any]:
-        message["response"] = _load_json(
-            message.get("response_json"), {}
-        )
-        agent = message["response"].get("agent")
-        if isinstance(agent, dict):
-            role = str(agent.get("role") or "")
-            try:
-                agent["label"] = agent_manifest(role)["label"]
-            except ValueError:
-                pass
-        if message.get("quote_text"):
-            message["quote"] = {
-                "source_type": message.get("source_type"),
-                "project_id": message.get("quote_project_id"),
-                "document_id": message.get("quote_document_id"),
-                "novel_chapter_id": message.get(
-                    "quote_novel_chapter_id"
-                ),
-                "version_id": message.get("quote_version_id"),
-                "reference_chapter_id": message.get(
-                    "quote_reference_chapter_id"
-                ),
-                "start_offset": message.get("quote_start_offset"),
-                "end_offset": message.get("quote_end_offset"),
-                "quote_text": message.get("quote_text"),
-                "content_hash": message.get("quote_content_hash"),
-                "source_label": message.get("quote_source_label"),
-            }
-        else:
-            message["quote"] = None
-        return message
-
-    @staticmethod
-    def _decode_tool_call(tool_call: Dict[str, Any]) -> Dict[str, Any]:
-        tool_call["arguments"] = _load_json(
-            tool_call.get("arguments_json"), {}
-        )
-        tool_call["result"] = _load_json(
-            tool_call.get("result_json"), {}
-        )
-        tool_call["read_only"] = bool(tool_call.get("read_only"))
-        return tool_call
-
-    @staticmethod
-    def _decode_agent_step(step: Dict[str, Any]) -> Dict[str, Any]:
-        step["available_tools"] = _load_json(
-            step.get("available_tools_json"), []
-        )
-        step["decision"] = _load_json(
-            step.get("decision_json"), {}
-        )
-        return step

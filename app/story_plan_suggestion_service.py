@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 from .context_compiler import compile_active_techniques
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    json_fingerprint as _fingerprint,
+    load_json as _load_json,
+)
 from .story_planner_schema import (
     StoryPlanProposalSet,
     StoryPlanningMode,
@@ -15,27 +18,6 @@ from .story_planning_service import StoryPlanningService
 
 
 ALLOWED_PLANNING_MODES = {"create", "refine", "rethink"}
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        parsed = json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-    return parsed
-
-
-def _fingerprint(context: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(context).encode("utf-8")).hexdigest()
 
 
 class StoryPlanSuggestionService:
@@ -69,7 +51,7 @@ class StoryPlanSuggestionService:
             """
             SELECT COALESCE(MAX(position), 0) AS position
             FROM novel_chapters
-            WHERE project_id=? AND canonical_version_id IS NOT NULL
+            WHERE project_id=? AND head_version_id IS NOT NULL
             """,
             (project_id,),
         ).fetchone()

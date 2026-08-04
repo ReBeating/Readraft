@@ -48,7 +48,9 @@ APP_DATABASE_PATH=/opt/readraft/data/readraft.db
 APP_COOKIE_SECURE=true
 # 首次启动时临时设为 true，创建首个账号后立即改回 false。
 APP_ALLOW_REGISTRATION=true
-DEEPSEEK_API_KEY=
+MODEL_PROVIDER=deepseek
+MODEL_API_KEY=
+MODEL_NAME=deepseek-v4-flash
 ```
 
 可以用以下命令生成两个独立随机值：

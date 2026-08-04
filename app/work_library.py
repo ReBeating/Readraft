@@ -139,6 +139,9 @@ def create_reading_document_from_chunks(
     story_memory_snapshots: Optional[
         Iterable[Mapping[str, Any]]
     ] = None,
+    source_head_snapshots: Optional[
+        Iterable[Mapping[str, Any]]
+    ] = None,
 ) -> str:
     chunk_list = list(chunks)
     document_id = uuid.uuid4().hex
@@ -178,6 +181,7 @@ def create_reading_document_from_chunks(
             ).hexdigest(),
             creative_snapshot=creative_snapshot,
             story_memory_snapshots=story_memory_snapshots,
+            source_head_snapshots=source_head_snapshots,
         )
     except Exception:
         shutil.rmtree(document_dir, ignore_errors=True)
@@ -246,15 +250,25 @@ def create_main_from_version(
 
 def _snapshot_chunks(
     chapters: Iterable[Mapping[str, object]],
-) -> tuple[str, list[ChapterChunk], list[str]]:
+) -> tuple[str, list[ChapterChunk], list[dict[str, object]]]:
     pieces: list[str] = []
     chunks: list[ChapterChunk] = []
-    source_chapter_ids: list[str] = []
+    source_heads: list[dict[str, object]] = []
     cursor = 0
     for chapter in chapters:
-        content = Path(str(chapter["content_path"])).read_text(
-            encoding="utf-8"
+        document_position = len(chunks) + 1
+        content_path = str(chapter.get("head_content_path") or "")
+        content = (
+            Path(content_path).read_text(encoding="utf-8")
+            if content_path
+            else ""
         )
+        content_hash = hashlib.sha256(
+            content.encode("utf-8")
+        ).hexdigest()
+        expected_hash = str(chapter.get("head_content_hash") or "")
+        if expected_hash and expected_hash != content_hash:
+            raise ValueError("main HEAD 正文校验失败，未创建 Tag")
         position = int(chapter.get("position") or len(chunks) + 1)
         title = str(chapter.get("title") or "").strip()
         title = title or f"第{position}章"
@@ -273,9 +287,18 @@ def _snapshot_chunks(
                 source_end=end,
             )
         )
-        source_chapter_ids.append(str(chapter["id"]))
+        source_heads.append(
+            {
+                "chapter_position": document_position,
+                "source_chapter_id": str(chapter["id"]),
+                "source_version_id": str(
+                    chapter.get("head_version_id") or ""
+                ),
+                "content_hash": content_hash,
+            }
+        )
         cursor += len(piece)
-    return "\n\n".join(pieces), chunks, source_chapter_ids
+    return "\n\n".join(pieces), chunks, source_heads
 
 
 def _default_tag_label(number: int) -> str:
@@ -304,21 +327,13 @@ def create_version_tag(
     max_documents: Optional[int] = None,
     max_stored_chars: Optional[int] = None,
 ) -> str:
-    project = database.get_novel_project(user_id, project_id)
-    work = database.get_work_for_project(user_id, project_id)
-    if not project or not work:
+    snapshot = database.build_project_tag_snapshot(user_id, project_id)
+    project = dict(snapshot["project"])
+    work = database.get_work(user_id, str(snapshot["work_id"]))
+    if not work:
         raise ValueError("main 分支不存在")
-    main_version = database.get_work_version_for_project(
-        user_id, project_id
-    )
-    if (
-        not main_version
-        or str(main_version.get("ref_name") or "") != "main"
-        or not bool(main_version.get("is_editable"))
-    ):
-        raise ValueError("只有 main 分支可以创建固定版本")
-    source_text, chunks, source_chapter_ids = _snapshot_chunks(
-        database.list_novel_chapters(user_id, project_id)
+    source_text, chunks, source_heads = _snapshot_chunks(
+        snapshot["chapters"]
     )
     if not chunks or not any(chunk.text.strip() for chunk in chunks):
         raise ValueError("main 还没有可固定为 Tag 的正文")
@@ -335,19 +350,16 @@ def create_version_tag(
         for version in work["tag_versions"]
     ):
         raise ValueError("已经存在同名固定版本")
-    creative_snapshot = database.build_project_creative_snapshot(
-        user_id, project_id
-    )
+    creative_snapshot = snapshot["creative_snapshot"]
     memory_by_chapter = {
         str(item["source_chapter_id"]): item
-        for item in database.build_project_story_memory_snapshots(
-            user_id, project_id
-        )
+        for item in snapshot["story_memory_snapshots"]
     }
     story_memory_snapshots: list[dict[str, Any]] = []
-    for document_position, (source_chapter_id, chunk) in enumerate(
-        zip(source_chapter_ids, chunks), start=1
+    for document_position, (source_head, chunk) in enumerate(
+        zip(source_heads, chunks), start=1
     ):
+        source_chapter_id = str(source_head["source_chapter_id"])
         memory = memory_by_chapter.get(source_chapter_id)
         if not memory:
             continue
@@ -376,11 +388,12 @@ def create_version_tag(
         chunks=chunks,
         max_documents=max_documents,
         max_stored_chars=max_stored_chars,
-        work_id=str(work["id"]),
-        base_version_id=str(main_version["id"]),
+        work_id=str(snapshot["work_id"]),
+        base_version_id=str(snapshot["main_version_id"]),
         ref_name=f"version-{tag_number}",
         version_label=clean_label,
         intent="snapshot",
         creative_snapshot=creative_snapshot,
         story_memory_snapshots=story_memory_snapshots,
+        source_head_snapshots=source_heads,
     )

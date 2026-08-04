@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from app.canon_impact_service import CanonImpactService
 from app.db import Database
 from app.planning_schema import (
     ChapterTaskCard,
@@ -101,14 +100,9 @@ def _make_canonical(
         effective_char_count=len(content),
         content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
-    accepted = database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-        version_id=version_id,
-        override_reason="测试环境人工确认这个版本",
-    )
-    assert accepted
+    assert database.get_novel_chapter(
+        user_id, project_id, chapter_id
+    )["head_version_id"] == version_id
     return str(version_id)
 
 
@@ -245,7 +239,7 @@ def test_reader_request_requires_author_choice_before_updating_plan(
     assert len(applied["applied"]) == 3
     chapters = database.list_novel_chapters(user_id, project_id)
     assert [chapter["position"] for chapter in chapters] == [1, 2, 3, 4]
-    assert chapters[0]["canonical_version_id"]
+    assert chapters[0]["head_version_id"]
     assert chapters[1]["outline"] != original_second["outline"]
     assert chapters[1]["plan_status"] == "draft"
     assert (tmp_path / "novels" / str(user_id) / project_id).exists()
@@ -257,7 +251,7 @@ def test_reader_request_requires_author_choice_before_updating_plan(
     ) == 1
 
 
-def test_old_canon_change_requires_impact_report_and_keeps_selected_rechecks(
+def test_main_head_change_marks_all_downstream_chapters_for_recheck(
     tmp_path: Path,
 ):
     database, user_id, project_id = _project(tmp_path)
@@ -282,7 +276,7 @@ def test_old_canon_change_requires_impact_report_and_keeps_selected_rechecks(
     first = database.get_novel_chapter(
         user_id, project_id, chapter_ids[0]
     )
-    old_version_id = str(first["canonical_version_id"])
+    old_version_id = str(first["head_version_id"])
     replacement = "新" * 2100
     replacement_path = (
         Path(first["content_path"]).parent / "replacement.txt"
@@ -299,54 +293,20 @@ def test_old_canon_change_requires_impact_report_and_keeps_selected_rechecks(
             replacement.encode("utf-8")
         ).hexdigest(),
     )
-    impact = CanonImpactService(database)
-    report_id = impact.prepare_report(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_ids[0],
-        proposed_version_id=str(replacement_id),
-        override_reason="作者确认改动不会破坏核心设定",
-    )
-    report = impact.get_report(user_id=user_id, report_id=report_id)
-    assert report["status"] == "pending"
-    assert report["downstream_count"] == 2
-    chapter_items = [
-        item for item in report["items"] if item["item_type"] == "chapter"
-    ]
-    decisions = {
-        item["id"]: {
-            "decision": (
-                "keep"
-                if item["downstream_chapter_id"] == chapter_ids[1]
-                else "recheck"
-            ),
-            "note": "逐章人工判断",
-        }
-        for item in report["items"]
-    }
-    assert impact.update_decisions(
-        user_id=user_id,
-        report_id=report_id,
-        decisions=decisions,
-    )
-    accepted = database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_ids[0],
-        version_id=str(replacement_id),
-        override_reason="作者确认改动不会破坏核心设定",
-        expected_old_canonical_version_id=old_version_id,
-    )
-    assert accepted["downstream_count"] == 2
-    assert impact.mark_applied(user_id=user_id, report_id=report_id)
+    assert replacement_id != old_version_id
+    assert database.get_novel_chapter(
+        user_id, project_id, chapter_ids[0]
+    )["head_version_id"] == replacement_id
     assert database.get_novel_chapter(
         user_id, project_id, chapter_ids[1]
-    )["needs_recheck"] == 0
+    )["needs_recheck"] == 1
     assert database.get_novel_chapter(
         user_id, project_id, chapter_ids[2]
     )["needs_recheck"] == 1
-    applied_report = impact.get_report(
-        user_id=user_id, report_id=report_id
+    historical = database.get_chapter_version(
+        user_id,
+        project_id,
+        chapter_ids[0],
+        old_version_id,
     )
-    assert applied_report["status"] == "applied"
-    assert len(chapter_items) == 2
+    assert historical["head_version_id"] != historical["id"]

@@ -2,9 +2,12 @@
 
 > 关联文档：[产品定义、当前状态与实现路线](product-definition-and-roadmap.md)
 >
-> 更新日期：2026-07-24
+> 更新日期：2026-08-04
 >
 > 目标：在现有 FastAPI + SQLite MVP 上实现真正的“创作闭环 MVP”
+>
+> 文档性质：这是领域模型与实施历史，不是当前路由或模块清单。当前唯一运行
+> 架构以 [《架构与代码边界》](architecture.md) 为准。
 
 ## 1. 决策摘要
 
@@ -17,7 +20,7 @@
 → 章节任务卡与场景节拍
 → 上下文编译
 → 逐场景生成、版本化与 Scene Auditor
-→ 安全组装章节候选版本
+→ 安全组装并推进章节 main HEAD
 → 整章硬性一致性检查
 → AI 味审校与定点修改
 → 作者确认正文
@@ -56,7 +59,7 @@
 
 | 来源 | 借鉴内容 | 在本项目中的实现 |
 |---|---|---|
-| InkOS | 不可变状态更新、时序 Memory、写作—审计—修订 | 候选版本、Story Delta、正史提交 |
+| InkOS | 不可变状态更新、时序 Memory、写作—审计—修订 | main HEAD、不可变历史、Story Delta |
 | 天命 | 事实快照、变更声明、生成门禁 | 结构化事实、硬检查、作者确认 |
 | DOME | 动态分层大纲、时间知识、相关事实检索 | 滚动细纲、时间线、Context Compiler |
 | novel-creator-skill | 写前准备、Beat Sheet、写后更新和压缩 | 章节任务卡、上下文构建、写后流程 |
@@ -74,7 +77,7 @@
 - SQLite WAL；
 - Jinja 页面和少量原生 JavaScript；
 - 用户登录、会话、CSRF 和个人 API Key；
-- DeepSeek 调用、超时、重试和 token 记录；
+- Provider 模型调用、超时、重试和 token 记录；
 - 单任务后台队列和进程锁；
 - 现有小说项目、人物卡、章节和文件存储；
 - TXT 导出；
@@ -85,7 +88,7 @@
 - `novel_projects`：加入作品承诺、目标读者、核心爽点、结局约束和滚动规划窗口；
 - `novel_story_blueprint_versions` / `novel_story_blueprint_heads`：保存不可变全书蓝图修订，以及当前版和确认版指针；
 - `novel_plot_arcs` / `novel_plot_arc_versions`：保存长期规划线身份、不可变修订，以及当前版和确认版指针；
-- `novel_chapters`：加入卷、滚动结构骨架、章节任务卡、正史版本和重检状态；
+- `novel_chapters`：加入卷、滚动结构骨架、章节任务卡、main HEAD 和重检状态；
 - `novel_chapter_versions`：加入父版本、候选/正史状态、内容哈希和变更来源；
 - `novel_scene_versions`：保存逐场景生成、手工编辑和恢复产生的不可变正文版本；
 - `scene_quality_audits` 与 `novel_scene_assembly_items`：保存场景审校结果和章节组装所用的精确版本来源；
@@ -101,18 +104,18 @@ app/
   story_planning_schema.py  全书蓝图与规划剧情线 Schema
   story_planning_service.py 不可变修订、确认、恢复和下游失效
   story_planner_schema.py   三套全书方案、分卷草图与差异校验
-  story_planner.py          Mock / DeepSeek 全书 Story Planner
+  story_planner.py          Mock / Provider 全书 Story Planner
   story_plan_suggestion_service.py 冻结快照、持久队列与草稿采纳
   story_structure_schema.py 三套滚动分卷与连续章节骨架 Schema
-  story_structure_planner.py Mock / DeepSeek 滚动结构 Planner
+  story_structure_planner.py Mock / Provider 滚动结构 Planner
   story_structure_service.py 冻结上下文、精确预览、应用与安全撤销
   structure_health.py 只读全书结构体检与多窗口来源衔接
   structure_link_service.py 作者确认的未来章节因果链接与下游失效
   causal_suggestion_schema.py 因果候选、证据引用、语义预检、跨线影响与冻结边界校验
-  causal_suggestion_planner.py Mock / DeepSeek 只读因果审查器
+  causal_suggestion_planner.py Mock / Provider 只读因果审查器
   causal_suggestion_service.py 持久队列、基线复核与逐条作者决策
   causal_branch_schema.py 长期三分支、章节/人物/剧情线/回报引用边界
-  causal_branch_planner.py Mock / DeepSeek 只读长期因果沙盘
+  causal_branch_planner.py Mock / Provider 只读长期因果沙盘
   causal_branch_service.py 冻结候选、持久队列、基线提示与结果装饰
   planning_ai.py       章节任务卡 Planner
   planning_service.py  卷、章节任务卡与场景节拍
@@ -125,7 +128,7 @@ app/
   migrations.py        版本化数据库迁移
 ```
 
-原有路由先继续工作，新功能通过独立服务接入，待行为稳定后再拆分 `main.py`。
+旧页面路由已经删除；领域服务只能通过统一工作台、Agent 或明确的结构化审核页接入。
 
 ## 5. 目标领域模型
 
@@ -209,7 +212,7 @@ SQLite 查询和线性扫描。
 - active 链接只进入起因章和结果章的 Planner / Writer / Scene Writer
   上下文，且明确标记为未来约束而非正史；
 - 建立或归档链接会使相关未来任务卡退回草稿、场景稿按现有规则过期，
-  但不会修改正文、候选版本或正史；
+  但不会修改正文 HEAD、历史或 Tag；
 - 结果章成为正史后，链接不再进入生成上下文，实际 Story Delta 和
   `story_events.cause_event_keys` 接管已发生因果。
 
@@ -266,7 +269,7 @@ SQLite 查询和线性扫描。
 - `novel_causal_branch_adoption_items` 按分支中的逐章影响保存不可变来源、
   可编辑任务卡补丁和 `pending / accepted / rejected` 作者决定；
 - 补丁只允许增加“必须落实”、推演已引用的确认剧情线、伏笔铺设与回收，
-  不改标题、正文、正史、候选版本或原因果链接；
+  不改标题、正文 HEAD、历史、Tag 或原因果链接；
 - 所有条目必须逐项决定，至少采用一项。最终应用重新校验未来正史边界、
   来源链接、相关章节精确基线和运行中任务，并在单一事务中只写已采用项；
 - 应用同步更新未来骨架关键事件与任务卡草稿，使已有场景稿按计划变化规则
@@ -322,30 +325,30 @@ DeepSeek 只能返回场景字段，不能重写章节级约束；每条推进�
 - Scene Auditor 针对一个精确场景版本保存结构化结论；
 - 未通过或待审场景只有在作者填写覆盖原因后才能参与组装；
 - 组装记录每个位置使用的 `scene_beat_id` 与 `scene_version_id`；
-- 组装只创建 `scene_assembly` 章节候选版本，不修改 `canonical_version_id`。
+- 组装创建不可变的 `scene_assembly` 章节版本，并原子推进该章 main HEAD。
 
-### 5.2 章节版本与正史
+### 5.2 章节 main HEAD、历史与 Tag
 
 #### `novel_chapter_versions`
 
 在现有表上增加：
 
 - `parent_version_id`
-- `status`：`candidate / canonical / archived`
+- `status`：`head / history`
 - `source`：`manual / generated / targeted_rewrite / restored`
 - `content_hash`
 - `change_summary`
 - `created_by`
 
-#### `novel_chapters.canonical_version_id`
+#### `novel_chapters.head_version_id`
 
-章节当前正文与正史必须分开：
+章节只维护一个正文指针：
 
-- 编辑器可以保存工作版本；
-- AI 只能创建候选版本；
-- 只有作者点击“接受为正史”后才更新 `canonical_version_id`；
-- 更新旧章正史时，后续章节被标记为 `needs_recheck`；
-- 旧版本永远保留并可恢复。
+- 手工保存、AI 创作、定点改写和场景组装都创建不可变版本并推进 HEAD；
+- 旧 HEAD 自动变成历史，不需要“接受”或“晋升”；
+- 撤回与恢复也创建新版本，不修改原历史；
+- 更新旧章 HEAD 时，后续章节被标记为 `needs_recheck`，旧故事记忆被撤回；
+- Tag 在整书层面冻结当时的全部章节 HEAD 与作品资料，始终只读。
 
 ### 5.3 结构化 Story Memory
 
@@ -527,7 +530,7 @@ FTS5 补充检索现已实现：
 - 剧情线支持开启、推进、暂停、解决、放弃，伏笔支持设置、推进、回收、放弃；已关闭对象再次推进会产生硬冲突；
 - 人物、事实等状态先解析到作者确认的标准身份；身份规则保存或移除后会迁移引用并重放当前正史；
 - 事件使用稳定 `event_key`，只为引用此前已发生事件的 `cause_event_keys` 建立直接因果边；缺失前因产生待核对项，自引用或事件身份冲突产生硬冲突；
-- 回放只读取当前作品、当前正史分支、当前正史版本且状态为 `projected` 的 Delta，并严格按章节位置执行；
+- 回放只读取当前作品、与各章 main HEAD 精确匹配且状态为 `projected` 的 Delta，并严格按章节位置执行；
 - 旧正史撤回和新 Delta 投影在同一数据库事务内完成回放，不会出现记忆已变而状态仍旧的中间状态；
 - Context Compiler 只读取当前章之前的最新快照与仍有效问题，并在总字符预算内优先保留相关实体；
 - 作者可以记录“有意保留”的判断，但确认不会删除问题、伪造状态或绕过正文 Hard Auditor。
@@ -536,22 +539,19 @@ FTS5 补充检索现已实现：
 
 ## 7. 一章的完整工作流
 
-当前代码已经增加确定性的章节执行状态机。它不替作者自动跨过任何门禁，
-而是根据当前任务卡、场景就绪数、工作版本、硬审计、声纹审校、正史指针和
-Story Delta 状态，统一推导六步进度与下一项安全操作：
+当前章节流程以 main HEAD 为唯一正文状态。计划、审校和分析都是围绕 HEAD 的辅助
+能力，不再组成阻止写作的版本晋升门禁：
 
 ```text
-确认任务卡
-→ 形成正文候选（逐场景或整章）
-→ 通过硬审计
-→ 去 AI 味审校（软门禁，可明确跳过）
-→ 作者确认正史
-→ 审核故事记忆
+可选规划
+→ 创作或修改正文
+→ 创建不可变版本并推进 main HEAD
+→ 自动重建 Story Memory
+→ 作者按需继续修改或创建 Tag
 ```
 
-作品工作台会定位第一章尚未闭环的章节；章节、任务卡、场景、硬审计和
-AI 味页面复用同一状态结果。正史记忆自动提取失败、缺失或被拒绝时，
-作者可以从当前正史版本重新发起 Observer，结果仍只会停在待审核提案。
+审校与 AI 味检查只生成修改建议，不阻止 HEAD 更新。故事记忆自动提取失败时，
+可以从当前 HEAD 重试；若 HEAD 已变化，旧任务会失效而不会污染新正文。
 
 ### 7.1 Planner
 
@@ -607,7 +607,7 @@ Scene Auditor 只审查当前场景的职责：
 - 字数不足；
 - 关键人物、地点或物件状态矛盾。
 
-场景组装稿仍是候选版本，必须继续通过本节的整章检查；Scene Auditor 不能替代 Hard Auditor。
+场景组装稿会形成新的 main HEAD；整章检查与 Scene Auditor 都是后续修改依据，不建立另一套正文状态。
 
 ### 7.5 Style / AI 味审校
 
@@ -627,38 +627,31 @@ Scene Auditor 只审查当前场景的职责：
 作者可以：
 
 - 继续手动修改；
-- 接受某个候选版本；
+- 比较任意两个历史版本；
+- 把历史内容恢复为新的 main HEAD；
 - 忽略软问题；
 - 退回重新规划；
-- 将当前版本接受为正史。
-
-硬问题必须解决或由作者明确覆盖，并记录覆盖原因。
+- 固定当前作品为只读 Tag。
 
 ### 7.7 Observer
 
-正文确认后，Observer 提取 Story Delta。作者审核和修改 Delta 后再提交 Memory。
-
-不能从未确认的 AI 草稿更新事实，否则错误会污染后续章节。
+HEAD 更新后，Observer 自动提取并投影 Story Delta。任务提交前会再次核对
+`head_version_id`；过期结果直接丢弃，不能污染后续章节。
 
 ## 8. 修改旧章节
 
 修改旧章的流程：
 
 ```text
-选择正史版本
-→ 创建新候选版本
-→ 修改正文
-→ 对比差异
-→ 重新执行硬检查
-→ 提取新 Story Delta
-→ 计算旧 Delta 与新 Delta 的差异
-→ 列出受影响的后续事实、伏笔和章节
-→ 作者确认
-→ 切换正史版本
-→ 从最近检查点重放后续 Delta
+读取当前 main HEAD
+→ 修改正文并创建新版本
+→ 原子推进 HEAD
+→ 撤回旧 Story Memory / 搜索文档
+→ 标记后续章节待复查
+→ 为新 HEAD 与受影响后文排队重建 Memory
 ```
 
-第一阶段可以先实现“标记后续章节需要重检”，第二阶段再做完整自动重放和分支比较。
+恢复历史版本也走同一流程，只是新版本的正文来源于所选历史记录。
 
 ## 9. 读者意见调整剧情
 
@@ -823,14 +816,14 @@ Planner、Writer 和 Style Auditor 只接收：
 
 ## 12. 后台任务与状态机
 
-同一个 DeepSeek API 可以承担不同逻辑角色，不需要多个常驻 Agent：
+同一个已路由 Provider 模型可以承担不同逻辑角色，不需要多个常驻 Agent：
 
 ```text
 plan_chapter
 generate_scene
 rewrite_scene
 audit_scene
-write_chapter
+compose
 expand_chapter
 audit_continuity
 review_style
@@ -891,7 +884,7 @@ schema_migrations
 
 迁移 v15 增加独立的全书方案任务与采纳记录。任务保存请求时冻结的确认版全书计划、正史、人物知情、未来章节和项目级抽象技法，以及基线指纹、模型原始响应、token、租约和错误；采纳记录保存方案、所选剧情线、实际创建的草稿版本与基线变化标记。迁移不调用模型、不自动生成计划，也不改变任何现有确认指针。
 
-迁移 v16 增加独立的滚动结构建议队列与应用记录，并为未来章节保存结构作用、精确剧情线和章末钩子。应用记录同时保存变更前后状态、精确预览指纹和安全撤销所需信息；迁移不调用模型、不自动创建分卷或章节，也不修改正文、版本、任务卡或正史指针。
+迁移 v16 增加独立的滚动结构建议队列与应用记录，并为未来章节保存结构作用、精确剧情线和章末钩子。应用记录同时保存变更前后状态、精确预览指纹和安全撤销所需信息；迁移不调用模型、不自动创建分卷或章节，也不修改正文、版本、任务卡或 HEAD。
 
 迁移 v17 增加作者控制的未来章节因果链接表及查询索引。迁移只创建空表，不从章节大纲或正史事件猜测因果，也不修改已有计划、任务卡、正文或正史；链接必须由作者主动建立。
 
@@ -903,18 +896,24 @@ schema_migrations
 
 迁移 v21 为场景节拍增加任务要求引用字段。迁移不猜测旧任务卡与旧场景之间的覆盖关系；缺少显式映射的已确认任务卡会退回草稿，必须由作者或当前 Planner 补全后重新确认。迁移不调用模型，也不修改场景正文、版本、审计或正史。
 
+迁移 v47 将旧的工作稿/正史双指针收敛到 `head_version_id`：优先保留用户最后正在
+编辑的版本，否则使用旧确认版本或最新历史；同步把版本状态归一为 `head/history`，
+并使不匹配 HEAD 的故事记忆失效。迁移 v48 随后从章节表物理删除两列旧指针；运行时
+不再读取或写入旧模型。
+
 因果建议统一使用一套严格结果 Schema：对立解释、反证、中间步骤、证据引用式
 五类语义预检与精确剧情线联合影响都在同一结果中校验。缺少五类证据检查的历史
 结果不再进入审阅或长期沙盘，作者需要按当前冻结上下文重新生成。
 
 ## 14. 实施顺序
 
-### Core 1：正史、版本和 Memory 基础
+### Core 1：main HEAD、历史、Tag 和 Memory 基础
 
 状态：正史基础，以及人物/关系/地点/物品/故事时间/知情/承诺/伏笔、作者控制的记忆身份归一和直接事件因果链的确定性状态回放已完成 MVP。
 
 - 版本化迁移机制；
-- 候选版本与 `canonical_version_id`；
+- 单一 `head_version_id` 与不可变章节历史；
+- 整书只读 Tag；
 - Story Delta Pydantic Schema；
 - Delta 提取、人工确认和正史投影；
 - 章节摘要、事件、人物知识、伏笔和剧情线；
@@ -982,8 +981,8 @@ schema_migrations
 
 ### Core 5：滚动剧情与读者意见
 
-状态：未来窗口、结构化读者请求、严格三方案、作者采纳、正史风险拦截、
-旧正史替换前影响报告和正史切换后的自动状态回放已完成 MVP；单条因果候选
+状态：未来窗口、结构化读者请求、严格三方案、作者采纳、已写正文边界检查、
+HEAD 变化后的自动失效与状态回放已完成 MVP；单条因果候选
 的未来 10–30 章三分支沙盘也已完成，读者方案与多候选/多结构方案的联合
 因果比较仍待实现。
 
@@ -991,7 +990,7 @@ schema_migrations
 - 读者请求；
 - 三种走向和代价；
 - 作者采纳后更新未来计划；
-- 旧正史修改影响报告。
+- 旧章修改后的下游自动复查与记忆重建。
 
 ### Secondary：拆书回流
 

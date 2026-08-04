@@ -11,13 +11,18 @@ import httpx
 from pydantic import ValidationError
 
 from .config import Settings
-from .deepseek import AnalyzerError
+from .model_client import AnalyzerError
 from .memory_schema import StoryDelta
 from .model_provider import (
     ProviderConfigError,
     build_chat_payload,
     build_provider_headers,
     get_provider,
+)
+from .model_protocol import (
+    ModelProtocolError,
+    normalize_model_response,
+    prepare_model_request,
 )
 
 
@@ -46,6 +51,15 @@ MEMORY_SYSTEM_PROMPT = f"""
 11. cause_event_keys 只填写本事件直接依赖、且此前已经发生的 event_key；
     causes 保留自然语言原因。没有可验证的直接因果时使用空数组。
 12. 使用简体中文；枚举值保持 Schema 中的英文。
+13. 所有 before/from_* 必须描述本章开始时的状态，after/to_* 必须描述本章
+    结束时的最终状态；不得把本章中途状态当作章末状态。若同一对象在本章多次
+    变化，只保留一条“章初 → 章末”变化。
+14. 人物位置只写入 location_changes，不要同时在 character_changes 中以
+    aspect=location 重复记录。同一实体同一字段只记录一次。
+15. before 与 after 实际相同的项目不是变化，必须省略。此前没有可靠基线时，
+    before/from_* 留空，不得填写“未知”“不明”或自行概括一个基线。
+16. from_holder 与 to_holder 只填写人物或组织的规范名称，不要附加
+    “暂时持有”“目前保管”等括号说明；这些说明写入 state。
 
 JSON Schema：
 {json.dumps(StoryDelta.model_json_schema(), ensure_ascii=False)}
@@ -136,8 +150,7 @@ class MockMemoryExtractor(BaseMemoryExtractor):
         )
 
 
-class DeepSeekMemoryExtractor(BaseMemoryExtractor):
-    provider = "deepseek"
+class ProviderMemoryExtractor(BaseMemoryExtractor):
     RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
     def __init__(
@@ -150,16 +163,18 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
         self.settings = settings
         self.provider = settings.model_provider
         self._provider_spec = get_provider(self.provider)
-        self.model = settings.deepseek_model
+        self.model = settings.model_name
         self._sleep = sleep
         self._client = httpx.AsyncClient(
-            base_url=settings.deepseek_base_url.rstrip("/") + "/",
+            base_url=settings.model_base_url.rstrip("/") + "/",
             headers=build_provider_headers(
-                self._provider_spec, settings.deepseek_api_key
+                self._provider_spec,
+                settings.model_api_key,
+                model=self.model,
             ),
             timeout=httpx.Timeout(
-                connect=settings.deepseek_connect_timeout_seconds,
-                read=settings.deepseek_read_timeout_seconds,
+                connect=settings.model_connect_timeout_seconds,
+                read=settings.model_read_timeout_seconds,
                 write=30,
                 pool=10,
             ),
@@ -188,16 +203,17 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
             raise AnalyzerError(str(exc)) from exc
 
     async def _post(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        total_attempts = self.settings.deepseek_max_retries + 1
+        total_attempts = self.settings.model_max_retries + 1
         last_error: Optional[Exception] = None
         for attempt in range(total_attempts):
             try:
+                prepared = prepare_model_request(self.settings, payload)
                 response = await self._client.post(
-                    "chat/completions", json=payload
+                    prepared.endpoint, json=prepared.payload
                 )
                 if response.status_code in self.RETRYABLE_STATUS_CODES:
                     raise httpx.HTTPStatusError(
-                        f"DeepSeek 暂时不可用（HTTP {response.status_code}）",
+                        f"模型 暂时不可用（HTTP {response.status_code}）",
                         request=response.request,
                         response=response,
                     )
@@ -219,12 +235,16 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
                     )
                 body = response.json()
                 if not isinstance(body, dict):
-                    raise AnalyzerError("DeepSeek 返回结构不正确")
-                return body
+                    raise AnalyzerError("模型 返回结构不正确")
+                return normalize_model_response(
+                    prepared.protocol, body
+                )
+            except ModelProtocolError as exc:
+                raise AnalyzerError(str(exc)) from exc
             except AnalyzerError:
                 raise
             except ValueError as exc:
-                raise AnalyzerError("DeepSeek 返回了无法解析的响应") from exc
+                raise AnalyzerError("模型 返回了无法解析的响应") from exc
             except (
                 httpx.TimeoutException,
                 httpx.RequestError,
@@ -238,7 +258,7 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
                 )
         raise AnalyzerError(
             f"{self._provider_spec.label} 连接失败，已重试 "
-            f"{self.settings.deepseek_max_retries} 次"
+            f"{self.settings.model_max_retries} 次"
         ) from last_error
 
     @staticmethod
@@ -258,13 +278,13 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
             finish_reason = str(choice.get("finish_reason") or "")
         except (AttributeError, KeyError, IndexError, TypeError) as exc:
             raise AnalyzerError(
-                "DeepSeek 故事记忆响应缺少必要字段",
+                "模型 故事记忆响应缺少必要字段",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             ) from exc
         if not isinstance(content, str):
             raise AnalyzerError(
-                "DeepSeek 故事记忆响应类型不正确",
+                "模型 故事记忆响应类型不正确",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
@@ -317,7 +337,7 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
             {"role": "system", "content": MEMORY_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-        max_tokens = self.settings.deepseek_max_tokens
+        max_tokens = self.settings.model_max_tokens
         total_input_tokens = 0
         total_output_tokens = 0
         last_error = "未知结构错误"
@@ -345,27 +365,27 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
             total_output_tokens += output_tokens
 
             if reason == "length":
-                last_error = "DeepSeek 故事记忆输出被截断"
+                last_error = "模型 故事记忆输出被截断"
                 max_tokens = min(max_tokens * 2, 20_000)
                 if format_attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if format_attempt == 0:
                     await self._sleep(1.0)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了故事记忆输出",
+                    "模型 内容安全策略拒绝了故事记忆输出",
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                 )
             elif reason != "stop":
                 last_error = (
-                    f"DeepSeek 返回了未支持的结束原因：{reason or 'empty'}"
+                    f"模型 返回了未支持的结束原因：{reason or 'empty'}"
                 )
             elif not content:
-                last_error = "DeepSeek 返回了空的故事记忆"
+                last_error = "模型 返回了空的故事记忆"
             else:
                 try:
                     result = StoryDelta.model_validate_json(content)
@@ -382,7 +402,7 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
                         for error in exc.errors()[:8]
                     )
                     last_error = (
-                        "DeepSeek Story Delta 未通过结构校验："
+                        "模型 Story Delta 未通过结构校验："
                         f"{compact_errors}"
                     )
                     if format_attempt == 0:
@@ -415,4 +435,4 @@ class DeepSeekMemoryExtractor(BaseMemoryExtractor):
 def build_memory_extractor(settings: Settings) -> BaseMemoryExtractor:
     if settings.uses_test_models:
         return MockMemoryExtractor()
-    return DeepSeekMemoryExtractor(settings)
+    return ProviderMemoryExtractor(settings)

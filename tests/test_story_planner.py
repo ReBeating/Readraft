@@ -17,7 +17,7 @@ from app.main import create_app
 from app.migrations import MIGRATIONS
 from app.security import hash_password
 from app.story_plan_suggestion_service import StoryPlanSuggestionService
-from app.story_planner import DeepSeekStoryPlanner, MockStoryPlanner
+from app.story_planner import ProviderStoryPlanner, MockStoryPlanner
 from app.story_planner_schema import StoryPlanProposalSet
 from app.story_planning_schema import PlannedStoryArc, StoryBlueprint
 from app.story_planning_service import StoryPlanningService
@@ -36,15 +36,15 @@ def _settings(tmp_path: Path, *, api_key: str | None = None) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=api_key,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=api_key,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -224,7 +224,7 @@ def test_deepseek_story_planner_retries_invalid_json_and_sends_safe_context(
             instruction="避免中段重复调查",
             provider_user_id="mock",
         )
-        planner = DeepSeekStoryPlanner(
+        planner = ProviderStoryPlanner(
             _settings(tmp_path, api_key="sk-test-secret")
         )
         payloads = []

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from app.agent_capabilities import agent_manifest
-from app.agent_tools import AgentToolExecutor, available_agent_tools
+from app.agent_workspace import AgentWorkspace
 from app.db import Database
 from app.web_search import ExaWebSearch, WebSearchError
 
@@ -118,8 +118,15 @@ def test_agent_web_search_tool_is_opt_in_and_returns_citable_sources(
     database = Database(tmp_path / "test.db")
     database.initialize()
     calls = []
-    executor = AgentToolExecutor(
+    workspace = AgentWorkspace(
         database,
+        user_id=7,
+        context={
+            "scope": "novel_project",
+            "agent": agent_manifest("advisor"),
+            "web_search_available": False,
+        },
+        sources=[],
         web_search=lambda user_id, query, limit: calls.append(
             (user_id, query, limit)
         )
@@ -131,26 +138,17 @@ def test_agent_web_search_tool_is_opt_in_and_returns_citable_sources(
             }
         ],
     )
-    context = {
-        "scope": "novel_project",
-        "agent": agent_manifest("advisor"),
-        "web_search_available": False,
-    }
-    assert "search_web" not in {
-        item.name for item in available_agent_tools(context)
+    assert "web_search" not in {
+        item.name for item in workspace.available_external_tools()
     }
 
-    context["web_search_available"] = True
-    assert "search_web" in {
-        item.name for item in available_agent_tools(context)
+    workspace.context["web_search_available"] = True
+    assert "web_search" in {
+        item.name for item in workspace.available_external_tools()
     }
-    execution = executor.execute(
-        user_id=7,
-        tool_name="search_web",
-        arguments={"query": "海港停电史", "max_results": 3},
-        context=context,
-        sources=[],
-        selected_quote="",
+    execution = workspace.execute_tool(
+        "web_search",
+        {"query": "海港停电史", "max_results": 3},
     )
     assert calls == [(7, "海港停电史", 3)]
     assert execution.result["matched_count"] == 1

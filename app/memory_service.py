@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from .continuity import replay_canonical_state
 from .db import Database, utc_now
+from .json_support import dump_json as _json
 from .memory_identity import ensure_memory_identity
 from .memory_schema import StoryDelta
 from .memory_search import (
@@ -17,12 +18,8 @@ from .memory_search import (
 )
 
 
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
 class MemoryService:
-    """Projects extracted chapter changes into canonical story memory."""
+    """Project extracted changes from the current main HEAD into story memory."""
 
     def __init__(self, database: Database):
         self.database = database
@@ -55,7 +52,7 @@ class MemoryService:
             if not target:
                 connection.rollback()
                 raise ValueError(
-                    "只能为当前正史版本提取故事记忆，请先确认正文版本"
+                    "只能为当前 main HEAD 提取故事记忆"
                 )
             existing = connection.execute(
                 """
@@ -111,7 +108,7 @@ class MemoryService:
                 """
                 SELECT d.*, ch.title AS chapter_title,
                        ch.position AS chapter_position,
-                       ch.canonical_version_id,
+                       ch.head_version_id,
                        p.title AS project_title
                 FROM story_deltas d
                 JOIN novel_chapters ch ON ch.id=d.chapter_id
@@ -209,7 +206,7 @@ class MemoryService:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT d.*, ch.canonical_version_id
+                SELECT d.*, ch.head_version_id
                 FROM story_deltas d
                 JOIN novel_chapters ch ON ch.id=d.chapter_id
                 JOIN novel_projects p ON p.id=d.project_id
@@ -230,11 +227,11 @@ class MemoryService:
             if str(row["status"]) not in {"proposed", "author_edited"}:
                 connection.rollback()
                 raise ValueError("这份故事记忆提案已不能确认")
-            if str(row["canonical_version_id"] or "") != str(
+            if str(row["head_version_id"] or "") != str(
                 row["version_id"]
             ):
                 connection.rollback()
-                raise ValueError("正文正史已经变化，请重新提取故事记忆")
+                raise ValueError("main HEAD 已经变化，请重新提取故事记忆")
 
             delta = StoryDelta.model_validate_json(str(row["payload_json"]))
             self._retract_previous_chapter_memory(
@@ -263,6 +260,14 @@ class MemoryService:
             connection.execute(
                 "UPDATE novel_projects SET updated_at=? WHERE id=?",
                 (now, row["project_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE novel_chapters
+                SET needs_recheck=0, updated_at=?
+                WHERE id=? AND head_version_id=?
+                """,
+                (now, row["chapter_id"], row["version_id"]),
             )
             replay_canonical_state(
                 connection,
@@ -336,7 +341,7 @@ class MemoryService:
                 JOIN novel_projects p ON p.id=ch.project_id
                 LEFT JOIN chapter_memory m
                   ON m.chapter_id=ch.id
-                 AND m.version_id=ch.canonical_version_id
+                 AND m.version_id=ch.head_version_id
                  AND m.record_status='canon'
                 LEFT JOIN story_deltas d
                   ON d.id=m.delta_id AND d.status='projected'
@@ -345,13 +350,13 @@ class MemoryService:
                       SELECT latest.id
                       FROM generation_jobs latest
                       WHERE latest.chapter_id=ch.id
-                        AND latest.version_id=ch.canonical_version_id
+                        AND latest.version_id=ch.head_version_id
                         AND latest.operation='extract_story_delta'
                       ORDER BY latest.created_at DESC
                       LIMIT 1
                   )
                 WHERE ch.project_id=? AND p.user_id=?
-                    AND ch.canonical_version_id IS NOT NULL
+                    AND ch.head_version_id IS NOT NULL
                 ORDER BY ch.position
                 """,
                 (project_id, user_id),
@@ -401,7 +406,7 @@ class MemoryService:
             JOIN novel_chapters ch ON ch.id=v.chapter_id
             JOIN novel_projects p ON p.id=ch.project_id
             WHERE v.id=? AND v.chapter_id=? AND ch.project_id=?
-                AND p.user_id=? AND ch.canonical_version_id=v.id
+                AND p.user_id=? AND ch.head_version_id=v.id
             """,
             (version_id, chapter_id, project_id, user_id),
         ).fetchone()
@@ -861,19 +866,20 @@ class MemoryService:
                    chapter.title,
                    chapter.content_path
             FROM work_versions tag
-            JOIN work_versions base ON base.id=tag.base_version_id
             JOIN chapters chapter
               ON chapter.document_id=tag.document_id
+            JOIN work_tag_chapter_heads manifest
+              ON manifest.work_version_id=tag.id
+             AND manifest.document_chapter_id=chapter.id
             LEFT JOIN work_version_story_memories snapshot
               ON snapshot.work_version_id=tag.id
              AND snapshot.document_chapter_id=chapter.id
-            WHERE base.project_id=?
+            WHERE manifest.source_version_id=?
               AND tag.ref_type='tag'
               AND tag.intent='snapshot'
-              AND chapter.position=?
               AND snapshot.id IS NULL
             """,
-            (project_id, int(source["chapter_position"])),
+            (version_id,),
         ).fetchall()
         payload_json = delta.model_dump_json()
         keywords_json = _json(delta.keywords)

@@ -6,7 +6,7 @@
       <a class="back-link" href="/novels/{{ chapter.project_id }}/workbench?view=archive&archive_tab=versions&chapter_id={{ chapter.id }}">← 返回版本</a>
       <span class="eyebrow">CHAPTER VERSION DIFF · {{ "%03d"|format(chapter.position) }}</span>
       <h1>{{ chapter.title or '未命名章节' }}</h1>
-      <p>比较完整章节版本，确认 AI 生成、手工修改或定点改写到底改变了什么。</p>
+      <p>比较 main HEAD 与不可变历史，查看 AI、手工修改或定点改写带来的变化。</p>
     </div>
     {% if base_version %}
       <form method="get" class="version-compare-picker">
@@ -17,7 +17,7 @@
               {% if version.id != target_version.id %}
                 <option value="{{ version.id }}" {% if version.id == base_version.id %}selected{% endif %}>
                   {{ version.kind|writing_operation_label }} · {{ version.created_at }}
-                  {% if version.id == chapter.canonical_version_id %}· 正史{% endif %}
+                  {% if version.id == chapter.head_version_id %}· main HEAD{% endif %}
                 </option>
               {% endif %}
             {% endfor %}
@@ -28,7 +28,14 @@
     {% endif %}
   </section>
 
-  {% if comparison_error %}<div class="alert error">{{ comparison_error }}</div>{% endif %}
+    {% if comparison_error %}<div class="alert error">{{ comparison_error }}</div>{% endif %}
+
+  {% if target_version.id != chapter.head_version_id %}
+    <form method="post" action="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ target_version.id }}/restore" data-save-before-submit>
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <button class="button" type="submit">恢复为新的 main HEAD</button>
+    </form>
+  {% endif %}
 
   {% if not base_version %}
     <section class="card empty-style-state">
@@ -77,8 +84,7 @@
               <h2>{{ base_version.kind|writing_operation_label }}</h2>
             </div>
             <span>
-              {% if base_version.id == chapter.canonical_version_id %}正史
-              {% elif base_version.id == chapter.working_version_id %}未采用版本
+              {% if base_version.id == chapter.head_version_id %}main HEAD
               {% else %}历史版本{% endif %}
             </span>
           </div>
@@ -92,8 +98,7 @@
               <h2>{{ target_version.kind|writing_operation_label }}</h2>
             </div>
             <span>
-              {% if target_version.id == chapter.canonical_version_id %}正史
-              {% elif target_version.id == chapter.working_version_id %}未采用版本
+              {% if target_version.id == chapter.head_version_id %}main HEAD
               {% else %}历史版本{% endif %}
             </span>
           </div>

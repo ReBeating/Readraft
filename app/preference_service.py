@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    load_json_dict as _json_dict,
+    load_json_list as _json_list,
+)
 from .preference_extraction import build_edit_sample
-from .preference_schema import EditPreferenceCategory
 
 
 EDIT_PREFERENCE_CATEGORIES = {
@@ -56,22 +59,6 @@ EFFECT_MAX_VERSIONS_PER_SIDE = 20
 EFFECT_MIN_VERSIONS = 3
 EFFECT_MIN_CHAPTERS = 3
 EFFECT_MIN_CHARS = 6000
-
-
-def _json_dict(value: Any) -> dict[str, Any]:
-    try:
-        result = json.loads(str(value or "{}"))
-    except (TypeError, ValueError):
-        return {}
-    return result if isinstance(result, dict) else {}
-
-
-def _json_list(value: Any) -> list[Any]:
-    try:
-        result = json.loads(str(value or "[]"))
-    except (TypeError, ValueError):
-        return []
-    return result if isinstance(result, list) else []
 
 
 def _normalized_text(value: Any) -> str:

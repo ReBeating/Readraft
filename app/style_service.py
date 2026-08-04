@@ -8,23 +8,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    load_json_dict as _json_dict,
+    load_json_list as _json_list,
+)
 from .style_schema import StyleAuditResult, TargetedRewriteResult
-
-
-def _json_list(value: Any) -> list[Any]:
-    try:
-        result = json.loads(str(value or "[]"))
-    except (TypeError, ValueError):
-        return []
-    return result if isinstance(result, list) else []
-
-
-def _json_dict(value: Any) -> dict[str, Any]:
-    try:
-        result = json.loads(str(value or "{}"))
-    except (TypeError, ValueError):
-        return {}
-    return result if isinstance(result, dict) else {}
 
 
 class StyleService:
@@ -996,9 +984,11 @@ class StyleService:
             candidate = connection.execute(
                 """
                 SELECT c.*, i.quote, i.issue_type, i.rewrite_direction,
-                       i.status AS issue_status
+                       i.status AS issue_status,
+                       ch.head_version_id AS current_head_version_id
                 FROM style_rewrite_candidates c
                 JOIN chapter_style_issues i ON i.id=c.issue_id
+                JOIN novel_chapters ch ON ch.id=c.chapter_id
                 JOIN novel_projects p ON p.id=c.project_id
                 WHERE c.id=? AND p.user_id=? AND c.status='candidate'
                 """,
@@ -1007,6 +997,11 @@ class StyleService:
             if not candidate or str(candidate["issue_status"]) != "open":
                 connection.rollback()
                 return None
+            if str(candidate["current_head_version_id"] or "") != str(
+                candidate["source_version_id"] or ""
+            ):
+                connection.rollback()
+                raise ValueError("main HEAD 已变化，请基于当前正文重新生成改写")
             active = connection.execute(
                 """
                 SELECT 1 FROM generation_jobs
@@ -1023,11 +1018,11 @@ class StyleService:
                 """
                 INSERT INTO novel_chapter_versions(
                     id, chapter_id, kind, content_path, char_count, created_at,
-                    parent_version_id, status, source, content_hash,
+                    parent_version_id, source, content_hash,
                     change_summary, created_by, quality_status,
                     effective_char_count, hard_issue_count, style_status,
                     style_issue_count
-                ) VALUES (?, ?, 'targeted_rewrite', ?, ?, ?, ?, 'candidate',
+                ) VALUES (?, ?, 'targeted_rewrite', ?, ?, ?, ?,
                           'targeted_rewrite', ?, ?, 'ai', 'pass', ?, 0,
                           'pending', 0)
                 """,
@@ -1046,20 +1041,20 @@ class StyleService:
                     effective_char_count,
                 ),
             )
-            connection.execute(
-                """
-                UPDATE novel_chapters
-                SET char_count=?, status='draft', working_version_id=?,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (
-                    char_count,
-                    version_id,
-                    now,
-                    candidate["chapter_id"],
+            advanced = self.database.set_chapter_head_in_transaction(
+                connection,
+                user_id=user_id,
+                project_id=str(candidate["project_id"]),
+                chapter_id=str(candidate["chapter_id"]),
+                version_id=version_id,
+                expected_old_head_version_id=str(
+                    candidate["current_head_version_id"] or ""
                 ),
+                now=now,
             )
+            if not advanced:
+                connection.rollback()
+                raise ValueError("改写结果没有成为 main HEAD")
             connection.execute(
                 """
                 UPDATE style_rewrite_candidates
@@ -1103,10 +1098,6 @@ class StyleService:
             )
             self._refresh_version_style_status(
                 connection, str(candidate["source_version_id"])
-            )
-            connection.execute(
-                "UPDATE novel_projects SET updated_at=? WHERE id=?",
-                (now, candidate["project_id"]),
             )
             connection.commit()
         return {

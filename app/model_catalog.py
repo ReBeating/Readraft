@@ -82,20 +82,3 @@ async def fetch_models(
     if not models:
         raise ModelCatalogError("当前 API Key 没有可用模型")
     return models
-
-
-async def fetch_deepseek_models(
-    *,
-    api_key: str,
-    base_url: str,
-    timeout_seconds: int = 15,
-    transport: Optional[httpx.AsyncBaseTransport] = None,
-) -> List[str]:
-    """Backward-compatible DeepSeek catalog helper."""
-    return await fetch_models(
-        provider_id="deepseek",
-        api_key=api_key,
-        base_url=base_url,
-        timeout_seconds=timeout_seconds,
-        transport=transport,
-    )

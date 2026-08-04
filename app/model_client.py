@@ -1,3 +1,5 @@
+"""Provider-neutral chat-completions client and chapter analyzer."""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +20,13 @@ from .model_provider import (
     build_chat_payload,
     build_provider_headers,
     get_provider,
+)
+from .model_protocol import (
+    ModelProtocolError,
+    ModelStreamDelta,
+    decode_model_stream_event,
+    normalize_model_response,
+    prepare_model_request,
 )
 
 
@@ -58,6 +67,11 @@ class AnalyzerError(RuntimeError):
         super().__init__(message)
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+
+
+RuntimeEventCallback = Callable[
+    [str, Mapping[str, Any]], Awaitable[None] | None
+]
 
 
 @dataclass(frozen=True)
@@ -101,7 +115,7 @@ class MockAnalyzer(BaseAnalyzer):
             characters=[],
             scenes=[],
             key_events=(
-                [{"event": summary[:200], "impact": "等待接入 DeepSeek 后生成精细分析"}]
+                [{"event": summary[:200], "impact": "等待接入模型后生成精细分析"}]
                 if cleaned
                 else []
             ),
@@ -146,8 +160,7 @@ class MockAnalyzer(BaseAnalyzer):
         )
 
 
-class DeepSeekAnalyzer(BaseAnalyzer):
-    provider = "deepseek"
+class ProviderAnalyzer(BaseAnalyzer):
     RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
     def __init__(
@@ -160,29 +173,61 @@ class DeepSeekAnalyzer(BaseAnalyzer):
         self.settings = settings
         self.provider = settings.model_provider
         self._provider_spec = get_provider(self.provider)
-        self.model = settings.deepseek_model
+        self.model = settings.model_name
         self._sleep = sleep
+        self._runtime_event_callback: RuntimeEventCallback | None = None
         timeout = httpx.Timeout(
-            connect=settings.deepseek_connect_timeout_seconds,
-            read=settings.deepseek_read_timeout_seconds,
+            connect=settings.model_connect_timeout_seconds,
+            read=settings.model_read_timeout_seconds,
             write=30,
             pool=10,
         )
         self._client = httpx.AsyncClient(
-            base_url=settings.deepseek_base_url.rstrip("/") + "/",
+            base_url=settings.model_base_url.rstrip("/") + "/",
             headers=build_provider_headers(
-                self._provider_spec, settings.deepseek_api_key
+                self._provider_spec,
+                settings.model_api_key,
+                model=self.model,
             ),
             timeout=timeout,
             limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
             transport=transport,
         )
 
+    def set_runtime_event_callback(
+        self, callback: RuntimeEventCallback | None
+    ) -> None:
+        self._runtime_event_callback = callback
+
+    async def _emit_runtime_event(
+        self, event_type: str, payload: Mapping[str, Any]
+    ) -> None:
+        if self._runtime_event_callback is None:
+            return
+        result = self._runtime_event_callback(event_type, dict(payload))
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
+    def _retry_category(exc: Exception) -> str:
+        if isinstance(exc, httpx.TimeoutException):
+            return "timeout"
+        if isinstance(exc, httpx.HTTPStatusError):
+            response = exc.response
+            return f"http_{response.status_code}" if response else "http"
+        return "connection"
+
     def _payload(
         self,
-        messages: List[Mapping[str, str]],
+        messages: List[Mapping[str, Any]],
         provider_user_id: str,
         max_tokens: int,
+        *,
+        json_object: bool = True,
+        temperature: float | None = 0.2,
+        tools: List[Mapping[str, Any]] | None = None,
+        tool_choice: Any = None,
+        parallel_tool_calls: bool | None = None,
     ) -> Dict[str, Any]:
         try:
             return build_chat_payload(
@@ -190,21 +235,28 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 messages=messages,
                 provider_user_id=provider_user_id,
                 max_tokens=max_tokens,
-                json_object=True,
-                temperature=0.2,
+                json_object=json_object,
+                temperature=temperature,
+                tools=tools,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
             )
         except ProviderConfigError as exc:
             raise AnalyzerError(str(exc)) from exc
 
     async def _post(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
-        total_attempts = self.settings.deepseek_max_retries + 1
+        total_attempts = self.settings.model_max_retries + 1
         for attempt in range(total_attempts):
             try:
-                response = await self._client.post("chat/completions", json=payload)
+                prepared = prepare_model_request(self.settings, payload)
+                response = await self._client.post(
+                    prepared.endpoint, json=prepared.payload
+                )
                 if response.status_code in self.RETRYABLE_STATUS_CODES:
                     raise httpx.HTTPStatusError(
-                        f"DeepSeek 暂时不可用（HTTP {response.status_code}）",
+                        f"{self._provider_spec.label} 暂时不可用"
+                        f"（HTTP {response.status_code}）",
                         request=response.request,
                         response=response,
                     )
@@ -226,10 +278,18 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 try:
                     body = response.json()
                 except ValueError as exc:
-                    raise AnalyzerError("DeepSeek 返回了无法解析的响应") from exc
+                    raise AnalyzerError(
+                        f"{self._provider_spec.label} 返回了无法解析的响应"
+                    ) from exc
                 if not isinstance(body, dict):
-                    raise AnalyzerError("DeepSeek 返回结构不正确")
-                return body
+                    raise AnalyzerError(
+                        f"{self._provider_spec.label} 返回结构不正确"
+                    )
+                return normalize_model_response(
+                    prepared.protocol, body
+                )
+            except ModelProtocolError as exc:
+                raise AnalyzerError(str(exc)) from exc
             except AnalyzerError:
                 raise
             except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as exc:
@@ -237,10 +297,20 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 if attempt + 1 >= total_attempts:
                     break
                 delay = min(8.0, 2**attempt) + random.uniform(0, 0.25)
+                retry_payload = {
+                    "attempt": attempt + 1,
+                    "max_retries": self.settings.model_max_retries,
+                    "delay_seconds": round(delay, 2),
+                    "category": self._retry_category(exc),
+                }
+                await self._emit_runtime_event(
+                    "retry_scheduled", retry_payload
+                )
                 await self._sleep(delay)
+                await self._emit_runtime_event("retry_resumed", retry_payload)
         raise AnalyzerError(
             f"{self._provider_spec.label} 连接失败，已重试 "
-            f"{self.settings.deepseek_max_retries} 次"
+            f"{self.settings.model_max_retries} 次"
         ) from last_error
 
     async def _post_stream(
@@ -249,29 +319,45 @@ class DeepSeekAnalyzer(BaseAnalyzer):
         *,
         on_content_delta: Callable[
             [str], Awaitable[None] | None
-        ],
+        ]
+        | None = None,
+        on_stream_delta: Callable[
+            [ModelStreamDelta], Awaitable[None] | None
+        ]
+        | None = None,
     ) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
-        total_attempts = self.settings.deepseek_max_retries + 1
+        total_attempts = self.settings.model_max_retries + 1
         emitted_content = False
         for attempt in range(total_attempts):
             try:
                 streaming_payload = dict(payload)
                 streaming_payload["stream"] = True
-                if self._provider_spec.id in {"deepseek", "openai"}:
+                prepared = prepare_model_request(
+                    self.settings, streaming_payload
+                )
+                if (
+                    prepared.protocol == "openai_chat"
+                    and self._provider_spec.id in {"deepseek", "openai"}
+                ):
                     streaming_payload["stream_options"] = {
                         "include_usage": True
                     }
+                    prepared = prepare_model_request(
+                        self.settings, streaming_payload
+                    )
                 content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                tool_call_parts: Dict[int, Dict[str, Any]] = {}
                 non_sse_lines: list[str] = []
                 finish_reason = ""
-                usage: Mapping[str, Any] = {}
+                usage: Dict[str, int] = {}
                 stream_finished = False
                 saw_sse_data = False
                 async with self._client.stream(
                     "POST",
-                    "chat/completions",
-                    json=streaming_payload,
+                    prepared.endpoint,
+                    json=prepared.payload,
                     ) as response:
                     if response.status_code in self.RETRYABLE_STATUS_CODES:
                         raise httpx.HTTPStatusError(
@@ -322,31 +408,68 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                             ) from exc
                         if not isinstance(event, Mapping):
                             continue
-                        if isinstance(event.get("usage"), Mapping):
-                            usage = event["usage"]
-                        choices = event.get("choices") or []
-                        if not choices:
-                            continue
-                        choice = choices[0]
-                        if not isinstance(choice, Mapping):
-                            continue
-                        reason = str(
-                            choice.get("finish_reason") or ""
+                        decoded = decode_model_stream_event(
+                            prepared.protocol, event
                         )
-                        if reason:
-                            finish_reason = reason
-                        delta = choice.get("delta") or {}
-                        chunk = (
-                            delta.get("content")
-                            if isinstance(delta, Mapping)
-                            else None
-                        )
-                        if isinstance(chunk, str) and chunk:
-                            emitted_content = True
-                            content_parts.append(chunk)
-                            callback_result = on_content_delta(chunk)
+                        if on_stream_delta is not None:
+                            callback_result = on_stream_delta(decoded)
                             if inspect.isawaitable(callback_result):
                                 await callback_result
+                        if decoded.usage:
+                            for key, value in decoded.usage.items():
+                                if value:
+                                    usage[key] = int(value)
+                        if decoded.finish_reason:
+                            finish_reason = decoded.finish_reason
+                        chunk = decoded.content
+                        if chunk:
+                            emitted_content = True
+                            content_parts.append(chunk)
+                            if on_content_delta is not None:
+                                callback_result = on_content_delta(chunk)
+                                if inspect.isawaitable(callback_result):
+                                    await callback_result
+                        if decoded.reasoning:
+                            emitted_content = True
+                            reasoning_parts.append(decoded.reasoning)
+                        for tool_delta in decoded.tool_call_deltas:
+                            emitted_content = True
+                            current = tool_call_parts.setdefault(
+                                tool_delta.index,
+                                {
+                                    "id": "",
+                                    "name": "",
+                                    "arguments": "",
+                                },
+                            )
+                            if tool_delta.call_id:
+                                current["id"] = tool_delta.call_id
+                            if tool_delta.name:
+                                current["name"] = tool_delta.name
+                            if tool_delta.arguments:
+                                current["arguments"] = (
+                                    tool_delta.arguments
+                                )
+                            elif tool_delta.arguments_delta:
+                                current["arguments"] += (
+                                    tool_delta.arguments_delta
+                                )
+                        if (
+                            decoded.completed_content
+                            and not content_parts
+                        ):
+                            emitted_content = True
+                            content_parts.append(
+                                decoded.completed_content
+                            )
+                            if on_content_delta is not None:
+                                callback_result = on_content_delta(
+                                    decoded.completed_content
+                                )
+                                if inspect.isawaitable(callback_result):
+                                    await callback_result
+                        if decoded.done:
+                            stream_finished = True
                 if not saw_sse_data:
                     try:
                         fallback_body = json.loads(
@@ -358,6 +481,9 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                         ) from exc
                     if not isinstance(fallback_body, dict):
                         raise AnalyzerError("模型服务返回结构不正确")
+                    fallback_body = normalize_model_response(
+                        prepared.protocol, fallback_body
+                    )
                     try:
                         fallback_content = fallback_body["choices"][0][
                             "message"
@@ -366,26 +492,60 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                         fallback_content = ""
                     if isinstance(fallback_content, str) and fallback_content:
                         emitted_content = True
-                        callback_result = on_content_delta(
-                            fallback_content
-                        )
-                        if inspect.isawaitable(callback_result):
-                            await callback_result
+                        if on_content_delta is not None:
+                            callback_result = on_content_delta(
+                                fallback_content
+                            )
+                            if inspect.isawaitable(callback_result):
+                                await callback_result
                     return fallback_body
+                tool_calls = []
+                for index, item in sorted(tool_call_parts.items()):
+                    name = str(item.get("name") or "")
+                    if not name:
+                        continue
+                    tool_calls.append(
+                        {
+                            "id": str(item.get("id") or f"call_{index}"),
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": str(
+                                    item.get("arguments") or "{}"
+                                ),
+                            },
+                        }
+                    )
+                message: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                }
+                if reasoning_parts:
+                    message["reasoning_content"] = "".join(
+                        reasoning_parts
+                    )
+                if tool_calls:
+                    message["tool_calls"] = tool_calls
                 return {
                     "choices": [
                         {
-                            "message": {
-                                "content": "".join(content_parts)
-                            },
+                            "message": message,
                             "finish_reason": (
                                 finish_reason
-                                or ("stop" if stream_finished else "")
+                                or (
+                                    "tool_calls"
+                                    if tool_calls
+                                    else (
+                                        "stop" if stream_finished else ""
+                                    )
+                                )
                             ),
                         }
                     ],
                     "usage": dict(usage),
                 }
+            except ModelProtocolError as exc:
+                raise AnalyzerError(str(exc)) from exc
             except AnalyzerError:
                 raise
             except (
@@ -397,14 +557,27 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 if emitted_content or attempt + 1 >= total_attempts:
                     break
                 delay = min(8.0, 2**attempt) + random.uniform(0, 0.25)
+                retry_payload = {
+                    "attempt": attempt + 1,
+                    "max_retries": self.settings.model_max_retries,
+                    "delay_seconds": round(delay, 2),
+                    "category": self._retry_category(exc),
+                    "stream": True,
+                }
+                await self._emit_runtime_event(
+                    "retry_scheduled", retry_payload
+                )
                 await self._sleep(delay)
+                await self._emit_runtime_event("retry_resumed", retry_payload)
         raise AnalyzerError(
             f"{self._provider_spec.label} 流式连接失败，已重试 "
-            f"{self.settings.deepseek_max_retries} 次"
+            f"{self.settings.model_max_retries} 次"
         ) from last_error
 
     @staticmethod
-    def _extract(body: Mapping[str, Any]) -> tuple[str, str, int, int]:
+    def _extract(
+        body: Mapping[str, Any], provider_label: str = "模型服务"
+    ) -> tuple[str, str, int, int]:
         usage = body.get("usage") or {}
         try:
             input_tokens = int(usage.get("prompt_tokens") or 0)
@@ -418,13 +591,13 @@ class DeepSeekAnalyzer(BaseAnalyzer):
             finish_reason = choice.get("finish_reason") or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise AnalyzerError(
-                "DeepSeek 响应缺少必要字段",
+                f"{provider_label} 响应缺少必要字段",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             ) from exc
         if not isinstance(content, str):
             raise AnalyzerError(
-                "DeepSeek 返回内容类型不正确",
+                f"{provider_label} 返回内容类型不正确",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
@@ -453,7 +626,7 @@ class DeepSeekAnalyzer(BaseAnalyzer):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-        max_tokens = self.settings.deepseek_max_tokens
+        max_tokens = self.settings.model_max_tokens
         last_error = "未知结构错误"
         total_input_tokens = 0
         total_output_tokens = 0
@@ -463,7 +636,9 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 self._payload(messages, provider_user_id, max_tokens)
             )
             try:
-                content, finish_reason, input_tokens, output_tokens = self._extract(body)
+                content, finish_reason, input_tokens, output_tokens = (
+                    self._extract(body, self._provider_spec.label)
+                )
             except AnalyzerError as exc:
                 total_input_tokens += exc.input_tokens
                 total_output_tokens += exc.output_tokens
@@ -480,7 +655,7 @@ class DeepSeekAnalyzer(BaseAnalyzer):
             total_output_tokens += output_tokens
 
             if finish_reason == "length":
-                last_error = "DeepSeek 输出被截断"
+                last_error = f"{self._provider_spec.label} 输出被截断"
                 max_tokens = min(max_tokens * 2, 20_000)
                 if format_attempt == 0:
                     continue
@@ -490,7 +665,9 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                     output_tokens=total_output_tokens,
                 )
             if finish_reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = (
+                    f"{self._provider_spec.label} 当前系统资源不足"
+                )
                 if format_attempt == 0:
                     await self._sleep(1.0)
                     continue
@@ -501,25 +678,28 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                 )
             if finish_reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了本章输出",
+                    f"{self._provider_spec.label} 内容安全策略拒绝了"
+                    "本章输出",
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                 )
             if finish_reason == "tool_calls":
                 raise AnalyzerError(
-                    "DeepSeek 意外返回了工具调用，未生成章节分析",
+                    f"{self._provider_spec.label} 意外返回了工具调用，"
+                    "未生成章节分析",
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                 )
             if finish_reason != "stop":
                 reason = finish_reason or "empty"
                 raise AnalyzerError(
-                    f"DeepSeek 返回了未支持的结束原因：{reason}",
+                    f"{self._provider_spec.label} 返回了未支持的"
+                    f"结束原因：{reason}",
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
                 )
             if not content:
-                last_error = "DeepSeek 返回了空内容"
+                last_error = f"{self._provider_spec.label} 返回了空内容"
                 if format_attempt == 0:
                     continue
                 raise AnalyzerError(
@@ -541,7 +721,10 @@ class DeepSeekAnalyzer(BaseAnalyzer):
                     f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
                     for error in exc.errors()[:8]
                 )
-                last_error = f"DeepSeek JSON 未通过结构校验：{compact_errors}"
+                last_error = (
+                    f"{self._provider_spec.label} JSON 未通过结构校验："
+                    f"{compact_errors}"
+                )
                 if format_attempt == 0:
                     messages = [
                         *messages,
@@ -569,4 +752,4 @@ class DeepSeekAnalyzer(BaseAnalyzer):
 def build_analyzer(settings: Settings) -> BaseAnalyzer:
     if settings.uses_test_models:
         return MockAnalyzer()
-    return DeepSeekAnalyzer(settings)
+    return ProviderAnalyzer(settings)

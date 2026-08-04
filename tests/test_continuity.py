@@ -84,12 +84,11 @@ def _accept_version(
         char_count=len(content),
     )
     assert version_id
-    result = database.accept_chapter_version(
+    result = database.set_chapter_head(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapter_id,
         version_id=version_id,
-        override_reason="测试作者确认此版本进入连续性正史账本",
     )
     assert result
     return version_id
@@ -415,6 +414,122 @@ def test_replay_builds_current_state_and_enters_writing_context(
     assert "旧港档案馆" in json.dumps(compiled, ensure_ascii=False)
 
 
+def test_replay_deduplicates_locations_and_normalizes_holder_qualifiers(
+    tmp_path: Path,
+):
+    database, user_id, project_id, chapters = _build_project(
+        tmp_path, username="normalized-delta-author"
+    )
+    memory = MemoryService(database)
+
+    def duplicate_delta(
+        *,
+        summary: str,
+        location_before: str,
+        location_after: str,
+        item_action: str,
+        item_from: str | None,
+        item_to: str | None,
+    ) -> StoryDelta:
+        return StoryDelta.model_validate(
+            {
+                "chapter_summary": summary,
+                "keywords": ["磁带", location_after],
+                "unresolved_questions": [],
+                "character_changes": [
+                    {
+                        "character_name": "林岚",
+                        "aspect": "location",
+                        "before": location_before,
+                        "after": location_after,
+                        "evidence": "林岚抵达新地点。",
+                    }
+                ],
+                "relationship_changes": [],
+                "location_changes": [
+                    {
+                        "subject_name": "林岚",
+                        "from_location": location_before,
+                        "to_location": location_after,
+                        "evidence": "林岚抵达新地点。",
+                    }
+                ],
+                "item_changes": [
+                    {
+                        "item_name": "预报磁带",
+                        "action": item_action,
+                        "from_holder": item_from,
+                        "to_holder": item_to,
+                        "state": "装在防潮袋里",
+                        "evidence": "磁带在现场完成交接。",
+                    }
+                ],
+                "knowledge_changes": [],
+                "plot_thread_changes": [],
+                "foreshadowing_changes": [],
+                "events": [],
+                "time_advance": None,
+            }
+        )
+
+    version_1 = _accept_version(
+        database,
+        tmp_path=tmp_path,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[0],
+        label="normalized-1",
+    )
+    _project(
+        memory,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[0],
+        version_id=version_1,
+        delta=duplicate_delta(
+            summary="林岚在码头取得磁带。",
+            location_before="未知",
+            location_after="雾港码头",
+            item_action="acquired",
+            item_from=None,
+            item_to="林岚（暂时持有）",
+        ),
+    )
+
+    version_2 = _accept_version(
+        database,
+        tmp_path=tmp_path,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[1],
+        label="normalized-2",
+    )
+    _project(
+        memory,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[1],
+        version_id=version_2,
+        delta=duplicate_delta(
+            summary="林岚进入档案馆并把磁带交给周时。",
+            location_before="雾港码头",
+            location_after="旧港档案馆",
+            item_action="transferred",
+            item_from="林岚",
+            item_to="周时",
+        ),
+    )
+
+    dashboard = ContinuityService(database).get_dashboard(
+        user_id=user_id, project_id=project_id
+    )
+    assert dashboard["counts"]["active"] == 0
+    assert dashboard["state"]["locations"]["林岚"]["value"] == "旧港档案馆"
+    assert dashboard["state"]["items"]["预报磁带"]["holder"]["value"] == (
+        "周时"
+    )
+
+
 def test_mismatches_are_deterministic_and_acknowledgement_survives_replay(
     tmp_path: Path,
 ):
@@ -489,7 +604,7 @@ def test_mismatches_are_deterministic_and_acknowledgement_survives_replay(
         "item_holder_mismatch",
         "story_time_mismatch",
     } <= issue_types
-    assert dashboard["counts"]["hard"] == 3
+    assert dashboard["counts"]["hard"] == 2
     assert database.get_novel_chapter(
         user_id, project_id, chapters[1]
     )["needs_recheck"] == 1
@@ -609,15 +724,25 @@ def test_replacing_earlier_canon_replays_downstream_without_stale_state(
     dashboard = ContinuityService(database).get_dashboard(
         user_id=user_id, project_id=project_id
     )
-    assert dashboard["latest_run"]["replayed_chapter_count"] == 1
-    assert dashboard["latest_snapshot"]["chapter_id"] == chapters[1]
-    assert dashboard["state"]["items"]["蓝玻璃钥匙"]["holder"]["value"] == (
-        "周时"
+    assert dashboard["latest_run"]["replayed_chapter_count"] == 0
+    assert dashboard["latest_snapshot"] is None
+    assert dashboard["state"]["items"] == {}
+    assert dashboard["issues"] == []
+    refresh_targets = database.list_memory_refresh_targets(
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[0],
     )
-    assert any(
-        issue["issue_type"] == "missing_baseline"
-        for issue in dashboard["issues"]
-    )
+    assert [
+        (item["chapter_id"], item["head_version_id"])
+        for item in refresh_targets
+    ] == [
+        (chapters[0], replacement),
+        (chapters[1], version_2),
+    ]
+    assert database.get_novel_chapter(
+        user_id, project_id, chapters[1]
+    )["needs_recheck"] == 1
     with database.connection() as connection:
         assert connection.execute(
             """
@@ -697,7 +822,7 @@ def test_knowledge_threads_and_foreshadowing_have_current_lifecycle_state(
     dashboard = service.get_dashboard(
         user_id=user_id, project_id=project_id
     )
-    assert dashboard["state"]["schema_version"] == 3
+    assert dashboard["state"]["schema_version"] == 4
     assert dashboard["state"]["knowledge"]["林岚"][
         "蓝玻璃钥匙可能打开旧港密室"
     ]["state"] == "forgets"
@@ -746,7 +871,7 @@ def test_knowledge_threads_and_foreshadowing_have_current_lifecycle_state(
     upgraded = service.get_dashboard(
         user_id=user_id, project_id=project_id
     )
-    assert upgraded["state"]["schema_version"] == 3
+    assert upgraded["state"]["schema_version"] == 4
     assert upgraded["state"]["knowledge"]["林岚"][
         "蓝玻璃钥匙可能打开旧港密室"
     ]["state"] == "forgets"
@@ -895,7 +1020,7 @@ def test_author_alias_rules_merge_character_and_fact_memory(
     after = service.get_dashboard(
         user_id=user_id, project_id=project_id
     )
-    assert after["state"]["schema_version"] == 3
+    assert after["state"]["schema_version"] == 4
     assert after["counts"]["knowledge_facts"] == 1
     assert after["counts"]["identity_rules"] == 2
     assert after["state"]["knowledge"]["林岚"]["寄信人住在北塔"][
@@ -1016,6 +1141,26 @@ def test_event_causal_chain_replays_and_detects_missing_old_canon(
     )
     assert "父亲来信抵达" not in replayed["state"]["events"]
     assert replayed["counts"]["causal_edges"] == 0
+    assert "林岚返回雾港" not in replayed["state"]["events"]
+    assert database.get_novel_chapter(
+        user_id, project_id, chapters[1]
+    )["needs_recheck"] == 1
+
+    _project(
+        memory,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapters[1],
+        version_id=version_2,
+        delta=_event_delta(
+            summary="林岚因已经失效的来信返回雾港。",
+            event_key="林岚返回雾港",
+            cause_event_keys=["父亲来信抵达"],
+        ),
+    )
+    replayed = service.get_dashboard(
+        user_id=user_id, project_id=project_id
+    )
     assert any(
         issue["issue_type"] == "causal_reference_missing"
         and issue["entity_name"] == "林岚返回雾港"
@@ -1169,7 +1314,7 @@ def test_v11_backfills_legacy_identity_columns_and_replays_state(
     dashboard = ContinuityService(database).get_dashboard(
         user_id=user_id, project_id=project_id
     )
-    assert dashboard["state"]["schema_version"] == 3
+    assert dashboard["state"]["schema_version"] == 4
     assert dashboard["counts"]["events"] == 1
 
 
@@ -1186,15 +1331,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-chat",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-chat",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 

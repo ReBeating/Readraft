@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
 from typing import Any, Iterable, Mapping, Optional
 
 from .analysis_schema import ChapterAnalysis
 from .db import Database, utc_now
+from .json_support import dump_json, load_json_list
 from .technique_schema import TechniqueObservation
 
 
@@ -16,17 +16,12 @@ ALLOWED_BINDING_STATUSES = {"enabled", "disabled"}
 
 
 def _json_list(value: Any) -> list[str]:
-    try:
-        parsed = json.loads(str(value or "[]"))
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(parsed, list):
-        return []
+    parsed = load_json_list(value)
     return [str(item) for item in parsed if str(item).strip()]
 
 
 def _dump_list(value: Iterable[str]) -> str:
-    return json.dumps(list(value), ensure_ascii=False, separators=(",", ":"))
+    return dump_json(list(value))
 
 
 def _card_from_row(row: Mapping[str, Any]) -> dict[str, Any]:

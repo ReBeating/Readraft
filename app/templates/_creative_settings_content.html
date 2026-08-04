@@ -13,6 +13,28 @@
     {% endfor %}
   </nav>
 
+  {% if current_story_state and current_story_state.last_chapter %}
+    <section class="studio-live-state-summary" aria-label="正文当前状态">
+      <div>
+        <strong>正文当前状态</strong>
+        <span>
+          更新至第 {{ current_story_state.last_chapter.position }} 章
+          {% if current_story_state.last_chapter.title %}
+            · {{ current_story_state.last_chapter.title }}
+          {% endif %}
+          {% if current_story_state.story_time and current_story_state.story_time.value %}
+            · {{ current_story_state.story_time.value }}
+          {% endif %}
+        </span>
+      </div>
+      {% if story_state_refreshing_count %}
+        <small>有 {{ story_state_refreshing_count }} 章状态待复核</small>
+      {% else %}
+        <small>正文保存后自动更新</small>
+      {% endif %}
+    </section>
+  {% endif %}
+
   <section
     id="settings-panel-core"
     class="studio-settings-panel"
@@ -27,44 +49,36 @@
     </header>
     {% set rule_category = 'core' %}
     {% include "_confirmed_archive_rules.html" %}
-    <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <input type="hidden" name="return_to" value="{{ archive_return_to }}">
-      <input type="hidden" name="settings_tab" value="core" data-settings-tab-input>
-      <div class="studio-settings-field-grid">
-        <label>
-          <span>书名</span>
-          <input name="title" maxlength="120" value="{{ archive_project.title }}" placeholder="未命名作品">
-        </label>
-        <label>
-          <span>题材与标签</span>
-          <input name="genre" maxlength="80" value="{{ archive_project.genre }}" placeholder="例如：悬疑、都市、成长">
-        </label>
-        <label class="studio-settings-wide">
-          <span>一句话故事</span>
-          <textarea name="premise" rows="4" maxlength="4000" placeholder="谁在什么处境下，为了什么目标，面对什么核心阻力？">{{ archive_project.premise }}</textarea>
-        </label>
-        <label>
-          <span>主题</span>
-          <textarea name="theme" rows="4" maxlength="2000" placeholder="作品最终想讨论什么？">{{ archive_project.theme }}</textarea>
-        </label>
-        <label>
-          <span>核心吸引力</span>
-          <textarea name="core_appeal" rows="4" maxlength="4000" placeholder="最值得持续追读的谜团、关系或成长是什么？">{{ archive_project.core_appeal }}</textarea>
-        </label>
-        <label>
-          <span>读者体验</span>
-          <textarea name="story_promise" rows="4" maxlength="4000" placeholder="希望读者持续感受到什么？">{{ archive_project.story_promise }}</textarea>
-        </label>
-        <label>
-          <span>目标读者</span>
-          <textarea name="target_audience" rows="4" maxlength="1000" placeholder="这本书主要写给谁？">{{ archive_project.target_audience }}</textarea>
-        </label>
+    {% set has_core_summary = archive_project.premise or archive_project.genre or archive_project.theme or archive_project.core_appeal or archive_project.story_promise %}
+    {% if has_core_summary %}
+      <div class="studio-settings-summary">
+        {% if archive_project.premise %}<article><small>一句话故事</small><p>{{ archive_project.premise }}</p></article>{% endif %}
+        {% if archive_project.genre %}<article><small>题材与标签</small><p>{{ archive_project.genre }}</p></article>{% endif %}
+        {% if archive_project.theme %}<article><small>主题</small><p>{{ archive_project.theme }}</p></article>{% endif %}
+        {% if archive_project.core_appeal %}<article><small>核心吸引力</small><p>{{ archive_project.core_appeal }}</p></article>{% endif %}
+        {% if archive_project.story_promise %}<article><small>读者体验</small><p>{{ archive_project.story_promise }}</p></article>{% endif %}
       </div>
-      <div class="studio-settings-actions">
-        <button class="studio-button primary" type="submit">保存作品概览</button>
-      </div>
-    </form>
+    {% else %}
+      <div class="studio-settings-empty"><strong>还没有作品资料</strong><p>直接在对话里描述故事，AI 会整理到这里。</p></div>
+    {% endif %}
+    <details class="studio-settings-manual" {% if archive_error %}open{% endif %}>
+      <summary>手动精确编辑</summary>
+      <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+        <input type="hidden" name="settings_tab" value="core" data-settings-tab-input>
+        <div class="studio-settings-field-grid">
+          <label><span>书名</span><input name="title" maxlength="120" value="{{ archive_project.title }}" placeholder="未命名作品"></label>
+          <label><span>题材与标签</span><input name="genre" maxlength="80" value="{{ archive_project.genre }}" placeholder="例如：悬疑、都市、成长"></label>
+          <label class="studio-settings-wide"><span>一句话故事</span><textarea name="premise" rows="4" maxlength="4000" placeholder="谁在什么处境下，为了什么目标，面对什么核心阻力？">{{ archive_project.premise }}</textarea></label>
+          <label><span>主题</span><textarea name="theme" rows="4" maxlength="2000" placeholder="作品最终想讨论什么？">{{ archive_project.theme }}</textarea></label>
+          <label><span>核心吸引力</span><textarea name="core_appeal" rows="4" maxlength="4000" placeholder="最值得持续追读的谜团、关系或成长是什么？">{{ archive_project.core_appeal }}</textarea></label>
+          <label><span>读者体验</span><textarea name="story_promise" rows="4" maxlength="4000" placeholder="希望读者持续感受到什么？">{{ archive_project.story_promise }}</textarea></label>
+          <label><span>目标读者</span><textarea name="target_audience" rows="4" maxlength="1000" placeholder="这本书主要写给谁？">{{ archive_project.target_audience }}</textarea></label>
+        </div>
+        <div class="studio-settings-actions"><button class="studio-button primary" type="submit">保存作品概览</button></div>
+      </form>
+    </details>
   </section>
 
   <section
@@ -81,18 +95,19 @@
     </header>
     {% set rule_category = 'world' %}
     {% include "_confirmed_archive_rules.html" %}
-    <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form studio-material-overview">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <input type="hidden" name="return_to" value="{{ archive_return_to }}">
-      <input type="hidden" name="settings_tab" value="world">
-      <label>
-        <span>世界概述</span>
-        <textarea name="world_setting" rows="7" maxlength="20000" placeholder="时代、空间、社会秩序，以及这个世界最重要的运行逻辑。">{{ archive_project.world_setting }}</textarea>
-      </label>
-      <div class="studio-settings-actions">
-        <button class="studio-button primary" type="submit">保存世界概述</button>
-      </div>
-    </form>
+    {% if archive_project.world_setting %}
+      <div class="studio-settings-summary"><article><small>世界概述</small><p>{{ archive_project.world_setting }}</p></article></div>
+    {% endif %}
+    <details class="studio-settings-manual">
+      <summary>手动编辑世界概述</summary>
+      <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form studio-material-overview">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+        <input type="hidden" name="settings_tab" value="world">
+        <label><span>世界概述</span><textarea name="world_setting" rows="7" maxlength="20000" placeholder="时代、空间、社会秩序，以及这个世界最重要的运行逻辑。">{{ archive_project.world_setting }}</textarea></label>
+        <div class="studio-settings-actions"><button class="studio-button primary" type="submit">保存世界概述</button></div>
+      </form>
+    </details>
 
     {% if setting_world_entries %}
       <div class="studio-material-list">
@@ -109,6 +124,33 @@
               </span>
               <span>编辑</span>
             </summary>
+            {% set item_state = (current_story_state.get('items') or {}).get(entry.name) %}
+            {% set location_count = namespace(value=0, names=[]) %}
+            {% if entry.entry_type == 'location' %}
+              {% for subject_name, location in (current_story_state.get('locations') or {}).items() %}
+                {% if location.value == entry.name %}
+                  {% set location_count.value = location_count.value + 1 %}
+                  {% set location_count.names = location_count.names + [subject_name] %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {% if item_state or location_count.value %}
+              <section class="studio-live-state">
+                <strong>正文状态</strong>
+                {% if item_state %}
+                  <p>
+                    {{ item_state.state or item_state.status or '已在正文出现' }}
+                    {% if item_state.holder and item_state.holder.value %} · 当前由 {{ item_state.holder.value }} 持有{% endif %}
+                  </p>
+                  {% if item_state.source %}
+                    <small>第 {{ item_state.source.chapter_position }} 章{% if item_state.source.evidence %} · {{ item_state.source.evidence }}{% endif %}</small>
+                  {% endif %}
+                {% endif %}
+                {% if location_count.value %}
+                  <p>当前在此：{{ location_count.names|join('、') }}</p>
+                {% endif %}
+              </section>
+            {% endif %}
             <form method="post" action="/novels/{{ archive_project.id }}/world-entries/{{ entry.id }}/edit" class="studio-settings-form">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <div class="studio-settings-field-grid">
@@ -146,7 +188,7 @@
       </div>
     {% endif %}
 
-    <details class="studio-material-add" {% if not setting_world_entries %}open{% endif %}>
+    <details class="studio-material-add">
       <summary>＋ 添加世界资料卡</summary>
       <form method="post" action="/novels/{{ archive_project.id }}/world-entries" class="studio-settings-form">
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -203,6 +245,35 @@
               </span>
               <span>编辑</span>
             </summary>
+            {% set character_state = (current_story_state.get('characters') or {}).get(character.name) %}
+            {% set character_knowledge = (current_story_state.get('knowledge') or {}).get(character.name) %}
+            {% set held_items = namespace(names=[]) %}
+            {% for item_name, item_state in (current_story_state.get('items') or {}).items() %}
+              {% if item_state.holder and item_state.holder.value == character.name %}
+                {% set held_items.names = held_items.names + [item_name] %}
+              {% endif %}
+            {% endfor %}
+            {% if character_state or character_knowledge or held_items.names %}
+              <section class="studio-live-state">
+                <strong>正文当前状态</strong>
+                {% if character_state %}
+                  <dl>
+                    {% for aspect, state_value in (character_state.attributes or {}).items() %}
+                      <div>
+                        <dt>{{ aspect|story_memory_label }}</dt>
+                        <dd>{{ state_value.value }}</dd>
+                      </div>
+                    {% endfor %}
+                  </dl>
+                  {% set latest_source = character_state.location.source if character_state.location else none %}
+                  {% if latest_source %}
+                    <small>第 {{ latest_source.chapter_position }} 章{% if latest_source.evidence %} · {{ latest_source.evidence }}{% endif %}</small>
+                  {% endif %}
+                {% endif %}
+                {% if held_items.names %}<p>持有：{{ held_items.names|join('、') }}</p>{% endif %}
+                {% if character_knowledge %}<p>已跟踪 {{ character_knowledge|length }} 条知情状态</p>{% endif %}
+              </section>
+            {% endif %}
             <form method="post" action="/novels/{{ archive_project.id }}/characters/{{ character.id }}/edit" class="studio-settings-form">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <div class="studio-settings-field-grid">
@@ -231,7 +302,7 @@
       </div>
     {% endif %}
 
-    <details class="studio-material-add" {% if not setting_characters %}open{% endif %}>
+    <details class="studio-material-add">
       <summary>＋ 添加人物卡</summary>
       <form method="post" action="/novels/{{ archive_project.id }}/characters" class="studio-settings-form">
         <input type="hidden" name="csrf" value="{{ csrf_token }}">
@@ -267,6 +338,21 @@
               </span>
               <span>编辑</span>
             </summary>
+            {% set relationship_state = namespace(value=none) %}
+            {% for state_key, state_value in (current_story_state.get('relationships') or {}).items() %}
+              {% if relation.character_a_name in state_value.characters and relation.character_b_name in state_value.characters %}
+                {% set relationship_state.value = state_value %}
+              {% endif %}
+            {% endfor %}
+            {% if relationship_state.value %}
+              <section class="studio-live-state">
+                <strong>正文当前关系</strong>
+                <p>{{ relationship_state.value.value }}</p>
+                {% if relationship_state.value.source %}
+                  <small>第 {{ relationship_state.value.source.chapter_position }} 章{% if relationship_state.value.source.evidence %} · {{ relationship_state.value.source.evidence }}{% endif %}</small>
+                {% endif %}
+              </section>
+            {% endif %}
             <form method="post" action="/novels/{{ archive_project.id }}/relationships/{{ relation.id }}/edit" class="studio-settings-form">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <div class="studio-settings-field-grid">
@@ -344,19 +430,22 @@
     </header>
     {% set rule_category = 'structure' %}
     {% include "_confirmed_archive_rules.html" %}
-    <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form studio-material-overview">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <input type="hidden" name="return_to" value="{{ archive_return_to }}">
-      <input type="hidden" name="settings_tab" value="structure">
-      <label>
-        <span>结局约束</span>
-        <textarea name="ending_constraint" rows="4" maxlength="4000" placeholder="哪些结果必须保留，哪些收束方式不能使用？">{{ archive_project.ending_constraint }}</textarea>
-      </label>
-      <div class="studio-settings-actions"><button class="studio-button primary" type="submit">保存结局约束</button></div>
-    </form>
+    {% if archive_project.ending_constraint %}
+      <div class="studio-settings-summary"><article><small>结局约束</small><p>{{ archive_project.ending_constraint }}</p></article></div>
+    {% endif %}
+    <details class="studio-settings-manual">
+      <summary>手动编辑结局约束</summary>
+      <form method="post" action="/novels/{{ archive_project.id }}/settings" class="studio-settings-form studio-material-overview">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="{{ archive_return_to }}">
+        <input type="hidden" name="settings_tab" value="structure">
+        <label><span>结局约束</span><textarea name="ending_constraint" rows="4" maxlength="4000" placeholder="哪些结果必须保留，哪些收束方式不能使用？">{{ archive_project.ending_constraint }}</textarea></label>
+        <div class="studio-settings-actions"><button class="studio-button primary" type="submit">保存结局约束</button></div>
+      </form>
+    </details>
 
     {% set blueprint = setting_story_blueprint.current if setting_story_blueprint and setting_story_blueprint.current else {} %}
-    <details class="studio-material-card" open>
+    <details class="studio-material-card">
       <summary>
         <span><small>全书层级</small><strong>全书蓝图</strong></span>
         <span>{% if setting_story_blueprint and setting_story_blueprint.confirmed %}已确认{% else %}待确认{% endif %}</span>
@@ -394,6 +483,16 @@
               <span><small>{{ arc.arc_type }}</small><strong>{{ arc.title }}</strong></span>
               <span>{% if arc.confirmed_version_id %}已确认{% else %}草稿{% endif %}</span>
             </summary>
+            {% set arc_state = (current_story_state.get('plot_threads') or {}).get(arc.title) %}
+            {% if arc_state %}
+              <section class="studio-live-state">
+                <strong>正文推进状态 · {{ arc_state.status|story_memory_label }}</strong>
+                {% if arc_state.update %}<p>{{ arc_state.update }}</p>{% endif %}
+                {% if arc_state.source %}
+                  <small>第 {{ arc_state.source.chapter_position }} 章{% if arc_state.source.evidence %} · {{ arc_state.source.evidence }}{% endif %}</small>
+                {% endif %}
+              </section>
+            {% endif %}
             <form method="post" action="/novels/{{ archive_project.id }}/plot-arcs/{{ arc.id }}" class="studio-settings-form">
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
               <div class="studio-settings-field-grid">
@@ -500,9 +599,11 @@
       <div><h3>文风资料</h3><p>由作者直接维护；确认后进入写作上下文。</p></div>
       <span>{% if voice.status == 'confirmed' %}已确认{% elif voice %}草稿{% else %}待填写{% endif %}</span>
     </div>
-    <form method="post" action="/novels/{{ archive_project.id }}/voice" class="studio-settings-form">
-      <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <div class="studio-settings-field-grid">
+    <details class="studio-settings-manual">
+      <summary>手动精确编辑文风</summary>
+      <form method="post" action="/novels/{{ archive_project.id }}/voice" class="studio-settings-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token }}">
+        <div class="studio-settings-field-grid">
         <label>
           <span>叙事视角</span>
           <select name="point_of_view">
@@ -523,11 +624,12 @@
         <label><span>禁用表达（每行一项）</span><textarea name="banned_expressions" rows="4">{{ (voice.banned_expressions or [])|join('\n') }}</textarea></label>
         <label><span>作者文风示例（每段一行）</span><textarea name="style_examples" rows="5">{{ (voice.style_examples or [])|join('\n') }}</textarea></label>
         <label class="studio-settings-wide"><span>作者备注</span><textarea name="author_notes" rows="4" maxlength="6000">{{ voice.author_notes or '' }}</textarea></label>
-      </div>
-      <div class="studio-settings-actions">
-        <button class="studio-button primary" type="submit" name="action" value="confirm">保存叙事与文风</button>
-      </div>
-    </form>
+        </div>
+        <div class="studio-settings-actions">
+          <button class="studio-button primary" type="submit" name="action" value="confirm">保存叙事与文风</button>
+        </div>
+      </form>
+    </details>
   </section>
 {% endif %}
 

@@ -60,7 +60,7 @@
       <div class="alert error">{{ job.error or '未知错误' }}</div>
       <a class="button" href="/novels/{{ job.project_id }}/workbench?chapter_id={{ job.chapter_id }}">返回调整后重试</a>
     {% else %}
-      <h2>{% if job.operation == 'extract_story_delta' %}正在后台整理本章故事记忆{% elif job.operation == 'plan_chapter' %}Planner 正在拆解章节任务{% elif job.operation == 'plan_scene_beats' %}Scene Planner 正在把锁定要求分配到场景{% elif job.operation == 'propose_reader_branches' %}Planner 正在比较三种未来走向与代价{% elif job.operation == 'audit_ai_style' %}Style Auditor 正在定位具体原句{% elif job.operation == 'rewrite_style_issue' %}Targeted Rewriter 正在生成两个局部候选{% elif job.operation in ['generate_scene','rewrite_scene'] %}Scene Writer 正在创作当前场景{% else %}DeepSeek 正在创作本章{% endif %}</h2>
+      <h2>{% if job.operation == 'extract_story_delta' %}正在后台整理本章故事记忆{% elif job.operation == 'plan_chapter' %}Planner 正在拆解章节任务{% elif job.operation == 'plan_scene_beats' %}Scene Planner 正在把锁定要求分配到场景{% elif job.operation == 'propose_reader_branches' %}Planner 正在比较三种未来走向与代价{% elif job.operation == 'audit_ai_style' %}Style Auditor 正在定位具体原句{% elif job.operation == 'rewrite_style_issue' %}Targeted Rewriter 正在生成两个局部候选{% elif job.operation in ['generate_scene','rewrite_scene'] %}Scene Writer 正在创作当前场景{% else %}AI 正在创作本章{% endif %}</h2>
       <p>
         {% if job.operation == 'extract_story_delta' %}
           完成后会自动更新故事记忆，不需要你再审核一遍正文变化。

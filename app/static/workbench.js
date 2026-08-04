@@ -366,8 +366,11 @@
   let startAssistantStream = null;
   let autosaveTimer = 0;
   let saveStatusHideTimer = 0;
+  let bufferPromise = null;
   let savePromise = null;
-  let lastSavedContent = manuscript ? manuscript.value : "";
+  let lastBufferedContent = manuscript ? manuscript.value : "";
+  let hasUncommittedBuffer =
+    autosaveForm?.dataset.hasEditBuffer === "true";
 
   function setSaveStatus(message, state = "", hideAfter = 0) {
     if (!saveStatus) return;
@@ -386,8 +389,21 @@
     }, hideAfter);
   }
 
-  function refreshVersionReference(html) {
-    if (!html) return;
+  function refreshVersionReference(result) {
+    if (!result) return;
+    if (typeof result !== "string") {
+      const versionId = String(result.version_id || "");
+      const sourceHash = String(result.content_hash || "");
+      if (versionId && autosaveForm) {
+        autosaveForm.elements.expected_head_version_id.value = versionId;
+      }
+      if (chatForm && versionId && sourceHash) {
+        chatForm.elements.source_version_id.value = versionId;
+        chatForm.elements.source_hash.value = sourceHash;
+      }
+      return;
+    }
+    const html = result;
     const parsed = new DOMParser().parseFromString(html, "text/html");
     const versionId = parsed.querySelector(
       '[data-chat-form] input[name="source_version_id"]',
@@ -415,19 +431,81 @@
     }
   }
 
+  async function bufferManuscript() {
+    if (!autosaveForm || !manuscript) return true;
+    if (manuscript.value === lastBufferedContent) return true;
+    if (savePromise) {
+      const committed = await savePromise;
+      return committed ? bufferManuscript() : false;
+    }
+    if (bufferPromise) {
+      const buffered = await bufferPromise;
+      return buffered ? bufferManuscript() : false;
+    }
+
+    window.clearTimeout(autosaveTimer);
+    setSaveStatus("暂存中…", "saving");
+    const contentAtStart = manuscript.value;
+    bufferPromise = (async () => {
+      try {
+        const response = await fetch(autosaveForm.dataset.bufferAction, {
+          method: "POST",
+          body: new FormData(autosaveForm),
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {
+            "Accept": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+          },
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          const error = new Error(result.error || "暂存失败");
+          error.conflict = Boolean(result.conflict);
+          throw error;
+        }
+        lastBufferedContent = contentAtStart;
+        hasUncommittedBuffer = Boolean(result.buffered);
+        if (manuscript.value === contentAtStart) {
+          setSaveStatus(
+            result.buffered ? "已暂存" : "已保存",
+            "saved",
+            1400,
+          );
+        } else {
+          setSaveStatus("未保存", "dirty");
+          hasUncommittedBuffer = true;
+          autosaveTimer = window.setTimeout(bufferManuscript, 900);
+        }
+        return true;
+      } catch (error) {
+        setSaveStatus(
+          error.conflict ? "版本冲突，请刷新" : "暂存失败，点击重试",
+          error.conflict ? "conflict" : "error",
+        );
+        return false;
+      } finally {
+        bufferPromise = null;
+      }
+    })();
+    return bufferPromise;
+  }
+
   async function saveManuscript(force = false) {
     if (!autosaveForm || !manuscript) return true;
-    if (manuscript.value === lastSavedContent) {
+    if (
+      !hasUncommittedBuffer &&
+      manuscript.value === lastBufferedContent &&
+      !bufferPromise
+    ) {
       if (force) setSaveStatus("已保存", "saved", 1400);
       return true;
     }
-    if (savePromise) {
-      const saved = await savePromise;
-      if (!saved) return false;
-      return manuscript.value === lastSavedContent
-        ? true
-        : saveManuscript(force);
+    if (bufferPromise) {
+      const buffered = await bufferPromise;
+      if (!buffered) return false;
     }
+    if (savePromise) return savePromise;
 
     window.clearTimeout(autosaveTimer);
     setSaveStatus("保存中…", "saving");
@@ -438,21 +516,33 @@
           method: "POST",
           body: new FormData(autosaveForm),
           credentials: "same-origin",
-          headers: { "X-Requested-With": "XMLHttpRequest" },
+          cache: "no-store",
+          headers: {
+            "Accept": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+          },
         });
-        if (!response.ok) throw new Error("save failed");
-        const html = await response.text();
-        refreshVersionReference(html);
-        lastSavedContent = contentAtStart;
-        if (manuscript.value === contentAtStart) {
-          setSaveStatus("已保存", "saved", 1400);
-        } else {
+        const result = await response.json();
+        if (!response.ok) {
+          const error = new Error(result.error || "保存失败");
+          error.conflict = Boolean(result.conflict);
+          throw error;
+        }
+        refreshVersionReference(result);
+        lastBufferedContent = contentAtStart;
+        hasUncommittedBuffer = manuscript.value !== contentAtStart;
+        if (hasUncommittedBuffer) {
           setSaveStatus("未保存", "dirty");
-          autosaveTimer = window.setTimeout(() => saveManuscript(), 900);
+          autosaveTimer = window.setTimeout(bufferManuscript, 900);
+        } else {
+          setSaveStatus("已保存", "saved", 1400);
         }
         return true;
-      } catch (_) {
-        setSaveStatus("保存失败，点击重试", "error");
+      } catch (error) {
+        setSaveStatus(
+          error.conflict ? "版本冲突，请刷新" : "保存失败，点击重试",
+          error.conflict ? "conflict" : "error",
+        );
         return false;
       } finally {
         savePromise = null;
@@ -468,12 +558,13 @@
           `${Array.from(manuscript.value).length} 字`;
       }
       setSaveStatus("未保存", "dirty");
+      hasUncommittedBuffer = true;
       window.clearTimeout(autosaveTimer);
-      autosaveTimer = window.setTimeout(() => saveManuscript(), 1200);
+      autosaveTimer = window.setTimeout(bufferManuscript, 1200);
     });
 
     saveStatus?.addEventListener("click", () => {
-      if (saveStatus.dataset.state === "error") saveManuscript(true);
+      if (saveStatus.dataset.state === "error") bufferManuscript();
     });
 
     document.addEventListener("keydown", (event) => {
@@ -484,7 +575,11 @@
     });
 
     window.addEventListener("beforeunload", (event) => {
-      if (manuscript.value === lastSavedContent) return;
+      if (
+        manuscript.value === lastBufferedContent &&
+        !bufferPromise &&
+        !savePromise
+      ) return;
       event.preventDefault();
       event.returnValue = "";
     });
@@ -494,7 +589,12 @@
     return Boolean(
       manuscript &&
         autosaveForm &&
-        (savePromise || manuscript.value !== lastSavedContent),
+        (
+          savePromise ||
+          bufferPromise ||
+          hasUncommittedBuffer ||
+          manuscript.value !== lastBufferedContent
+        ),
     );
   }
 
@@ -598,8 +698,19 @@
       assistantLabel.textContent = "AI";
       const assistantContent = document.createElement("p");
       assistantContent.dataset.streamContent = "";
-      assistantContent.textContent = "正在判断任务并读取所需资料……";
-      assistantMessage.append(assistantLabel, assistantContent);
+      assistantContent.textContent = "正在理解请求……";
+      const runtime = document.createElement("div");
+      runtime.className = "studio-agent-runtime";
+      const runtimeLabel = document.createElement("span");
+      runtimeLabel.dataset.agentRunStatus = "";
+      runtimeLabel.textContent = "正在理解请求";
+      const stopButton = document.createElement("button");
+      stopButton.type = "button";
+      stopButton.dataset.cancelAssistant = "";
+      stopButton.textContent = "停止";
+      stopButton.setAttribute("aria-label", "停止本轮生成");
+      runtime.append(runtimeLabel, stopButton);
+      assistantMessage.append(assistantLabel, runtime, assistantContent);
 
       chatScroll.append(userMessage, assistantMessage);
       scrollChatToBottom();
@@ -613,12 +724,37 @@
       target.classList.add("studio-error-text");
       target.textContent = message || "回复失败，请重试。";
       assistantMessage?.classList.remove("streaming");
+      const stop = assistantMessage?.querySelector(
+        "[data-cancel-assistant]",
+      );
+      if (stop) stop.hidden = true;
       if (!assistantMessage && chatScroll) {
         const state = document.createElement("p");
         state.className = "studio-chat-state studio-error-text";
         state.textContent = target.textContent;
         chatScroll.append(state);
       }
+      scrollChatToBottom();
+    };
+
+    const showChatCancelled = (assistantMessage) => {
+      const content = assistantMessage?.querySelector(
+        "[data-stream-content]",
+      );
+      const status = assistantMessage?.querySelector(
+        "[data-agent-run-status]",
+      );
+      const stop = assistantMessage?.querySelector(
+        "[data-cancel-assistant]",
+      );
+      if (content && content.dataset.hasStreamContent !== "true") {
+        content.textContent = "本轮生成已停止。";
+      }
+      content?.classList.remove("studio-error-text");
+      if (status) status.textContent = "已停止";
+      if (stop) stop.hidden = true;
+      assistantMessage?.classList.remove("streaming");
+      setChatBusy(false);
       scrollChatToBottom();
     };
 
@@ -635,21 +771,33 @@
           `[data-assistant-message-id="${messageId}"]`,
         );
       const contentNode = target?.querySelector("[data-stream-content]");
+      const statusNode = target?.querySelector("[data-agent-run-status]");
+      const stopButton = target?.querySelector("[data-cancel-assistant]");
       target?.classList.add("streaming");
       let finished = false;
       const source = new EventSource(
         `/api/assistant/messages/${encodeURIComponent(messageId)}/stream`,
       );
       activeEventSource = source;
+      source.addEventListener("agent", (event) => {
+        const data = JSON.parse(event.data);
+        if (statusNode && data.label) statusNode.textContent = data.label;
+        if (data.phase === "cancelled") showChatCancelled(target);
+      });
       source.addEventListener("snapshot", (event) => {
         const data = JSON.parse(event.data);
+        if (statusNode && data.run_state_label) {
+          statusNode.textContent = data.run_state_label;
+        }
         if (contentNode && data.content) {
           contentNode.classList.remove("studio-error-text");
           contentNode.textContent = data.content;
+          contentNode.dataset.hasStreamContent = "true";
           scrollChatToBottom();
         }
         if (data.status === "failed" && contentNode) {
-          showChatError(data.error, target);
+          if (data.cancelled) showChatCancelled(target);
+          else showChatError(data.error, target);
         }
       });
       source.addEventListener("done", (event) => {
@@ -657,9 +805,13 @@
         source.close();
         const data = JSON.parse(event.data);
         target?.classList.remove("streaming");
+        if (stopButton) stopButton.hidden = true;
         if (data.status === "failed") {
-          showChatError(data.error, target);
-          setChatBusy(false);
+          if (data.cancelled) showChatCancelled(target);
+          else {
+            showChatError(data.error, target);
+            setChatBusy(false);
+          }
           return;
         }
         window.setTimeout(() => {
@@ -673,6 +825,39 @@
       };
       return true;
     };
+
+    chatScroll?.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-cancel-assistant]");
+      if (!button || button.disabled) return;
+      const message = button.closest("[data-assistant-message-id]");
+      const messageId = message?.dataset.assistantMessageId;
+      if (!messageId) return;
+      const status = message.querySelector("[data-agent-run-status]");
+      button.disabled = true;
+      if (status) status.textContent = "正在停止";
+      const payload = new FormData();
+      payload.set("csrf", chatForm.elements.csrf.value);
+      try {
+        const response = await fetch(
+          `/api/assistant/messages/${encodeURIComponent(messageId)}/cancel`,
+          {
+            method: "POST",
+            body: payload,
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          },
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || "停止失败");
+        }
+        if (result.cancelled) showChatCancelled(message);
+      } catch (error) {
+        button.disabled = false;
+        if (status) status.textContent = error.message || "停止失败";
+      }
+    });
 
     chatInput?.addEventListener("keydown", (event) => {
       if (
@@ -705,11 +890,7 @@
       const question = chatInput.value.trim();
       setChatBusy(true);
       try {
-        if (
-          manuscript &&
-          autosaveForm &&
-          manuscript.value !== lastSavedContent
-        ) {
+        if (manuscriptNeedsSave()) {
           const saved = await saveManuscript(true);
           if (!saved) throw new Error("正文保存失败，请重试后再发送");
         }

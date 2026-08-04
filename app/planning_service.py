@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
 from .db import Database, utc_now
+from .json_support import dump_json as _json, load_json as _load_json
 from .planning_schema import (
     ChapterTaskCard,
     SceneBeat,
@@ -12,19 +13,6 @@ from .planning_schema import (
 )
 from .scene_service import scene_plan_fingerprint
 from .story_structure_schema import AuthorChapterSkeleton
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def _load_json(value: Any, default: Any) -> Any:
-    if value in (None, ""):
-        return default
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return default
 
 
 PLAN_JSON_FIELDS = {
@@ -97,11 +85,11 @@ class PlanningService:
                         WHERE ch.volume_id=v.id) AS chapter_count,
                        (SELECT COUNT(*) FROM novel_chapters ch
                         WHERE ch.volume_id=v.id
-                          AND ch.canonical_version_id IS NOT NULL)
+                          AND ch.head_version_id IS NOT NULL)
                            AS canonical_chapter_count,
                        (SELECT COUNT(*) FROM novel_chapters ch
                         WHERE ch.volume_id=v.id
-                          AND ch.canonical_version_id IS NULL)
+                          AND ch.head_version_id IS NULL)
                            AS future_chapter_count
                 FROM novel_volumes v
                 JOIN novel_projects p ON p.id=v.project_id
@@ -129,7 +117,7 @@ class PlanningService:
                 """
                 SELECT COALESCE(MAX(position), 0) AS position
                 FROM novel_chapters
-                WHERE project_id=? AND canonical_version_id IS NOT NULL
+                WHERE project_id=? AND head_version_id IS NOT NULL
                 """,
                 (project_id,),
             ).fetchone()
@@ -265,7 +253,7 @@ class PlanningService:
                            SELECT MAX(ch.position)
                            FROM novel_chapters ch
                            WHERE ch.project_id=v.project_id
-                             AND ch.canonical_version_id IS NOT NULL
+                             AND ch.head_version_id IS NOT NULL
                        ), 0) AS current_canonical_position
                 FROM novel_volumes v
                 JOIN novel_projects p ON p.id=v.project_id
@@ -312,7 +300,7 @@ class PlanningService:
                 SELECT COUNT(*) AS count
                 FROM novel_chapters
                 WHERE volume_id=? AND position>?
-                  AND canonical_version_id IS NULL
+                  AND head_version_id IS NULL
                 """,
                 (volume_id, current_position),
             ).fetchone()
@@ -322,7 +310,7 @@ class PlanningService:
                 FROM novel_chapter_plans cp
                 JOIN novel_chapters ch ON ch.id=cp.chapter_id
                 WHERE ch.volume_id=? AND ch.position>?
-                  AND ch.canonical_version_id IS NULL
+                  AND ch.head_version_id IS NULL
                   AND cp.status='confirmed'
                 """,
                 (volume_id, current_position),
@@ -354,7 +342,7 @@ class PlanningService:
                     SELECT ch.id
                     FROM novel_chapters ch
                     WHERE ch.volume_id=? AND ch.position>?
-                      AND ch.canonical_version_id IS NULL
+                      AND ch.head_version_id IS NULL
                 )
                 """,
                 (now, volume_id, current_position),
@@ -369,7 +357,7 @@ class PlanningService:
                     FROM novel_chapter_plans cp
                     JOIN novel_chapters ch ON ch.id=cp.chapter_id
                     WHERE ch.volume_id=? AND ch.position>?
-                      AND ch.canonical_version_id IS NULL
+                      AND ch.head_version_id IS NULL
                   )
                 """,
                 (now, volume_id, current_position),
@@ -378,7 +366,7 @@ class PlanningService:
                 """
                 UPDATE novel_chapters
                 SET needs_recheck=CASE
-                        WHEN working_version_id IS NOT NULL
+                        WHEN head_version_id IS NOT NULL
                           OR char_count>0
                           OR EXISTS(
                               SELECT 1
@@ -393,7 +381,7 @@ class PlanningService:
                     END,
                     updated_at=?
                 WHERE volume_id=? AND position>?
-                  AND canonical_version_id IS NULL
+                  AND head_version_id IS NULL
                 """,
                 (now, volume_id, current_position),
             )
@@ -431,7 +419,7 @@ class PlanningService:
                            SELECT MAX(canon.position)
                            FROM novel_chapters canon
                            WHERE canon.project_id=ch.project_id
-                             AND canon.canonical_version_id IS NOT NULL
+                             AND canon.head_version_id IS NOT NULL
                        ), 0) AS current_canonical_position
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id
@@ -443,7 +431,7 @@ class PlanningService:
                 connection.rollback()
                 raise ValueError("章节不存在")
             if (
-                chapter["canonical_version_id"]
+                chapter["head_version_id"]
                 or int(chapter["position"])
                 <= int(chapter["current_canonical_position"] or 0)
             ):
@@ -597,7 +585,7 @@ class PlanningService:
                     skeleton_ending_hook=?,
                     skeleton_application_id=NULL,
                     needs_recheck=CASE
-                        WHEN working_version_id IS NOT NULL
+                        WHEN head_version_id IS NOT NULL
                           OR char_count>0
                           OR EXISTS(
                               SELECT 1
@@ -648,7 +636,7 @@ class PlanningService:
                 """
                 SELECT ch.id, ch.project_id, ch.volume_id, ch.position,
                        ch.title, ch.outline, ch.key_points,
-                       ch.canonical_version_id,
+                       ch.head_version_id,
                        ch.skeleton_role,
                        ch.skeleton_arc_titles_json,
                        ch.skeleton_ending_hook,
@@ -657,7 +645,7 @@ class PlanningService:
                            SELECT MAX(canon.position)
                            FROM novel_chapters canon
                            WHERE canon.project_id=ch.project_id
-                             AND canon.canonical_version_id IS NOT NULL
+                             AND canon.head_version_id IS NOT NULL
                        ), 0) AS current_canonical_position
                 FROM novel_chapters ch
                 JOIN novel_projects p ON p.id=ch.project_id

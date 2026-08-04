@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -50,15 +49,15 @@ class Settings:
     max_text_chars: int
     target_chapter_chars: int
     max_chapter_chars: int
-    deepseek_api_key: str | None
-    deepseek_base_url: str
-    deepseek_model: str
-    deepseek_thinking: bool
-    deepseek_reasoning_effort: str
-    deepseek_max_tokens: int
-    deepseek_connect_timeout_seconds: int
-    deepseek_read_timeout_seconds: int
-    deepseek_max_retries: int
+    model_api_key: str | None
+    model_base_url: str
+    model_name: str
+    model_thinking: bool
+    model_reasoning_effort: str
+    model_max_tokens: int
+    model_connect_timeout_seconds: int
+    model_read_timeout_seconds: int
+    model_max_retries: int
     worker_poll_seconds: float = 1.0
     max_documents_per_user: int = 50
     max_stored_chars_per_user: int = 20_000_000
@@ -86,9 +85,7 @@ class Settings:
         and personal-key setup, but it must never generate simulated creative
         output.
         """
-        return self.app_env.lower() == "test" and not bool(
-            self.deepseek_api_key
-        )
+        return self.app_env.lower() == "test" and not bool(self.model_api_key)
 
     @property
     def credential_secret(self) -> str:
@@ -97,16 +94,25 @@ class Settings:
     @property
     def permits_private_model_base_urls(self) -> bool:
         return (
-            self.app_env.lower() != "production"
-            or self.allow_private_model_base_urls
+            self.app_env.lower() != "production" or self.allow_private_model_base_urls
         )
 
     @classmethod
     def from_env(cls) -> "Settings":
+        from .model_provider import get_provider
+
         data_dir = _path_from_env("APP_DATA_DIR", PROJECT_ROOT / "data")
-        database_path = _path_from_env(
-            "APP_DATABASE_PATH", data_dir / "readraft.db"
-        )
+        database_path = _path_from_env("APP_DATABASE_PATH", data_dir / "readraft.db")
+        model_provider = os.getenv("MODEL_PROVIDER", "deepseek").strip().lower()
+        provider = get_provider(model_provider)
+        configured_base_url = os.getenv("MODEL_BASE_URL")
+        model_base_url = (
+            configured_base_url
+            if provider.capabilities.configurable_base_url
+            and configured_base_url is not None
+            else provider.base_url
+        ).rstrip("/")
+        default_model = "deepseek-v4-flash" if model_provider == "deepseek" else ""
         return cls(
             app_name=os.getenv("APP_NAME", "Readraft"),
             app_env=os.getenv("APP_ENV", "development"),
@@ -121,24 +127,18 @@ class Settings:
             max_text_chars=_as_int("APP_MAX_TEXT_CHARS", 4_000_000),
             target_chapter_chars=_as_int("APP_TARGET_CHAPTER_CHARS", 12_000),
             max_chapter_chars=_as_int("APP_MAX_CHAPTER_CHARS", 30_000),
-            deepseek_api_key=os.getenv("DEEPSEEK_API_KEY") or None,
-            deepseek_base_url=os.getenv(
-                "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
-            ).rstrip("/"),
-            deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            model_api_key=os.getenv("MODEL_API_KEY") or None,
+            model_base_url=model_base_url,
+            model_name=os.getenv("MODEL_NAME", default_model).strip(),
             # Runtime task policy owns these internal request fields. Keep the
             # Settings attributes for provider payload construction, but do
             # not expose deployment-wide switches that can weaken every task.
-            deepseek_thinking=False,
-            deepseek_reasoning_effort="high",
-            deepseek_max_tokens=_as_int("DEEPSEEK_MAX_TOKENS", 5_000),
-            deepseek_connect_timeout_seconds=_as_int(
-                "DEEPSEEK_CONNECT_TIMEOUT_SECONDS", 10
-            ),
-            deepseek_read_timeout_seconds=_as_int(
-                "DEEPSEEK_READ_TIMEOUT_SECONDS", 300
-            ),
-            deepseek_max_retries=_as_int("DEEPSEEK_MAX_RETRIES", 3),
+            model_thinking=False,
+            model_reasoning_effort="high",
+            model_max_tokens=_as_int("MODEL_MAX_TOKENS", 5_000),
+            model_connect_timeout_seconds=_as_int("MODEL_CONNECT_TIMEOUT_SECONDS", 10),
+            model_read_timeout_seconds=_as_int("MODEL_READ_TIMEOUT_SECONDS", 300),
+            model_max_retries=_as_int("MODEL_MAX_RETRIES", 3),
             max_documents_per_user=_as_int("APP_MAX_DOCUMENTS_PER_USER", 50),
             max_stored_chars_per_user=_as_int(
                 "APP_MAX_STORED_CHARS_PER_USER", 20_000_000
@@ -146,10 +146,8 @@ class Settings:
             credential_encryption_key=(
                 os.getenv("APP_CREDENTIAL_ENCRYPTION_KEY") or None
             ),
-            model_adapter_prompt=os.getenv(
-                "MODEL_ADAPTER_PROMPT", ""
-            ).strip(),
-            model_provider=os.getenv("MODEL_PROVIDER", "deepseek"),
+            model_adapter_prompt=os.getenv("MODEL_ADAPTER_PROMPT", "").strip(),
+            model_provider=model_provider,
             max_work_archive_bytes=_as_int(
                 "APP_MAX_WORK_ARCHIVE_BYTES", 256 * 1024 * 1024
             ),
@@ -161,7 +159,10 @@ class Settings:
         )
 
     def validate(self) -> None:
-        from .model_provider import get_provider
+        from .model_provider import (
+            get_provider,
+            normalize_provider_base_url,
+        )
 
         positive_values = {
             "APP_MAX_UPLOAD_BYTES": self.max_upload_bytes,
@@ -171,37 +172,40 @@ class Settings:
             "APP_MAX_DOCUMENTS_PER_USER": self.max_documents_per_user,
             "APP_MAX_STORED_CHARS_PER_USER": self.max_stored_chars_per_user,
             "APP_MAX_WORK_ARCHIVE_BYTES": self.max_work_archive_bytes,
-            "DEEPSEEK_MAX_TOKENS": self.deepseek_max_tokens,
-            "DEEPSEEK_CONNECT_TIMEOUT_SECONDS": self.deepseek_connect_timeout_seconds,
-            "DEEPSEEK_READ_TIMEOUT_SECONDS": self.deepseek_read_timeout_seconds,
+            "MODEL_MAX_TOKENS": self.model_max_tokens,
+            "MODEL_CONNECT_TIMEOUT_SECONDS": self.model_connect_timeout_seconds,
+            "MODEL_READ_TIMEOUT_SECONDS": self.model_read_timeout_seconds,
         }
         for name, value in positive_values.items():
             if value <= 0:
                 raise ValueError(f"{name} 必须大于 0")
         if self.target_chapter_chars > self.max_chapter_chars:
             raise ValueError("APP_TARGET_CHAPTER_CHARS 不能大于 APP_MAX_CHAPTER_CHARS")
-        if not 0 <= self.deepseek_max_retries <= 8:
-            raise ValueError("DEEPSEEK_MAX_RETRIES 必须在 0–8 之间")
-        if not 256 <= self.deepseek_max_tokens <= 20_000:
-            raise ValueError("DEEPSEEK_MAX_TOKENS 必须在 256–20000 之间")
-        if self.deepseek_reasoning_effort not in {"high", "max"}:
-            raise ValueError("DEEPSEEK_REASONING_EFFORT 目前仅支持 high 或 max")
-        if not self.deepseek_model.strip():
-            raise ValueError("DEEPSEEK_MODEL 不能为空")
+        if not 0 <= self.model_max_retries <= 8:
+            raise ValueError("MODEL_MAX_RETRIES 必须在 0–8 之间")
+        if not 256 <= self.model_max_tokens <= 20_000:
+            raise ValueError("MODEL_MAX_TOKENS 必须在 256–20000 之间")
+        if self.model_reasoning_effort not in {"high", "max"}:
+            raise ValueError("MODEL_REASONING_EFFORT 目前仅支持 high 或 max")
+        if not self.model_name.strip():
+            raise ValueError("MODEL_NAME 不能为空")
         if not self.model_provider.strip():
             raise ValueError("MODEL_PROVIDER 不能为空")
         provider = get_provider(self.model_provider)
-        if self.deepseek_thinking and not provider.capabilities.thinking:
-            raise ValueError(
-                f"{provider.label} 暂不支持 Readraft 的思考模式"
-            )
+        if self.model_thinking and not provider.capabilities.thinking:
+            raise ValueError(f"{provider.label} 暂不支持 Readraft 的思考模式")
         if len(self.model_adapter_prompt) > 20_000:
             raise ValueError("MODEL_ADAPTER_PROMPT 不能超过 20000 个字符")
         if len(self.credential_secret) < 16:
             raise ValueError("API 凭据加密密钥至少需要 16 个字符")
-        parsed_base_url = urlparse(self.deepseek_base_url)
-        if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc:
-            raise ValueError("DEEPSEEK_BASE_URL 必须是完整的 HTTP(S) 地址")
+        normalized_base_url = normalize_provider_base_url(
+            provider,
+            self.model_base_url,
+            allow_private=self.permits_private_model_base_urls,
+            production=self.app_env.lower() == "production",
+        )
+        if normalized_base_url != self.model_base_url.rstrip("/"):
+            raise ValueError("MODEL_BASE_URL 与所选模型服务商不匹配")
 
         if self.app_env.lower() == "production":
             unsafe_secrets = {
@@ -209,13 +213,9 @@ class Settings:
                 "change-this-to-a-long-random-string",
             }
             if len(self.secret_key) < 32 or self.secret_key in unsafe_secrets:
-                raise ValueError(
-                    "生产环境必须设置至少 32 字符的随机 APP_SECRET_KEY"
-                )
+                raise ValueError("生产环境必须设置至少 32 字符的随机 APP_SECRET_KEY")
             if not self.cookie_secure:
                 raise ValueError("生产环境必须设置 APP_COOKIE_SECURE=true")
-            if parsed_base_url.scheme != "https":
-                raise ValueError("生产环境 DEEPSEEK_BASE_URL 必须使用 HTTPS")
             if (
                 self.credential_encryption_key is not None
                 and len(self.credential_encryption_key) < 32

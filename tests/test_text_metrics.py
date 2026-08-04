@@ -52,16 +52,11 @@ def test_manual_version_can_become_current_without_audit(tmp_path: Path):
         effective_char_count=5,
     )
 
-    accepted = database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapter_id,
-        version_id=str(version_id),
-    )
-
-    assert accepted and accepted["changed"]
+    assert database.get_novel_chapter(
+        user_id, project_id, chapter_id
+    )["head_version_id"] == version_id
     version = database.get_chapter_version(
         user_id, project_id, chapter_id, str(version_id)
     )
-    assert version["status"] == "canonical"
+    assert version["head_version_id"] == version["id"]
     assert version["quality_status"] == "pass"

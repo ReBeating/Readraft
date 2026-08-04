@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.credentials import CredentialCipher
 from app.db import Database
-from app.deepseek import MockAnalyzer
+from app.model_client import MockAnalyzer
 from app.main import create_app
 from app.planning_schema import (
     ChapterTaskCard,
@@ -34,15 +34,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -224,7 +224,7 @@ def test_scene_worker_generates_scenes_and_assembles_version(
         await worker._process_generation(claimed)
 
     for scene in workbench["scenes"]:
-        job_id = database.create_generation_job(
+        job_id = database.create_scene_generation_job(
             user_id=user_id,
             project_id=project_id,
             chapter_id=chapter_id,
@@ -282,8 +282,7 @@ def test_scene_worker_generates_scenes_and_assembles_version(
     chapter = database.get_novel_chapter(
         user_id, project_id, chapter_id
     )
-    assert chapter["working_version_id"] == version_id
-    assert chapter["canonical_version_id"] is None
+    assert chapter["head_version_id"] == version_id
     version = database.get_chapter_version(
         user_id, project_id, chapter_id, version_id
     )
@@ -355,7 +354,7 @@ def test_manual_scene_is_ready_without_audit(
     assert "audit" not in checked
 
 
-def test_scene_workbench_web_flow(tmp_path: Path):
+def test_scene_domain_remains_internal_without_legacy_routes(tmp_path: Path):
     settings = make_settings(tmp_path)
     application = create_app(settings)
     with TestClient(application) as client:
@@ -420,75 +419,16 @@ def test_scene_workbench_web_flow(tmp_path: Path):
         scene_url = (
             f"/novels/{project_id}/chapters/{chapter_id}/scenes"
         )
-        legacy = client.get(scene_url, follow_redirects=False)
-        assert legacy.status_code == 303
-        assert legacy.headers["location"].startswith(
-            f"/novels/{project_id}/workbench?chapter_id={chapter_id}"
-        )
-        page = client.get(scene_url)
-        assert page.status_code == 200
-        assert 'class="studio-manuscript-view"' in page.text
-        assert "SCENE WORKBENCH" not in page.text
-        csrf = page.text.split('name="csrf" value="', 1)[1].split('"', 1)[0]
+        assert client.get(scene_url).status_code == 404
         workbench = SceneService(database).get_workbench(
             user_id=user_id,
             project_id=project_id,
             chapter_id=chapter_id,
         )
-        for scene in workbench["scenes"]:
-            response = client.post(
-                f"{scene_url}/{scene['id']}/generate",
-                data={
-                    "operation": "generate_scene",
-                    "instruction": "",
-                    "csrf": csrf,
-                },
-                follow_redirects=False,
-            )
-            assert response.status_code == 303
-            job_id = response.headers["location"].rsplit("/", 1)[-1]
-            deadline = time.monotonic() + 3
-            payload = {}
-            while time.monotonic() < deadline:
-                payload = client.get(
-                    f"/api/writing-jobs/{job_id}"
-                ).json()
-                if payload.get("terminal"):
-                    break
-                time.sleep(0.03)
-            assert payload["status"] == "completed"
-            assert payload["redirect_url"] == (
-                f"/novels/{project_id}/workbench"
-                f"?chapter_id={chapter_id}"
-            )
-            page = client.get(scene_url)
-            csrf = page.text.split(
-                'name="csrf" value="', 1
-            )[1].split('"', 1)[0]
-
-        page = client.get(scene_url)
-        completed = SceneService(database).get_workbench(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        assert all(scene["ready"] for scene in completed["scenes"])
-        response = client.post(
-            f"{scene_url}/assemble",
-            data={
-                "csrf": page.text.split(
-                    'name="csrf" value="', 1
-                )[1].split('"', 1)[0]
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        assert response.headers["location"].endswith("?saved=true")
-        chapter_page = client.get(response.headers["location"])
-        assert 'class="studio-manuscript-view"' in chapter_page.text
-        assert "硬审计" not in chapter_page.text
-        chapter = database.get_novel_chapter(
-            user_id, project_id, chapter_id
-        )
-        assert chapter["canonical_version_id"]
-        assert content_path.read_text(encoding="utf-8").strip()
+        assert workbench["scenes"]
+        first_scene_id = str(workbench["scenes"][0]["id"])
+        assert client.post(
+            f"{scene_url}/{first_scene_id}/generate",
+            data={},
+        ).status_code == 404
+        assert client.post(f"{scene_url}/assemble", data={}).status_code == 404

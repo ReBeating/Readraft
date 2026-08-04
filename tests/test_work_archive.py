@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import zipfile
 from pathlib import Path
 
@@ -35,15 +36,15 @@ def make_settings(root: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
     )
 
 
@@ -51,9 +52,7 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
     settings.ensure_directories()
     database = Database(settings.database_path)
     database.initialize()
-    user_id = database.create_user(
-        "archive-author", hash_password("password-123")
-    )
+    user_id = database.create_user("archive-author", hash_password("password-123"))
     project_id = "portable-project"
     database.create_novel_project(
         user_id=user_id,
@@ -107,11 +106,7 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
     )
     chapter_id = "portable-chapter"
     chapter_root = (
-        settings.novels_dir
-        / str(user_id)
-        / project_id
-        / "chapters"
-        / chapter_id
+        settings.novels_dir / str(user_id) / project_id / "chapters" / chapter_id
     )
     versions_root = chapter_root / "versions"
     versions_root.mkdir(parents=True)
@@ -135,7 +130,7 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
         chapter_id=chapter_id,
         version_path=version_path,
         char_count=len(content),
-        content_hash="portable-content-hash",
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         change_summary="归档测试版本",
     )
     assert version_id
@@ -192,6 +187,63 @@ def create_project(settings: Settings) -> tuple[Database, int, str, str]:
     return database, user_id, project_id, chapter_id
 
 
+def test_repository_migration_removes_hidden_legacy_branches(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    settings.ensure_directories()
+    database = Database(settings.database_path)
+    database.initialize()
+    user_id = database.create_user("repository-author", hash_password("password-123"))
+    for project_id in ("current-project", "hidden-old-project"):
+        database.create_novel_project(
+            user_id=user_id,
+            project_id=project_id,
+            title=project_id,
+            genre="悬疑",
+            premise="测试版本边界。",
+            world_setting="测试世界。",
+            style_guide="克制。",
+            point_of_view="第三人称限知",
+            target_chapter_chars=3000,
+        )
+
+    with database.connection() as connection:
+        current = connection.execute(
+            "SELECT work_id FROM work_versions WHERE project_id=?",
+            ("current-project",),
+        ).fetchone()
+        hidden = connection.execute(
+            "SELECT work_id FROM work_versions WHERE project_id=?",
+            ("hidden-old-project",),
+        ).fetchone()
+        connection.execute(
+            """
+            UPDATE work_versions
+            SET work_id=?, ref_type='legacy', ref_name='legacy-1',
+                label='旧分支', is_editable=0
+            WHERE project_id=?
+            """,
+            (str(current["work_id"]), "hidden-old-project"),
+        )
+        connection.execute(
+            "DELETE FROM works WHERE id=?",
+            (str(hidden["work_id"]),),
+        )
+        connection.execute(
+            "UPDATE works SET last_ref_name='legacy-1' WHERE id=?",
+            (str(current["work_id"]),),
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version=44")
+        connection.commit()
+
+    database.initialize()
+
+    assert database.get_novel_project(user_id, "hidden-old-project") is None
+    work = database.get_work(user_id, str(current["work_id"]))
+    assert work is not None
+    assert work["last_ref_name"] == "main"
+    assert {version["ref_type"] for version in work["versions"]} == {"branch"}
+
+
 def test_complete_work_archive_round_trip_preserves_versions_and_archive(
     tmp_path: Path,
 ):
@@ -219,7 +271,7 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
         title="钟表意象规则",
         content="人物回避旧约时，让停走的秒针推动下一步行动。",
     )
-    document_id = create_version_tag(
+    create_version_tag(
         database=database,
         documents_dir=settings.documents_dir,
         user_id=user_id,
@@ -249,6 +301,7 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
     assert len(manifest["roots"]["documents"]) == 1
     assert "works" in manifest["tables"]
     assert "work_versions" in manifest["tables"]
+    assert "work_tag_chapter_heads" in manifest["tables"]
     assert "work_archive_entries" in manifest["tables"]
     assert "novel_world_entries" in manifest["tables"]
     assert "novel_character_relationships" in manifest["tables"]
@@ -281,9 +334,7 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
     assert imported_tag["creative_snapshot"]["project"]["theme"] == (
         "记忆是否能成为证据"
     )
-    assert imported_tag["creative_snapshot"]["world_entries"][0]["name"] == (
-        "纸灯塔"
-    )
+    assert imported_tag["creative_snapshot"]["world_entries"][0]["name"] == ("纸灯塔")
 
     entries = database.list_work_archive_entries(
         user_id,
@@ -307,37 +358,59 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
         str(imported_work["main_version"]["project_id"]),
     )
     assert len(imported_chapters) == 1
-    imported_project_id = str(
-        imported_work["main_version"]["project_id"]
+    imported_project_id = str(imported_work["main_version"]["project_id"])
+    imported_head_id = str(imported_chapters[0]["head_version_id"] or "")
+    assert imported_head_id
+    imported_versions = database.list_chapter_versions(
+        user_id,
+        imported_project_id,
+        str(imported_chapters[0]["id"]),
     )
-    assert database.list_world_entries(
-        user_id, imported_project_id
-    )[0]["name"] == "纸灯塔"
-    assert database.list_character_relationships(
-        user_id, imported_project_id
-    )[0]["relationship"] == "互相怀疑的旧识"
-    imported_content_path = Path(
-        str(imported_chapters[0]["content_path"])
+    assert [
+        version["id"]
+        for version in imported_versions
+        if version["is_head"]
+    ] == [imported_head_id]
+    assert (
+        database.list_world_entries(user_id, imported_project_id)[0]["name"] == "纸灯塔"
     )
+    assert (
+        database.list_character_relationships(user_id, imported_project_id)[0][
+            "relationship"
+        ]
+        == "互相怀疑的旧识"
+    )
+    imported_content_path = Path(str(imported_chapters[0]["content_path"]))
     assert imported_content_path.is_relative_to(
         settings.novels_dir
         / str(user_id)
         / str(imported_work["main_version"]["project_id"])
     )
-    assert "林岚把船票" in imported_content_path.read_text(
-        encoding="utf-8"
-    )
+    assert "林岚把船票" in imported_content_path.read_text(encoding="utf-8")
     imported_document = database.get_document(
         user_id,
         str(imported_tag["document_id"]),
     )
     assert imported_document
     assert Path(str(imported_document["source_path"])).is_relative_to(
-        settings.documents_dir
-        / str(user_id)
-        / str(imported_tag["document_id"])
+        settings.documents_dir / str(user_id) / str(imported_tag["document_id"])
     )
     with database.connection() as connection:
+        imported_manifest = connection.execute(
+            """
+            SELECT manifest.source_chapter_id,
+                   manifest.source_version_id,
+                   manifest.content_hash
+            FROM work_tag_chapter_heads manifest
+            WHERE manifest.work_version_id=?
+            """,
+            (imported_tag["id"],),
+        ).fetchone()
+        assert imported_manifest
+        assert imported_manifest["source_chapter_id"] == str(
+            imported_chapters[0]["id"]
+        )
+        assert imported_manifest["source_version_id"] == imported_head_id
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert (
             connection.execute(
@@ -346,6 +419,94 @@ def test_complete_work_archive_round_trip_preserves_versions_and_archive(
             ).fetchone()[0]
             == 1
         )
+
+
+def test_tag_freezes_current_main_head_after_main_advances(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    database, user_id, project_id, chapter_id = create_project(settings)
+    chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
+    assert chapter
+    first_head_id = str(chapter["head_version_id"])
+    first_head = database.get_chapter_version(
+        user_id,
+        project_id,
+        chapter_id,
+        first_head_id,
+    )
+    assert first_head
+    first_content = Path(str(first_head["content_path"])).read_text(
+        encoding="utf-8"
+    )
+    Path(str(chapter["content_path"])).write_text(
+        "这是故意制造的过期 content.txt 缓存。",
+        encoding="utf-8",
+    )
+
+    document_id = create_version_tag(
+        database=database,
+        documents_dir=settings.documents_dir,
+        user_id=user_id,
+        project_id=project_id,
+        label="冻结的一稿",
+    )
+
+    next_content = "林岚重查船票，确认真正被改动的是灯塔值班簿。"
+    chapter_path = Path(str(chapter["content_path"]))
+    version_path = chapter_path.parent / "versions" / "manual-next.txt"
+    chapter_path.write_text(next_content, encoding="utf-8")
+    version_path.write_text(next_content, encoding="utf-8")
+    next_head_id = database.record_manual_chapter_version(
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        version_path=version_path,
+        char_count=len(next_content),
+        content_hash="next-content-hash",
+        change_summary="推进 main HEAD",
+    )
+    assert next_head_id and next_head_id != first_head_id
+
+    tag_chapters = database.list_chapters(user_id, document_id)
+    assert len(tag_chapters) == 1
+    assert Path(str(tag_chapters[0]["content_path"])).read_text(
+        encoding="utf-8"
+    ) == first_content
+    with database.connection() as connection:
+        manifest = connection.execute(
+            """
+            SELECT manifest.source_chapter_id,
+                   manifest.source_version_id,
+                   manifest.content_hash
+            FROM work_tag_chapter_heads manifest
+            JOIN work_versions version
+              ON version.id=manifest.work_version_id
+            WHERE version.document_id=?
+            """,
+            (document_id,),
+        ).fetchone()
+    assert manifest["source_chapter_id"] == chapter_id
+    assert manifest["source_version_id"] == first_head_id
+    assert manifest["content_hash"] == hashlib.sha256(
+        first_content.encode("utf-8")
+    ).hexdigest()
+    current = database.get_novel_chapter(user_id, project_id, chapter_id)
+    assert current and current["head_version_id"] == next_head_id
+
+    assert database.delete_novel_project(user_id, project_id) is True
+    assert database.get_document(user_id, document_id)
+    remaining_work = database.get_work_for_document(user_id, document_id)
+    assert remaining_work
+    with database.connection() as connection:
+        preserved_manifest = connection.execute(
+            """
+            SELECT source_chapter_id, source_version_id, content_hash
+            FROM work_tag_chapter_heads
+            WHERE document_chapter_id=?
+            """,
+            (tag_chapters[0]["id"],),
+        ).fetchone()
+    assert preserved_manifest["source_chapter_id"] == chapter_id
+    assert preserved_manifest["source_version_id"] == first_head_id
 
 
 def test_work_archive_rejects_path_traversal(tmp_path: Path):
@@ -405,8 +566,7 @@ def test_work_archive_detects_file_tampering(tmp_path: Path):
     tampered = tmp_path / "tampered.zip"
     with zipfile.ZipFile(archive, "r") as source:
         entries = {
-            info.filename: source.read(info.filename)
-            for info in source.infolist()
+            info.filename: source.read(info.filename) for info in source.infolist()
         }
     file_name = next(name for name in entries if name.startswith("files/"))
     entries[file_name] += b"tampered"
@@ -455,11 +615,10 @@ def test_work_archive_waits_for_active_ai_task(tmp_path: Path):
         user_id=user_id,
         project_id=project_id,
     )
-    database.create_generation_job(
+    database.create_chapter_planning_job(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapter_id,
-        operation="draft",
         instruction="仅用于验证归档并发保护",
         provider="deepseek",
         model="deepseek-v4-flash",
@@ -507,9 +666,7 @@ def test_uncategorized_analysis_must_be_classified_before_adoption(
 
     note = next(
         item
-        for item in database.list_work_archive_entries(
-            user_id, work_id, version_id
-        )
+        for item in database.list_work_archive_entries(user_id, work_id, version_id)
         if item["id"] == note_id
     )
     assert note["entry_type"] == "analysis_note"

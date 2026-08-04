@@ -47,15 +47,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-chat",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-chat",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -386,7 +386,7 @@ def _structure_snapshot(
                 SELECT id, position, title, outline, key_points,
                        skeleton_role, skeleton_arc_titles_json,
                        skeleton_ending_hook, skeleton_application_id,
-                       canonical_version_id
+                       head_version_id
                 FROM novel_chapters
                 WHERE project_id=?
                 ORDER BY position

@@ -1,4 +1,6 @@
+import asyncio
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -21,15 +23,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -168,7 +170,70 @@ def test_chat_submit_returns_json_and_sse_terminal_snapshot(tmp_path):
             )
             body = "".join(stream.iter_text())
         assert "event: snapshot" in body
+        assert "event: agent" in body
+        assert '"phase": "completed"' in body
         assert '"status": "completed"' in body
         assert "event: done" in body
         assert '"redirect_url": "/novels/' in body
         assert f"conversation_id={queued['conversation_id']}" in body
+
+
+def test_running_chat_can_be_stopped_and_streams_cancelled_state(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register(client, "停止生成作者")
+        dashboard = client.get("/dashboard")
+        created = client.post(
+            "/novels/new/blank",
+            data={"csrf": csrf_from(dashboard.text)},
+            follow_redirects=False,
+        )
+        workbench = client.get(created.headers["location"])
+        started = threading.Event()
+
+        async def blocking_run(**_kwargs):
+            started.set()
+            await asyncio.sleep(60)
+
+        application.state.worker.assistant_agent_orchestrator.run = blocking_run
+        response = client.post(
+            workbench.url.path.replace("/workbench", "")
+            + "/assistant/messages",
+            headers={"Accept": "application/json"},
+            data={
+                "csrf": csrf_from(workbench.text),
+                "question": "请先分析人物关系。",
+                "quality_mode": "standard",
+            },
+        )
+        assert response.status_code == 202
+        queued = response.json()
+        assert started.wait(timeout=2)
+
+        cancelled = client.post(
+            f"/api/assistant/messages/{queued['message_id']}/cancel",
+            headers={"Accept": "application/json"},
+            data={"csrf": csrf_from(workbench.text)},
+        )
+        assert cancelled.status_code == 202
+        assert cancelled.json()["interrupted"] is True
+
+        deadline = time.monotonic() + 3
+        state = {}
+        while time.monotonic() < deadline:
+            state = client.get(
+                f"/api/assistant/messages/{queued['message_id']}"
+            ).json()
+            if state.get("terminal"):
+                break
+            time.sleep(0.02)
+        assert state["terminal"] is True
+        assert state["status"] == "failed"
+        assert state["run_state"] == "cancelled"
+        assert state["cancelled"] is True
+
+        with client.stream("GET", queued["stream_url"]) as stream:
+            body = "".join(stream.iter_text())
+        assert "event: agent" in body
+        assert '"phase": "cancelled"' in body
+        assert '"cancelled": true' in body

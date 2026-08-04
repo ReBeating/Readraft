@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.deepseek import AnalyzerError
-from app.writing import DeepSeekWriter, build_writing_messages
+from app.model_client import AnalyzerError
+from app.writing import ProviderWriter, build_writing_messages
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -24,15 +24,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key="test-key",
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key="test-key",
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -75,7 +75,7 @@ def test_deepseek_writer_sends_plain_text_request(tmp_path):
         )
 
     async def scenario():
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             make_settings(tmp_path), transport=httpx.MockTransport(handler)
         )
         try:
@@ -137,7 +137,7 @@ def test_deepseek_writer_reports_content_filter_with_usage(tmp_path):
         )
 
     async def scenario():
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             make_settings(tmp_path), transport=httpx.MockTransport(handler)
         )
         try:
@@ -181,10 +181,10 @@ def test_openai_compatible_writer_uses_active_provider(tmp_path):
         settings = replace(
             make_settings(tmp_path),
             model_provider="openai",
-            deepseek_base_url="https://api.openai.com/v1",
-            deepseek_model="gpt-4.1-mini",
+            model_base_url="https://api.openai.com/v1",
+            model_name="gpt-4.1-mini",
         )
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             settings, transport=httpx.MockTransport(handler)
         )
         try:
@@ -230,7 +230,7 @@ def test_deepseek_writer_retries_resource_exhaustion_once(tmp_path):
         return None
 
     async def scenario():
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             make_settings(tmp_path),
             transport=httpx.MockTransport(handler),
             sleep=no_sleep,

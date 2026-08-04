@@ -9,6 +9,7 @@ from app.context_compiler import (
 from app.db import SCHEMA, Database
 from app.memory_schema import StoryDelta
 from app.memory_service import MemoryService
+from app.migrations import MIGRATIONS
 from app.security import hash_password
 from app.work_library import create_version_tag
 from app.writing import build_writing_messages
@@ -188,7 +189,7 @@ def _story_delta() -> StoryDelta:
     )
 
 
-def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
+def test_main_head_and_story_delta_projection(tmp_path: Path):
     database, user_id, project_id, chapters = _build_project(tmp_path)
     memory = MemoryService(database)
 
@@ -202,19 +203,7 @@ def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
         content="林岚拆开了那封信，买下回雾港的车票。",
     )
     chapter = database.get_novel_chapter(user_id, project_id, chapters[0])
-    assert chapter["working_version_id"] == first_version
-    assert chapter["canonical_version_id"] is None
-
-    accepted = database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapters[0],
-        version_id=first_version,
-        override_reason="测试作者明确接受未审计的短篇候选稿",
-    )
-    assert accepted and accepted["changed"]
-    chapter = database.get_novel_chapter(user_id, project_id, chapters[0])
-    assert chapter["canonical_version_id"] == first_version
+    assert chapter["head_version_id"] == first_version
 
     delta_id = memory.create_proposal(
         user_id=user_id,
@@ -253,13 +242,14 @@ def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
     assert len(project_memories) == 1
     assert project_memories[0]["memory_status"] == "ready"
     assert project_memories[0]["chapter_position"] == 1
-    assert project_memories[0]["payload"]["events"][0]["summary"].startswith(
-        "林岚收到"
-    )
+    assert project_memories[0]["payload"]["events"][0]["summary"].startswith("林岚收到")
     with database.connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM story_facts WHERE fact_status='canon'"
-        ).fetchone()[0] == 3
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM story_facts WHERE fact_status='canon'"
+            ).fetchone()[0]
+            == 3
+        )
         knowledge = connection.execute(
             """
             SELECT character_id, knowledge_state
@@ -269,26 +259,22 @@ def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
         assert knowledge["character_id"] is not None
         assert knowledge["knowledge_state"] == "knows"
 
-    unaccepted_candidate = _save_candidate(
+    replacement_version = _save_candidate(
         database,
         tmp_path=tmp_path,
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapters[0],
-        name="unaccepted",
-        content="这份候选稿不能进入第二章上下文。",
+        name="replacement",
+        content="新的 main HEAD 会进入第二章上下文。",
     )
-    assert unaccepted_candidate != first_version
+    assert replacement_version != first_version
     next_context = database.get_writing_context(user_id, chapters[1])
     assert Path(next_context["previous_chapter"]["content_path"]).name == (
-        "first.txt"
+        "replacement.txt"
     )
-    assert next_context["canonical_memory"]["recent_chapters"][0][
-        "summary"
-    ].startswith("林岚收到")
-    assert next_context["canonical_memory"]["character_knowledge"][0][
-        "knowledge_state"
-    ] == "knows"
+    assert next_context["canonical_memory"]["recent_chapters"] == []
+    assert next_context["canonical_memory"]["character_knowledge"] == []
     messages = build_writing_messages(
         context=next_context,
         operation="draft",
@@ -298,20 +284,15 @@ def test_candidate_canon_and_story_delta_projection(tmp_path: Path):
     )
     prompt = str(messages[1]["content"])
     assert "<canonical_story_memory>" in prompt
-    assert "父亲名下的新信在三天前寄出" in prompt
-    assert "author_confirmed_canon_only" in prompt
+    assert "父亲名下的新信在三天前寄出" not in prompt
 
 
 def test_pending_main_analysis_is_frozen_into_matching_tag(tmp_path: Path):
     database, user_id, project_id, chapters = _build_project(tmp_path)
     memory = MemoryService(database)
     content = "林岚拆开了那封信，买下回雾港的车票。"
-    chapter = database.get_novel_chapter(
-        user_id, project_id, chapters[0]
-    )
-    Path(str(chapter["content_path"])).write_text(
-        content, encoding="utf-8"
-    )
+    chapter = database.get_novel_chapter(user_id, project_id, chapters[0])
+    Path(str(chapter["content_path"])).write_text(content, encoding="utf-8")
     version_id = _save_candidate(
         database,
         tmp_path=tmp_path,
@@ -321,14 +302,9 @@ def test_pending_main_analysis_is_frozen_into_matching_tag(tmp_path: Path):
         name="pending-analysis",
         content=content,
     )
-    accepted = database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapters[0],
-        version_id=version_id,
-        override_reason="测试分析完成前固定正文",
-    )
-    assert accepted and accepted["changed"]
+    assert database.get_novel_chapter(
+        user_id, project_id, chapters[0]
+    )["head_version_id"] == version_id
 
     document_id = create_version_tag(
         database=database,
@@ -337,9 +313,7 @@ def test_pending_main_analysis_is_frozen_into_matching_tag(tmp_path: Path):
         project_id=project_id,
         label="分析前快照",
     )
-    tag_version = database.get_work_version_for_document(
-        user_id, document_id
-    )
+    tag_version = database.get_work_version_for_document(user_id, document_id)
     assert tag_version
     before = database.list_work_version_story_memory_records(
         user_id, str(tag_version["id"])
@@ -419,9 +393,7 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
         marker: str,
     ) -> str:
         payload = _story_delta().model_dump(mode="json")
-        payload["chapter_summary"] = (
-            f"第{position}章确认线索“{marker}”并保存到正史。"
-        )
+        payload["chapter_summary"] = f"第{position}章确认线索“{marker}”并保存到正史。"
         payload["keywords"] = [marker]
         payload["item_changes"][0]["item_name"] = marker
         payload["item_changes"][0]["evidence"] = f"林岚收好{marker}。"
@@ -435,13 +407,6 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
             chapter_id=chapter_id,
             name=f"canon-{position}",
             content=f"林岚确认了{marker}。",
-        )
-        database.accept_chapter_version(
-            user_id=owner_id,
-            project_id=owner_project_id,
-            chapter_id=chapter_id,
-            version_id=version_id,
-            override_reason="测试作者明确接受记忆检索所需的正史版本",
         )
         delta_id = memory.create_proposal(
             user_id=owner_id,
@@ -459,11 +424,7 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
             owner_project_id=project_id,
             chapter_id=chapter_id,
             position=position,
-            marker=(
-                "蓝玻璃钥匙"
-                if position == 1
-                else f"普通调查线索{position}"
-            ),
+            marker=("蓝玻璃钥匙" if position == 1 else f"普通调查线索{position}"),
         )
 
     # A canonical future chapter must never enter chapter 7's context.
@@ -507,9 +468,7 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
         marker="蓝玻璃钥匙",
     )
 
-    context = database.get_writing_context(
-        user_id, chapters[6], None, "蓝玻璃钥匙"
-    )
+    context = database.get_writing_context(user_id, chapters[6], None, "蓝玻璃钥匙")
     raw_memory = context["canonical_memory"]
     assert [item["position"] for item in raw_memory["recent_chapters"]] == [
         6,
@@ -523,16 +482,14 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
     assert "蓝玻璃钥匙" in raw_memory["retrieval"]["query_concepts"]
     assert raw_memory["retrieved_memory"]
     assert {
-        item["source_chapter_position"]
-        for item in raw_memory["retrieved_memory"]
+        item["source_chapter_position"] for item in raw_memory["retrieved_memory"]
     } == {1}
     assert all(
         item["source_chapter_id"] == chapters[0]
         for item in raw_memory["retrieved_memory"]
     )
     assert any(
-        "蓝玻璃钥匙" in item["excerpt"]
-        or "蓝玻璃钥匙" in item["keywords"]
+        "蓝玻璃钥匙" in item["excerpt"] or "蓝玻璃钥匙" in item["keywords"]
         for item in raw_memory["retrieved_memory"]
     )
 
@@ -545,9 +502,7 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
         previous_content="",
     )
     assert snapshot["canonical_memory"]["retrieval"]["matched_count"] > 0
-    assert "蓝玻璃钥匙" in snapshot["canonical_memory"]["retrieval"][
-        "query_concepts"
-    ]
+    assert "蓝玻璃钥匙" in snapshot["canonical_memory"]["retrieval"]["query_concepts"]
     assert snapshot["canonical_memory"]["retrieved_memory"]
     prompt = str(
         build_writing_messages(
@@ -568,16 +523,18 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
         connection.commit()
     database.initialize()
     with database.connection() as connection:
-        assert connection.execute(
-            """
+        assert (
+            connection.execute(
+                """
             SELECT COUNT(*) FROM story_memory_search_documents
             WHERE project_id=? AND chapter_id=?
             """,
-            (project_id, chapters[0]),
-        ).fetchone()[0] == 8
+                (project_id, chapters[0]),
+            ).fetchone()[0]
+            == 8
+        )
         connection.execute(
-            "INSERT INTO story_memory_fts(story_memory_fts) "
-            "VALUES ('integrity-check')"
+            "INSERT INTO story_memory_fts(story_memory_fts) VALUES ('integrity-check')"
         )
 
     replacement = _save_candidate(
@@ -589,28 +546,22 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
         name="replacement-without-key",
         content="第一章改为与钥匙无关的正史。",
     )
-    database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapters[0],
-        version_id=replacement,
-        override_reason="测试作者明确替换旧正史并撤回对应搜索文档",
-    )
     with database.connection() as connection:
-        assert connection.execute(
-            """
+        assert (
+            connection.execute(
+                """
             SELECT COUNT(*) FROM story_memory_search_documents
             WHERE chapter_id=?
             """,
-            (chapters[0],),
-        ).fetchone()[0] == 0
-    refreshed = database.get_writing_context(
-        user_id, chapters[6], None, "蓝玻璃钥匙"
-    )
+                (chapters[0],),
+            ).fetchone()[0]
+            == 0
+        )
+    refreshed = database.get_writing_context(user_id, chapters[6], None, "蓝玻璃钥匙")
     assert refreshed["canonical_memory"]["retrieved_memory"] == []
 
 
-def test_replacing_old_canon_retracts_memory_and_marks_downstream(
+def test_replacing_main_head_retracts_memory_and_marks_downstream(
     tmp_path: Path,
 ):
     database, user_id, project_id, chapters = _build_project(tmp_path)
@@ -624,13 +575,6 @@ def test_replacing_old_canon_retracts_memory_and_marks_downstream(
         chapter_id=chapters[0],
         name="first",
         content="第一版",
-    )
-    database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapters[0],
-        version_id=first_version,
-        override_reason="测试作者明确接受未审计的第一版正文",
     )
     delta_id = memory.create_proposal(
         user_id=user_id,
@@ -651,13 +595,6 @@ def test_replacing_old_canon_retracts_memory_and_marks_downstream(
             name="canon",
             content="后续章节",
         )
-        database.accept_chapter_version(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=chapter_id,
-            version_id=version,
-            override_reason="测试作者明确接受未审计的后续章节",
-        )
 
     replacement = _save_candidate(
         database,
@@ -668,17 +605,13 @@ def test_replacing_old_canon_retracts_memory_and_marks_downstream(
         name="replacement",
         content="修改后的第一章",
     )
-    result = database.accept_chapter_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=chapters[0],
-        version_id=replacement,
-        override_reason="测试作者明确接受未审计的替换版本",
-    )
-    assert result["downstream_count"] == 2
     assert database.get_novel_chapter(
-        user_id, project_id, chapters[1]
-    )["needs_recheck"] == 1
+        user_id, project_id, chapters[0]
+    )["head_version_id"] == replacement
+    assert (
+        database.get_novel_chapter(user_id, project_id, chapters[1])["needs_recheck"]
+        == 1
+    )
     assert (
         memory.get_chapter_memory(
             user_id=user_id,
@@ -692,25 +625,24 @@ def test_replacing_old_canon_retracts_memory_and_marks_downstream(
         project_id=project_id,
     )
     assert len(memory_records) == 3
-    assert all(
-        record["memory_status"] == "missing"
-        for record in memory_records
-    )
+    assert all(record["memory_status"] == "missing" for record in memory_records)
     assert memory.get_delta(user_id=user_id, delta_id=delta_id)["status"] == (
         "superseded"
     )
 
-    restored = database.accept_chapter_version(
+    restored = database.set_chapter_head(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapters[0],
         version_id=first_version,
-        override_reason="测试作者明确恢复已知的历史版本正文",
     )
     assert restored["changed"]
-    assert database.get_novel_chapter(
-        user_id, project_id, chapters[0]
-    )["canonical_version_id"] == first_version
+    assert (
+        database.get_novel_chapter(user_id, project_id, chapters[0])[
+            "head_version_id"
+        ]
+        == first_version
+    )
 
 
 def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
@@ -775,11 +707,8 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
     database.initialize()
 
     assert database.get_api_credential(7)["encrypted_key"] == "encrypted-secret"
-    chapter = database.get_novel_chapter(
-        7, "legacy-project", "legacy-chapter"
-    )
-    assert chapter["canonical_version_id"] == "legacy-version"
-    assert chapter["working_version_id"] == "legacy-version"
+    chapter = database.get_novel_chapter(7, "legacy-project", "legacy-chapter")
+    assert chapter["head_version_id"] == "legacy-version"
     with database.connection() as connection:
         migrations = connection.execute(
             """
@@ -788,158 +717,100 @@ def test_migration_preserves_existing_account_key_and_version(tmp_path: Path):
             """
         ).fetchall()
         assert [dict(row) for row in migrations] == [
-            {"version": 1, "name": "core_memory_v1"},
-            {"version": 2, "name": "planning_v2"},
-            {"version": 3, "name": "quality_gate_v3"},
-            {"version": 4, "name": "style_editor_v4"},
-                {"version": 5, "name": "reader_decisions_v5"},
-                {"version": 6, "name": "technique_library_v6"},
-                {"version": 7, "name": "scene_workbench_v7"},
-                {"version": 8, "name": "memory_search_v8"},
-                {"version": 9, "name": "continuity_replay_v9"},
-                {"version": 10, "name": "continuity_lifecycle_v10"},
-                {
-                    "version": 11,
-                    "name": "memory_identity_and_causality_v11",
-                },
-                {
-                    "version": 12,
-                    "name": "voice_profile_learning_v12",
-                },
-                {
-                    "version": 13,
-                    "name": "manual_edit_preference_learning_v13",
-                },
-                    {
-                        "version": 14,
-                        "name": "story_blueprint_v14",
-                    },
-                    {
-                        "version": 15,
-                        "name": "story_planner_suggestions_v15",
-                    },
-                    {
-                        "version": 16,
-                        "name": "story_structure_planner_v16",
-                    },
-                    {
-                        "version": 17,
-                        "name": "chapter_causal_links_v17",
-                    },
-                    {
-                        "version": 18,
-                        "name": "causal_link_suggestions_v18",
-                    },
-                    {
-                        "version": 19,
-                        "name": "causal_branch_simulations_v19",
-                    },
-                    {
-                        "version": 20,
-                        "name": "causal_branch_adoptions_v20",
-                    },
-                        {
-                            "version": 21,
-                            "name": "scene_requirement_coverage_v21",
-                        },
-                        {
-                            "version": 22,
-                            "name": "editing_preference_aggregation_v22",
-                        },
-                            {
-                                "version": 23,
-                                "name": "assistant_chat_v23",
-                            },
-                            {
-                                "version": 24,
-                                "name": "workbench_prompts_v24",
-                            },
-                            {
-                                "version": 25,
-                                "name": "assistant_agent_tools_v25",
-                            },
-                            {
-                                "version": 26,
-                                "name": "assistant_agent_steps_v26",
-                            },
-                            {
-                                "version": 27,
-                                "name": "model_base_url_v27",
-                            },
-                            {
-                                "version": 28,
-                                "name": "multi_provider_credentials_v28",
-                            },
-                            {
-                                "version": 29,
-                                "name": "automatic_reasoning_policy_v29",
-                            },
-                            {
-                                "version": 30,
-                                "name": "unified_model_adapter_v30",
-                            },
-                                {
-                                    "version": 31,
-                                    "name": "unified_work_library_v31",
-                                },
-                                    {
-                                        "version": 32,
-                                        "name": "work_archive_semantics_v32",
-                                    },
-                                    {
-                                        "version": 33,
-                                        "name": "repository_versions_v33",
-                                    },
-                                    {
-                                        "version": 34,
-                                        "name": "five_material_sections_v34",
-                                    },
-                                        {
-                                            "version": 35,
-                                            "name": "background_memory_jobs_v35",
-                                        },
-                                        {
-                                            "version": 36,
-                                            "name": "version_story_memory_snapshots_v36",
-                                        },
-                                            {
-                                                "version": 37,
-                                                "name": "work_version_reading_positions_v37",
-                                            },
-                                                {
-                                                    "version": 38,
-                                                    "name": "model_quality_profiles_v38",
-                                                },
-                                                {
-                                                    "version": 39,
-                                                    "name": "assistant_streaming_and_web_search_v39",
-                                                },
-                                                    {
-                                                        "version": 40,
-                                                        "name": "exa_web_search_v40",
-                                                    },
-                                                    {
-                                                        "version": 41,
-                                                        "name": "assistant_conversation_memory_v41",
-                                                    },
-                                                ]
+            {"version": item.version, "name": item.name} for item in MIGRATIONS
+        ]
+        chapter_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(novel_chapters)"
+            ).fetchall()
+        }
+        assert "head_version_id" in chapter_columns
+        assert "canonical_version_id" not in chapter_columns
+        assert "working_version_id" not in chapter_columns
         assert database.get_api_credential(7)["base_url"] == ""
         assert database.get_api_credential(7)["is_default"] == 1
-        assert connection.execute(
-            """
+        assert (
+            connection.execute(
+                """
             SELECT COUNT(*) FROM novel_chapter_plans
             WHERE chapter_id='legacy-chapter'
             """
-        ).fetchone()[0] == 1
-        assert connection.execute(
-            """
-            SELECT status FROM novel_chapter_versions
-            WHERE id='legacy-version'
-            """
-        ).fetchone()["status"] == "canonical"
-        assert connection.execute(
-            """
+            ).fetchone()[0]
+            == 1
+        )
+        assert chapter["head_version_id"] == "legacy-version"
+        assert (
+            connection.execute(
+                """
             SELECT COUNT(*) FROM sqlite_master
             WHERE type='table' AND name='story_memory_fts'
             """
-        ).fetchone()[0] == 1
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_main_head_migration_prefers_legacy_working_version(tmp_path: Path):
+    database, user_id, project_id, chapters = _build_project(tmp_path)
+    chapter_id = chapters[0]
+    canonical_id = _save_candidate(
+        database,
+        tmp_path=tmp_path,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        name="legacy-canonical",
+        content="旧确认正文",
+    )
+    working_id = _save_candidate(
+        database,
+        tmp_path=tmp_path,
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        name="legacy-working",
+        content="用户离开前正在编辑的正文",
+    )
+    with database.connection() as connection:
+        connection.execute(
+            "ALTER TABLE novel_chapters ADD COLUMN canonical_version_id TEXT"
+        )
+        connection.execute(
+            "ALTER TABLE novel_chapters ADD COLUMN working_version_id TEXT"
+        )
+        connection.execute(
+            """
+            UPDATE novel_chapters
+            SET canonical_version_id=?, working_version_id=?,
+                head_version_id=NULL
+            WHERE id=?
+            """,
+            (canonical_id, working_id, chapter_id),
+        )
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version IN (47, 48)"
+        )
+        connection.commit()
+
+    database.initialize()
+
+    chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
+    assert chapter["head_version_id"] == working_id
+    versions = {
+        str(item["id"]): bool(item["is_head"])
+        for item in database.list_chapter_versions(
+            user_id, project_id, chapter_id
+        )
+    }
+    assert versions[working_id] is True
+    assert versions[canonical_id] is False
+    with database.connection() as connection:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(novel_chapters)"
+            ).fetchall()
+        }
+    assert "canonical_version_id" not in columns
+    assert "working_version_id" not in columns
