@@ -4504,6 +4504,113 @@ def _chapter_version_integrity_guards_v54(
     )
 
 
+def _backfill_tag_chapter_manifests_v55(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Give pre-v51 snapshot Tags a verifiable per-chapter manifest.
+
+    Older Tags already contain immutable document chapters, but v51 only
+    created the manifest table and did not backfill existing rows.  Prefer an
+    exact content-hash match in the Tag's base main project; when that source
+    project no longer exists, retain honest legacy provenance while still
+    recording the frozen chapter hash.
+    """
+
+    del applied_at
+    tags = connection.execute(
+        """
+        SELECT tag.id, tag.document_id, tag.created_at,
+               base.project_id AS base_project_id
+        FROM work_versions tag
+        LEFT JOIN work_versions base ON base.id=tag.base_version_id
+        WHERE tag.ref_type='tag'
+          AND tag.intent='snapshot'
+          AND tag.document_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM work_tag_chapter_heads manifest
+              WHERE manifest.work_version_id=tag.id
+          )
+        ORDER BY tag.created_at, tag.id
+        """
+    ).fetchall()
+    for tag in tags:
+        chapters = connection.execute(
+            """
+            SELECT id, position, content_path
+            FROM chapters
+            WHERE document_id=?
+            ORDER BY position, id
+            """,
+            (str(tag["document_id"]),),
+        ).fetchall()
+        manifest_rows: list[tuple[str, str, str, str | None, int, str]] = []
+        readable = True
+        for chapter in chapters:
+            try:
+                content_hash = hashlib.sha256(
+                    Path(str(chapter["content_path"])).read_bytes()
+                ).hexdigest()
+            except OSError:
+                readable = False
+                break
+
+            document_chapter_id = str(chapter["id"])
+            source_chapter_id = f"legacy:{document_chapter_id}"
+            source_version_id: str | None = None
+            base_project_id = str(tag["base_project_id"] or "")
+            if base_project_id:
+                source_chapter = connection.execute(
+                    """
+                    SELECT id FROM novel_chapters
+                    WHERE project_id=? AND position=?
+                    """,
+                    (base_project_id, int(chapter["position"])),
+                ).fetchone()
+                if source_chapter:
+                    source_chapter_id = str(source_chapter["id"])
+                    source_version = connection.execute(
+                        """
+                        SELECT id
+                        FROM novel_chapter_versions
+                        WHERE chapter_id=? AND content_hash=?
+                        ORDER BY
+                            CASE WHEN created_at<=? THEN 0 ELSE 1 END,
+                            created_at DESC,
+                            id DESC
+                        LIMIT 1
+                        """,
+                        (
+                            source_chapter_id,
+                            content_hash,
+                            str(tag["created_at"]),
+                        ),
+                    ).fetchone()
+                    if source_version:
+                        source_version_id = str(source_version["id"])
+            manifest_rows.append(
+                (
+                    str(tag["id"]),
+                    document_chapter_id,
+                    source_chapter_id,
+                    source_version_id,
+                    int(chapter["position"]),
+                    content_hash,
+                )
+            )
+        if readable and manifest_rows:
+            connection.executemany(
+                """
+                INSERT INTO work_tag_chapter_heads(
+                    work_version_id, document_chapter_id,
+                    source_chapter_id, source_version_id,
+                    position, content_hash
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                manifest_rows,
+            )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -4734,6 +4841,11 @@ MIGRATIONS = (
         54,
         "chapter_version_integrity_guards_v54",
         _chapter_version_integrity_guards_v54,
+    ),
+    Migration(
+        55,
+        "backfill_tag_chapter_manifests_v55",
+        _backfill_tag_chapter_manifests_v55,
     ),
 )
 

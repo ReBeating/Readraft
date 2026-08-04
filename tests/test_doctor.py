@@ -10,6 +10,7 @@ from app.config import Settings
 from app.db import Database
 from app.doctor import inspect_integrity
 from app.security import hash_password
+from app.work_library import create_version_tag
 
 
 def make_settings(root: Path) -> Settings:
@@ -172,3 +173,48 @@ def test_database_triggers_reject_cross_chapter_version_links(tmp_path: Path):
                 "UPDATE novel_chapters SET head_version_id=? WHERE id=?",
                 (first["head_version_id"], second_id),
             )
+
+
+def test_migration_backfills_legacy_tag_manifest(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    database, user_id, project_id, chapter_id, _, version_path = create_chapter(
+        settings
+    )
+    document_id = create_version_tag(
+        database=database,
+        documents_dir=settings.documents_dir,
+        user_id=user_id,
+        project_id=project_id,
+        label="旧版一稿",
+    )
+    work = database.get_work_for_document(user_id, document_id)
+    assert work and work["current_version"]
+    tag_id = str(work["current_version"]["id"])
+
+    with database.connection() as connection:
+        connection.execute(
+            "DELETE FROM work_tag_chapter_heads WHERE work_version_id=?",
+            (tag_id,),
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version=55")
+        connection.commit()
+    assert not inspect_integrity(settings).ok
+
+    database.initialize()
+
+    with database.connection() as connection:
+        manifest = connection.execute(
+            """
+            SELECT source_chapter_id, source_version_id, content_hash
+            FROM work_tag_chapter_heads
+            WHERE work_version_id=?
+            """,
+            (tag_id,),
+        ).fetchone()
+    assert manifest
+    assert manifest["source_chapter_id"] == chapter_id
+    assert manifest["source_version_id"]
+    assert manifest["content_hash"] == hashlib.sha256(
+        version_path.read_bytes()
+    ).hexdigest()
+    assert inspect_integrity(settings).ok
