@@ -112,33 +112,21 @@ class PreferenceService:
         user_id: int,
         project_id: str,
         chapter_id: str,
-        source_type: str,
         after_version_id: str,
-        expected_scene_beat_id: Optional[str] = None,
         provider: str,
         model: str,
         credential_source: str,
     ) -> str:
-        if source_type not in {"chapter", "scene"}:
-            raise ValueError("不支持的改稿来源")
         if credential_source not in {"default", "personal"}:
             raise ValueError("不支持的 API 凭据来源")
         source = self._resolve_source(
             user_id=user_id,
             project_id=project_id,
             chapter_id=chapter_id,
-            source_type=source_type,
             after_version_id=after_version_id,
         )
         if not source:
             raise ValueError("手工改稿版本不存在")
-        if (
-            source_type == "scene"
-            and expected_scene_beat_id
-            and str(source.get("scene_beat_id") or "")
-            != expected_scene_beat_id
-        ):
-            raise ValueError("场景改稿版本与当前场景不一致")
         if (
             str(source["after_created_by"]) != "author"
             or str(source["after_source"]) != "manual"
@@ -167,7 +155,6 @@ class PreferenceService:
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
-                source_type=source_type,
                 after_version_id=after_version_id,
             )
             if (
@@ -176,12 +163,6 @@ class PreferenceService:
                 != str(source["before_version_id"])
                 or str(current["after_created_by"]) != "author"
                 or str(current["after_source"]) != "manual"
-                or (
-                    source_type == "scene"
-                    and expected_scene_beat_id
-                    and str(current["scene_beat_id"] or "")
-                    != expected_scene_beat_id
-                )
             ):
                 connection.rollback()
                 raise ValueError("手工改稿版本已经变化，请刷新后重试")
@@ -201,11 +182,11 @@ class PreferenceService:
             duplicate = connection.execute(
                 """
                 SELECT id FROM editing_preference_suggestions
-                WHERE project_id=? AND source_type=? AND after_version_id=?
+                WHERE project_id=? AND after_version_id=?
                   AND status IN ('queued', 'running', 'ready', 'applied')
                 ORDER BY created_at DESC LIMIT 1
                 """,
-                (project_id, source_type, after_version_id),
+                (project_id, after_version_id),
             ).fetchone()
             if duplicate:
                 connection.rollback()
@@ -233,13 +214,13 @@ class PreferenceService:
             connection.execute(
                 """
                 INSERT INTO editing_preference_suggestions(
-                    id, project_id, user_id, chapter_id, source_type,
-                    scene_beat_id, before_version_id, after_version_id,
+                    id, project_id, user_id, chapter_id,
+                    before_version_id, after_version_id,
                     before_content_hash, after_content_hash,
                     change_sample_json, changed_char_count,
                     author_change_summary, provider, model,
                     credential_source, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                           'queued', ?)
                 """,
                 (
@@ -247,8 +228,6 @@ class PreferenceService:
                     project_id,
                     user_id,
                     chapter_id,
-                    source_type,
-                    source.get("scene_beat_id"),
                     source["before_version_id"],
                     after_version_id,
                     before_hash,
@@ -272,13 +251,10 @@ class PreferenceService:
             rows = connection.execute(
                 """
                 SELECT suggestion.*, ch.title AS chapter_title,
-                       ch.position,
-                       sb.goal AS scene_goal
+                       ch.position
                 FROM editing_preference_suggestions suggestion
                 JOIN novel_projects p ON p.id=suggestion.project_id
                 JOIN novel_chapters ch ON ch.id=suggestion.chapter_id
-                LEFT JOIN novel_scene_beats sb
-                    ON sb.id=suggestion.scene_beat_id
                 WHERE suggestion.project_id=? AND p.user_id=?
                 ORDER BY suggestion.created_at DESC, suggestion.rowid DESC
                 LIMIT ?
@@ -295,13 +271,10 @@ class PreferenceService:
                 """
                 SELECT suggestion.*, p.title AS project_title,
                        p.genre, p.point_of_view, p.style_guide,
-                       ch.title AS chapter_title, ch.position,
-                       sb.goal AS scene_goal
+                       ch.title AS chapter_title, ch.position
                 FROM editing_preference_suggestions suggestion
                 JOIN novel_projects p ON p.id=suggestion.project_id
                 JOIN novel_chapters ch ON ch.id=suggestion.chapter_id
-                LEFT JOIN novel_scene_beats sb
-                    ON sb.id=suggestion.scene_beat_id
                 WHERE suggestion.id=? AND p.user_id=?
                 """,
                 (suggestion_id, user_id),
@@ -338,13 +311,10 @@ class PreferenceService:
             row = connection.execute(
                 """
                 SELECT suggestion.*, p.title, p.genre, p.point_of_view,
-                       p.style_guide, ch.title AS chapter_title,
-                       sb.goal AS scene_goal
+                       p.style_guide, ch.title AS chapter_title
                 FROM editing_preference_suggestions suggestion
                 JOIN novel_projects p ON p.id=suggestion.project_id
                 JOIN novel_chapters ch ON ch.id=suggestion.chapter_id
-                LEFT JOIN novel_scene_beats sb
-                    ON sb.id=suggestion.scene_beat_id
                 WHERE suggestion.status='queued'
                 ORDER BY suggestion.created_at
                 LIMIT 1
@@ -397,7 +367,6 @@ class PreferenceService:
                 user_id=int(job["user_id"]),
                 project_id=str(job["project_id"]),
                 chapter_id=str(job["chapter_id"]),
-                source_type=str(job["source_type"]),
                 after_version_id=str(job["after_version_id"]),
             )
         if (
@@ -636,19 +605,15 @@ class PreferenceService:
         with self.database.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT pref.*, suggestion.source_type,
-                       suggestion.after_version_id,
+                SELECT pref.*, suggestion.after_version_id,
                        ch.position AS chapter_position,
-                       ch.title AS chapter_title,
-                       sb.goal AS scene_goal
+                       ch.title AS chapter_title
                 FROM author_editing_preferences pref
                 JOIN novel_projects p ON p.id=pref.project_id
                 LEFT JOIN editing_preference_suggestions suggestion
                   ON suggestion.id=pref.suggestion_id
                 LEFT JOIN novel_chapters ch
                   ON ch.id=suggestion.chapter_id
-                LEFT JOIN novel_scene_beats sb
-                  ON sb.id=suggestion.scene_beat_id
                 WHERE pref.project_id=? AND p.user_id=?
                   AND pref.status='active'
                   AND (
@@ -691,13 +656,9 @@ class PreferenceService:
         candidates: list[dict[str, Any]] = []
         for category, items in grouped.items():
             source_keys = {
-                (
-                    str(item.get("source_type") or ""),
-                    str(item.get("after_version_id") or ""),
-                )
+                str(item.get("after_version_id") or "")
                 for item in items
-                if item.get("source_type")
-                and item.get("after_version_id")
+                if item.get("after_version_id")
             }
             if len(source_keys) < 2:
                 continue
@@ -869,7 +830,6 @@ class PreferenceService:
             rows = connection.execute(
                 f"""
                 SELECT pref.id, pref.category, pref.status,
-                       suggestion.source_type,
                        suggestion.after_version_id
                 FROM author_editing_preferences pref
                 LEFT JOIN editing_preference_suggestions suggestion
@@ -895,13 +855,9 @@ class PreferenceService:
                 connection.rollback()
                 raise ValueError("一次只能归并同一类别的改稿观察")
             support_sources = {
-                (
-                    str(by_id[item_id]["source_type"] or ""),
-                    str(by_id[item_id]["after_version_id"] or ""),
-                )
+                str(by_id[item_id]["after_version_id"] or "")
                 for item_id in support_ids
-                if by_id[item_id]["source_type"]
-                and by_id[item_id]["after_version_id"]
+                if by_id[item_id]["after_version_id"]
             }
             if len(support_sources) < 2:
                 connection.rollback()
@@ -1029,11 +985,9 @@ class PreferenceService:
                            pref.id, pref.category, pref.guidance,
                            pref.applicability, pref.before_quote,
                            pref.after_quote, pref.status,
-                           suggestion.source_type,
                            suggestion.after_version_id,
                            ch.position AS chapter_position,
-                           ch.title AS chapter_title,
-                           sb.goal AS scene_goal
+                           ch.title AS chapter_title
                     FROM
                       author_editing_preference_aggregate_evidence evidence
                     JOIN author_editing_preferences pref
@@ -1042,8 +996,6 @@ class PreferenceService:
                       ON suggestion.id=pref.suggestion_id
                     LEFT JOIN novel_chapters ch
                       ON ch.id=suggestion.chapter_id
-                    LEFT JOIN novel_scene_beats sb
-                      ON sb.id=suggestion.scene_beat_id
                     WHERE evidence.aggregate_id IN ({placeholders})
                     ORDER BY evidence.created_at, pref.created_at
                     """,
@@ -1071,10 +1023,7 @@ class PreferenceService:
             ]
             support_count = len(
                 {
-                    (
-                        str(member.get("source_type") or ""),
-                        str(member.get("after_version_id") or ""),
-                    )
+                    str(member.get("after_version_id") or "")
                     for member in item["supports"]
                 }
             )
@@ -1509,7 +1458,6 @@ class PreferenceService:
         user_id: int,
         project_id: str,
         chapter_id: str,
-        source_type: str,
         after_version_id: str,
     ) -> Optional[dict[str, Any]]:
         with self.database.connection() as connection:
@@ -1518,7 +1466,6 @@ class PreferenceService:
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
-                source_type=source_type,
                 after_version_id=after_version_id,
             )
         return dict(row) if row else None
@@ -1530,39 +1477,13 @@ class PreferenceService:
         user_id: int,
         project_id: str,
         chapter_id: str,
-        source_type: str,
         after_version_id: str,
     ):
-        if source_type == "chapter":
-            return connection.execute(
-                """
-                SELECT p.id AS project_id, p.title AS project_title,
-                       p.genre, p.point_of_view, p.style_guide,
-                       ch.id AS chapter_id, ch.title AS chapter_title,
-                       NULL AS scene_beat_id, NULL AS scene_goal,
-                       before_v.id AS before_version_id,
-                       before_v.content_path AS before_content_path,
-                       after_v.id AS after_version_id,
-                       after_v.content_path AS after_content_path,
-                       after_v.created_by AS after_created_by,
-                       after_v.source AS after_source,
-                       after_v.change_summary AS author_change_summary
-                FROM novel_chapter_versions after_v
-                JOIN novel_chapter_versions before_v
-                  ON before_v.id=after_v.parent_version_id
-                 AND before_v.chapter_id=after_v.chapter_id
-                JOIN novel_chapters ch ON ch.id=after_v.chapter_id
-                JOIN novel_projects p ON p.id=ch.project_id
-                WHERE after_v.id=? AND ch.id=? AND p.id=? AND p.user_id=?
-                """,
-                (after_version_id, chapter_id, project_id, user_id),
-            ).fetchone()
         return connection.execute(
             """
             SELECT p.id AS project_id, p.title AS project_title,
                    p.genre, p.point_of_view, p.style_guide,
                    ch.id AS chapter_id, ch.title AS chapter_title,
-                   sb.id AS scene_beat_id, sb.goal AS scene_goal,
                    before_v.id AS before_version_id,
                    before_v.content_path AS before_content_path,
                    after_v.id AS after_version_id,
@@ -1570,13 +1491,11 @@ class PreferenceService:
                    after_v.created_by AS after_created_by,
                    after_v.source AS after_source,
                    after_v.change_summary AS author_change_summary
-            FROM novel_scene_versions after_v
-            JOIN novel_scene_versions before_v
+            FROM novel_chapter_versions after_v
+            JOIN novel_chapter_versions before_v
               ON before_v.id=after_v.parent_version_id
-             AND before_v.scene_beat_id=after_v.scene_beat_id
-            JOIN novel_scene_beats sb ON sb.id=after_v.scene_beat_id
-            JOIN novel_chapter_plans cp ON cp.id=sb.plan_id
-            JOIN novel_chapters ch ON ch.id=cp.chapter_id
+             AND before_v.chapter_id=after_v.chapter_id
+            JOIN novel_chapters ch ON ch.id=after_v.chapter_id
             JOIN novel_projects p ON p.id=ch.project_id
             WHERE after_v.id=? AND ch.id=? AND p.id=? AND p.user_id=?
             """,

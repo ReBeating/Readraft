@@ -777,21 +777,7 @@ class StoryStructureSuggestionService:
                     (chapter["id"],),
                 ).fetchone()
                 plan_item = dict(plan) if plan else None
-                scenes: List[Dict[str, Any]] = []
-                if plan:
-                    scenes = [
-                        dict(item)
-                        for item in connection.execute(
-                            """
-                            SELECT * FROM novel_scene_beats
-                            WHERE plan_id=?
-                            ORDER BY position
-                            """,
-                            (plan["id"],),
-                        ).fetchall()
-                    ]
                 chapter["task_card"] = plan_item
-                chapter["scenes"] = scenes
                 chapters[str(chapter["position"])] = chapter
         return {
             "volume_positions": volume_positions,
@@ -1279,19 +1265,6 @@ class StoryStructureSuggestionService:
                                 chapter_id,
                             ),
                         )
-                        connection.execute(
-                            """
-                            UPDATE novel_scene_beats
-                            SET draft_status=CASE
-                                    WHEN current_version_id IS NOT NULL
-                                    THEN 'stale'
-                                    ELSE draft_status
-                                END,
-                                updated_at=?
-                            WHERE plan_id=? AND beat_status='active'
-                            """,
-                            (now, existing_plan["id"]),
-                        )
                     else:
                         connection.execute(
                             """
@@ -1534,24 +1507,6 @@ class StoryStructureSuggestionService:
                                 before_chapter["id"],
                             ),
                         )
-                        before_scenes = {
-                            str(scene["id"]): scene
-                            for scene in before_chapter.get("scenes") or []
-                        }
-                        for scene_id, scene in before_scenes.items():
-                            connection.execute(
-                                """
-                                UPDATE novel_scene_beats
-                                SET draft_status=?, updated_at=?
-                                WHERE id=? AND plan_id=?
-                                """,
-                                (
-                                    scene["draft_status"],
-                                    scene["updated_at"],
-                                    scene_id,
-                                    before_plan["id"],
-                                ),
-                            )
                     chapter_assignments = ", ".join(
                         f"{field}=?" for field in CHAPTER_RESTORE_FIELDS
                     )

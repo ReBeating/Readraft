@@ -1137,14 +1137,6 @@ def seed_novel(
             """,
             (version_id, chapter_id),
         )
-        connection.execute(
-            """
-            UPDATE novel_chapter_versions
-            SET quality_status='pass'
-            WHERE id=?
-            """,
-            (version_id,),
-        )
         connection.commit()
     return user_id, project_id, chapter_id, version_id, content
 

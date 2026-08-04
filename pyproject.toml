@@ -33,6 +33,7 @@ dependencies = [
 
 [project.scripts]
 readraft-backup = "app.backup:main"
+readraft-doctor = "app.doctor:main"
 readraft-model-smoke = "app.model_smoke:main"
 
 [project.urls]

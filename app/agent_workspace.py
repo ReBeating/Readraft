@@ -844,30 +844,39 @@ class AgentWorkspace:
         with self.database.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT version.id, version.chapter_id, version.kind,
-                       version.content_path, version.char_count,
-                       version.created_at, version.parent_version_id,
-                       version.source, version.content_hash,
-                       version.change_summary, version.created_by,
-                       chapter.position, chapter.title,
-                       chapter.head_version_id
-                FROM novel_chapter_versions version
-                JOIN novel_chapters chapter
-                  ON chapter.id=version.chapter_id
-                JOIN novel_projects project
-                  ON project.id=chapter.project_id
-                WHERE chapter.project_id=? AND project.user_id=?
-                ORDER BY chapter.position, version.created_at DESC,
-                         version.rowid DESC
+                WITH ranked AS (
+                    SELECT version.id, version.chapter_id, version.kind,
+                           version.content_path, version.char_count,
+                           version.created_at, version.parent_version_id,
+                           version.source, version.content_hash,
+                           version.change_summary, version.created_by,
+                           chapter.position, chapter.title,
+                           chapter.head_version_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY version.chapter_id
+                               ORDER BY version.created_at DESC,
+                                        version.rowid DESC
+                           ) AS history_rank,
+                           COUNT(*) OVER (
+                               PARTITION BY version.chapter_id
+                           ) AS total_versions
+                    FROM novel_chapter_versions version
+                    JOIN novel_chapters chapter
+                      ON chapter.id=version.chapter_id
+                    JOIN novel_projects project
+                      ON project.id=chapter.project_id
+                    WHERE chapter.project_id=? AND project.user_id=?
+                )
+                SELECT * FROM ranked
+                WHERE history_rank<=20
+                ORDER BY position, history_rank
                 """,
                 (self.project_id, self.user_id),
             ).fetchall()
-        counts: dict[str, int] = {}
         indexes: dict[int, list[dict[str, Any]]] = {}
         for row in rows:
             item = dict(row)
             chapter_id = str(item["chapter_id"])
-            counts[chapter_id] = counts.get(chapter_id, 0) + 1
             position = int(item["position"])
             version_id = str(item["id"])
             path = (
@@ -895,19 +904,22 @@ class AgentWorkspace:
                 "char_count": int(item.get("char_count") or 0),
                 "content_hash": str(item.get("content_hash") or ""),
                 "is_head": is_head,
+                "total_versions": int(item.get("total_versions") or 0),
             }
-            if counts[chapter_id] <= 20:
-                self._add(
-                    path,
-                    _read_owned_text(str(item["content_path"] or "")),
-                    kind="chapter_version",
-                    source_id=f"novel-version:{version_id}",
-                    metadata=metadata,
-                )
+            self._add(
+                path,
+                _read_owned_text(str(item["content_path"] or "")),
+                kind="chapter_version",
+                source_id=f"novel-version:{version_id}",
+                metadata=metadata,
+            )
             indexes.setdefault(position, []).append(
                 {
                     "path": path,
-                    "loaded": counts[chapter_id] <= 20,
+                    "loaded": True,
+                    "more_available_via_history_tool": (
+                        int(item.get("total_versions") or 0) > 20
+                    ),
                     **metadata,
                 }
             )

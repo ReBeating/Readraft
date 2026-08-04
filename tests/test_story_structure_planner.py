@@ -21,7 +21,6 @@ from app.planning_schema import (
     allocate_scene_requirement_refs,
 )
 from app.planning_service import PlanningService
-from app.scene_service import SceneService
 from app.security import hash_password
 from app.story_planning_schema import PlannedStoryArc, StoryBlueprint
 from app.story_planning_service import StoryPlanningService
@@ -613,29 +612,6 @@ def test_author_can_edit_future_skeleton_without_touching_canon(
         project_id=project_id,
         chapter_id=second_id,
     )
-    scene = before_task["scenes"][0]
-    scene_path = (
-        Path(
-            database.get_novel_chapter(
-                user_id, project_id, second_id
-            )["content_path"]
-        ).parent
-        / "scenes"
-        / str(scene["id"])
-        / "versions"
-        / "author-draft.txt"
-    )
-    scene_path.parent.mkdir(parents=True)
-    scene_content = "林岚在档案馆逐页核对旧登记。"
-    scene_path.write_text(scene_content, encoding="utf-8")
-    SceneService(database).record_manual_version(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id=second_id,
-        scene_beat_id=str(scene["id"]),
-        version_path=scene_path,
-        content=scene_content,
-    )
     edited = AuthorChapterSkeleton.model_validate(
         {
             "title": "第二章 被改写的登记",
@@ -656,7 +632,6 @@ def test_author_can_edit_future_skeleton_without_touching_canon(
     assert result == {
         "changed": True,
         "task_card_reset": True,
-        "stale_scene_count": 1,
     }
     canonical_after = database.get_novel_chapter(
         user_id, project_id, first_id
@@ -675,7 +650,7 @@ def test_author_can_edit_future_skeleton_without_touching_canon(
     assert json.loads(future["skeleton_arc_titles_json"]) == [
         "父亲失踪主线"
     ]
-    assert future["needs_recheck"] == 1
+    assert future["needs_recheck"] == 0
     task = planning.get_task_card(
         user_id=user_id,
         project_id=project_id,
@@ -686,7 +661,6 @@ def test_author_can_edit_future_skeleton_without_touching_canon(
     assert task["purpose"] == edited.purpose
     assert task["must_happen"] == edited.key_points
     assert task["ending_hook"] == edited.ending_hook
-    assert task["scenes"][0]["draft_status"] == "stale"
     assert database.get_writing_context(
         user_id, second_id
     )["task_card"] is None
@@ -789,7 +763,6 @@ def test_author_volume_edit_resets_only_future_task_cards(
         "changed": False,
         "affected_chapter_count": 0,
         "reset_task_card_count": 0,
-        "stale_scene_count": 0,
     }
 
 

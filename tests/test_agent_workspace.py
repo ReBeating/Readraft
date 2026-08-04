@@ -776,10 +776,13 @@ def test_history_tool_loads_versions_beyond_initial_workspace_window(tmp_path):
     index_path = "book/history/chapters/001/index.json"
     workspace.execute_tool("read", {"path": index_path})
     index_items = json.loads(workspace.resources[index_path].content)
-    assert len(index_items) == 26
-    assert next(
-        item for item in index_items if item["path"] == oldest_path
-    )["loaded"] is False
+    assert len(index_items) == 20
+    assert all(item["loaded"] is True for item in index_items)
+    assert all(item["total_versions"] == 26 for item in index_items)
+    assert all(
+        item["more_available_via_history_tool"] is True
+        for item in index_items
+    )
     with pytest.raises(ValueError, match="不存在"):
         workspace.execute_tool("read", {"path": oldest_path})
 

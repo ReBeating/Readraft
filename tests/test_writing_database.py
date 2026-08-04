@@ -251,6 +251,48 @@ def test_edit_buffer_is_recoverable_but_not_a_version(tmp_path: Path):
             content="旧标签页的内容",
             content_hash=hashlib.sha256("旧标签页的内容".encode()).hexdigest(),
         )
+    with pytest.raises(ValueError, match="单章暂存稿"):
+        database.save_chapter_edit_buffer(
+            user_id=user_id,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            base_version_id=str(second_id),
+            content="超出限制",
+            content_hash=hashlib.sha256("超出限制".encode()).hexdigest(),
+            max_chapter_chars=3,
+        )
+    with pytest.raises(ValueError, match="暂存稿总量"):
+        database.save_chapter_edit_buffer(
+            user_id=user_id,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            base_version_id=str(second_id),
+            content="超出总量",
+            content_hash=hashlib.sha256("超出总量".encode()).hexdigest(),
+            max_user_chars=3,
+        )
+
+    database.save_chapter_edit_buffer(
+        user_id=user_id,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        base_version_id=str(second_id),
+        content="可恢复暂存",
+        content_hash=hashlib.sha256("可恢复暂存".encode()).hexdigest(),
+    )
+    with database.connection() as connection:
+        connection.execute(
+            """
+            UPDATE novel_chapter_edit_buffers
+            SET updated_at='2000-01-01T00:00:00+00:00'
+            WHERE chapter_id=?
+            """,
+            (chapter_id,),
+        )
+        connection.commit()
+    assert database.prune_chapter_edit_buffers(retention_days=30) == 1
+    chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
+    assert chapter["edit_buffer_content"] is None
     with database.connection() as connection:
         columns = {
             str(row["name"])

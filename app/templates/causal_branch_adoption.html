@@ -31,12 +31,12 @@
     <div class="alert success">
       已写入 {{ applied_items }} 个未来章节；
       {{ reset_task_cards }} 张已确认任务卡退回草稿，
-      {{ stale_scenes }} 个已有场景稿被标记为过期。正文与正史未改变。
+      正文与 main HEAD 未改变。
     </div>
   {% endif %}
   {% if reverted %}
     <div class="alert success">
-      已安全撤销这次分支落地，章节骨架、任务卡和场景状态恢复到应用前。
+      已安全撤销这次分支落地，章节骨架和任务卡恢复到应用前。
       原因果链接仍由你单独管理。
     </div>
   {% endif %}
@@ -295,8 +295,8 @@
           <span>
             <b>我确认只应用上面明确采用的 {{ adoption.accepted_count }} 项</b>
             <small>
-              相关任务卡会回到草稿、已有场景稿可能过期；正文、候选版本、
-              正史指针和原因果链接不会被改写。
+              相关任务卡会回到草稿；正文 main HEAD、不可变历史、Tag
+              和原因果链接不会被改写。
             </small>
           </span>
         </label>

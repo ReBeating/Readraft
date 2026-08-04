@@ -1089,16 +1089,4 @@ class StoryPlanningService:
                 """,
                 (now, plan_id),
             )
-            connection.execute(
-                """
-                UPDATE novel_scene_beats
-                SET draft_status=CASE
-                        WHEN current_version_id IS NOT NULL THEN 'stale'
-                        ELSE draft_status
-                    END,
-                    updated_at=?
-                WHERE plan_id=? AND beat_status='active'
-                """,
-                (now, plan_id),
-            )
         return len(plan_ids)

@@ -31,7 +31,6 @@ PATH_COLUMNS = (
     ("documents", "source_path"),
     ("novel_chapter_versions", "content_path"),
     ("novel_chapters", "content_path"),
-    ("novel_scene_versions", "content_path"),
     ("story_structure_applications", "recovery_path"),
 )
 REQUIRED_TABLES = frozenset(

@@ -23,7 +23,7 @@ from app.voice_extraction import (
 )
 from app.voice_schema import VoiceProfileSuggestion
 from app.worker import AnalysisWorker
-from app.writing import MockWriter, build_writing_messages
+from app.writing import build_writing_messages
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -209,7 +209,6 @@ def test_voice_suggestion_is_evidence_gated_and_author_applied(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
@@ -365,7 +364,6 @@ def test_voice_suggestion_with_hallucinated_quotes_fails_without_mutation(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
@@ -464,7 +462,6 @@ def test_voice_extractor_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,

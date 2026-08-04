@@ -65,14 +65,14 @@ Provider 原生工具调用探索 `book/` 虚拟工作区；它不能访问服�
 
 | 区域 | 主要模块 | 职责 |
 | --- | --- | --- |
-| Web 组合 | `main.py`、`web_auth.py`、`web_system.py`、`web_paths.py`、`web_security.py` | 应用装配、领域路由、认证、健康检查与 Web 安全边界 |
-| 对话应用层 | `assistant_chat_service.py`、`conversation_memory.py`、`assistant_result.py` | 对话仓储、记忆编译、结果规范化与任务持久化 |
+| Web 组合 | `main.py`、`workbench_view.py`、`web_auth.py`、`web_system.py`、`web_paths.py`、`web_security.py` | 应用装配、领域路由、工作台视图模型、认证、健康检查与 Web 安全边界 |
+| 对话应用层 | `assistant_chat_service.py`、`assistant_context.py`、`conversation_memory.py`、`assistant_result.py` | 对话仓储、冻结上下文、记忆编译、结果规范化与任务持久化 |
 | 后台执行 | `worker.py` | 队列领取、凭据选择、模型路由和任务生命周期 |
 | Agent | `agent_orchestrator.py`、`agent_runtime.py`、`agent_intent.py`、`agent_actions.py`、`agent_tasks.py` | 意图边界、`create/compose/series/task` 高级动作、受限专项分析、原生调用回合、进度和熔断 |
 | 虚拟作品空间 | `agent_workspace.py` | 资源发现、读取、检索、比较、受控修改、历史恢复、外部只读工具与领域写入适配 |
 | 正文写作 | `prose_craft.py`、`prose_pipeline.py` | 统一写作契约、技法选择和纯文本输出 |
 | 模型接入 | `agent_model.py`、`model_client.py`、`model_protocol.py`、`model_provider.py`、`model_routing.py` | 中性模型接口、协议转换、供应商能力和任务路由 |
-| 数据层 | `db.py`、`migrations.py`、各 `*_service.py` | SQLite、历史迁移和领域事务 |
+| 数据层 | `db.py`、`writing_context_repository.py`、`migrations.py`、各 `*_service.py` | SQLite、写作上下文查询、历史迁移和领域事务 |
 | 连续性 | `continuity.py`、`memory_service.py`、`memory_identity.py` | 正史重放、故事记忆和实体身份 |
 | 浏览器 UI | `templates/novel_workbench.html`、`templates/document.html`、`static/workbench.*` | 两种工作台及其流式交互 |
 
@@ -144,12 +144,13 @@ Agent 发起，并把结果写回同一作品数据模型。领域服务不是�
 
 ## 当前结构债务
 
-- `main.py` 的认证与系统入口已经拆出，领域路由仍然过于集中。后续应按
-  `settings / works / workbench / assistant / review` 继续注册 Router，并保持 URL
-  与事务语义不变。
-- `assistant_chat_service.py` 仍同时承担对话仓储、上下文快照装配和结果应用事务；
-  纯记忆编译与结果规范化已经拆出，后续继续提取协作者，而不是建立第二个 Service。
-- `db.py` 查询面过大；只在领域事务边界清楚后提取 repository，避免把一笔原子
-  操作拆成跨模块隐式事务。
+- `main.py` 的认证、系统入口和两类工作台视图构建已经拆出，领域路由仍然过于集中。
+  后续应按 `settings / works / assistant / reviews` 继续注册 Router，并保持 URL 与
+  事务语义不变。
+- `assistant_chat_service.py` 的来源读取和冻结上下文已经提取到 mixin，但对话仓储、
+  工作流与结果应用事务仍在同一类中。后续按“仓储 / 工作流 / 应用事务”提取协作者，
+  不建立备用 Service 或第二条执行链。
+- `db.py` 的大型写作上下文查询已经提取为 repository，其他查询面仍大。只在事务边界
+  清楚后继续提取，避免把一笔原子操作拆成跨模块隐式事务。
 
 任何新增能力若不能明确归入上述职责，应先修改本文，再开始编码。

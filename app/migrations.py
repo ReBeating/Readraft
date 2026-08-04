@@ -4370,6 +4370,140 @@ def _detach_tag_source_foreign_keys_v52(
     )
 
 
+def _single_chapter_writing_pipeline_v53(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Remove the retired per-scene draft and hard-gate data model."""
+
+    del applied_at
+    connection.execute(
+        """
+        DELETE FROM editing_preference_suggestions
+        WHERE source_type='scene'
+        """
+    )
+    connection.execute(
+        """
+        DELETE FROM generation_jobs
+        WHERE operation IN ('generate_scene', 'rewrite_scene')
+        """
+    )
+    connection.execute("DROP TABLE IF EXISTS scene_quality_audits")
+    connection.execute("DROP TABLE IF EXISTS novel_scene_assembly_items")
+
+    scene_columns = _columns(connection, "novel_scene_beats")
+    for column in (
+        "current_version_id",
+        "draft_status",
+        "draft_plan_fingerprint",
+        "draft_char_count",
+        "draft_updated_at",
+    ):
+        if column in scene_columns:
+            connection.execute(
+                f"ALTER TABLE novel_scene_beats DROP COLUMN {column}"
+            )
+    connection.execute("DROP TABLE IF EXISTS novel_scene_versions")
+    connection.execute("DROP TABLE IF EXISTS chapter_quality_audits")
+
+    version_columns = _columns(connection, "novel_chapter_versions")
+    for column in (
+        "quality_status",
+        "hard_issue_count",
+        "quality_override_reason",
+        "quality_overridden_at",
+    ):
+        if column in version_columns:
+            connection.execute(
+                f"ALTER TABLE novel_chapter_versions DROP COLUMN {column}"
+            )
+
+    connection.execute("DROP INDEX IF EXISTS idx_edit_pref_suggestions_source")
+    preference_columns = _columns(
+        connection, "editing_preference_suggestions"
+    )
+    for column in ("source_type", "scene_beat_id"):
+        if column in preference_columns:
+            connection.execute(
+                "ALTER TABLE editing_preference_suggestions "
+                f"DROP COLUMN {column}"
+            )
+    connection.execute(
+        """
+        CREATE INDEX idx_edit_pref_suggestions_source
+        ON editing_preference_suggestions(after_version_id, status)
+        """
+    )
+
+
+def _chapter_version_integrity_guards_v54(
+    connection: sqlite3.Connection,
+    applied_at: str,
+) -> None:
+    """Reject cross-chapter HEAD and parent pointers at the database edge."""
+
+    del applied_at
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TRIGGER guard_chapter_head_same_chapter_insert
+            BEFORE INSERT ON novel_chapters
+            WHEN NEW.head_version_id IS NOT NULL
+             AND NOT EXISTS (
+                SELECT 1 FROM novel_chapter_versions version
+                WHERE version.id=NEW.head_version_id
+                  AND version.chapter_id=NEW.id
+             )
+            BEGIN
+                SELECT RAISE(ABORT, 'chapter HEAD belongs to another chapter');
+            END
+            """,
+            """
+            CREATE TRIGGER guard_chapter_head_same_chapter_update
+            BEFORE UPDATE OF head_version_id ON novel_chapters
+            WHEN NEW.head_version_id IS NOT NULL
+             AND NOT EXISTS (
+                SELECT 1 FROM novel_chapter_versions version
+                WHERE version.id=NEW.head_version_id
+                  AND version.chapter_id=NEW.id
+             )
+            BEGIN
+                SELECT RAISE(ABORT, 'chapter HEAD belongs to another chapter');
+            END
+            """,
+            """
+            CREATE TRIGGER guard_chapter_parent_same_chapter_insert
+            BEFORE INSERT ON novel_chapter_versions
+            WHEN NEW.parent_version_id IS NOT NULL
+             AND NOT EXISTS (
+                SELECT 1 FROM novel_chapter_versions parent
+                WHERE parent.id=NEW.parent_version_id
+                  AND parent.chapter_id=NEW.chapter_id
+             )
+            BEGIN
+                SELECT RAISE(ABORT, 'chapter parent belongs to another chapter');
+            END
+            """,
+            """
+            CREATE TRIGGER guard_chapter_parent_same_chapter_update
+            BEFORE UPDATE OF parent_version_id, chapter_id
+            ON novel_chapter_versions
+            WHEN NEW.parent_version_id IS NOT NULL
+             AND NOT EXISTS (
+                SELECT 1 FROM novel_chapter_versions parent
+                WHERE parent.id=NEW.parent_version_id
+                  AND parent.chapter_id=NEW.chapter_id
+             )
+            BEGIN
+                SELECT RAISE(ABORT, 'chapter parent belongs to another chapter');
+            END
+            """,
+        ),
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -4590,6 +4724,16 @@ MIGRATIONS = (
         52,
         "detach_tag_source_foreign_keys_v52",
         _detach_tag_source_foreign_keys_v52,
+    ),
+    Migration(
+        53,
+        "single_chapter_writing_pipeline_v53",
+        _single_chapter_writing_pipeline_v53,
+    ),
+    Migration(
+        54,
+        "chapter_version_integrity_guards_v54",
+        _chapter_version_integrity_guards_v54,
     ),
 )
 

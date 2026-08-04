@@ -468,7 +468,7 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
         marker="蓝玻璃钥匙",
     )
 
-    context = database.get_writing_context(user_id, chapters[6], None, "蓝玻璃钥匙")
+    context = database.get_writing_context(user_id, chapters[6], "蓝玻璃钥匙")
     raw_memory = context["canonical_memory"]
     assert [item["position"] for item in raw_memory["recent_chapters"]] == [
         6,
@@ -557,7 +557,7 @@ def test_fts_retrieves_only_relevant_older_canon_and_tracks_retraction(
             ).fetchone()[0]
             == 0
         )
-    refreshed = database.get_writing_context(user_id, chapters[6], None, "蓝玻璃钥匙")
+    refreshed = database.get_writing_context(user_id, chapters[6], "蓝玻璃钥匙")
     assert refreshed["canonical_memory"]["retrieved_memory"] == []
 
 

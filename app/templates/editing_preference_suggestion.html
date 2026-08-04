@@ -7,10 +7,9 @@
       <span class="eyebrow">EDITING PREFERENCE LEARNER</span>
       <h1>
         第 {{ suggestion.position }} 章《{{ suggestion.chapter_title }}》
-        {% if suggestion.scene_goal %}· {{ suggestion.scene_goal|truncate(36) }}{% endif %}
       </h1>
       <p>
-        {{ '场景改稿' if suggestion.source_type == 'scene' else '整章改稿' }} ·
+        章节改稿 ·
         {{ suggestion.changed_char_count|human_size }} 变更 ·
         {{ suggestion.provider }} / {{ suggestion.model }} ·
         {{ suggestion.status|edit_preference_status_label }}
@@ -55,7 +54,7 @@
     <section class="card">
       <span class="status completed">已确认</span>
       <h2>{{ suggestion.applied_preference_ids|length }} 条偏好已由作者确认</h2>
-      <p>后续整章 Writer、Scene Writer 与 AI 味审校只读取抽象规则和适用范围，不读取下方证据原文。</p>
+      <p>后续正文创作与文风审校只读取抽象规则和适用范围，不读取下方证据原文。</p>
       <a class="button primary" href="/novels/{{ suggestion.project_id }}/workbench?view=archive&archive_tab=creative&settings_tab=style">查看文风约束</a>
     </section>
   {% elif suggestion.status == 'ready' %}

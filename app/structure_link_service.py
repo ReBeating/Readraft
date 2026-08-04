@@ -352,7 +352,6 @@ class StructureLinkService:
             (project_id, *unique_ids),
         ).fetchall()
         reset_count = 0
-        stale_count = 0
         for row in rows:
             plan_id = str(row["plan_id"] or "")
             if plan_id:
@@ -366,16 +365,6 @@ class StructureLinkService:
                     """,
                     (now, plan_id),
                 )
-                stale = connection.execute(
-                    """
-                    UPDATE novel_scene_beats
-                    SET draft_status='stale', updated_at=?
-                    WHERE plan_id=? AND beat_status='active'
-                      AND current_version_id IS NOT NULL
-                    """,
-                    (now, plan_id),
-                )
-                stale_count += int(stale.rowcount)
             connection.execute(
                 """
                 UPDATE novel_chapters
@@ -387,7 +376,6 @@ class StructureLinkService:
         return {
             "affected_chapter_count": len(rows),
             "reset_task_card_count": reset_count,
-            "stale_scene_count": stale_count,
         }
 
     @staticmethod

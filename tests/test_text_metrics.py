@@ -59,4 +59,4 @@ def test_manual_version_can_become_current_without_audit(tmp_path: Path):
         user_id, project_id, chapter_id, str(version_id)
     )
     assert version["head_version_id"] == version["id"]
-    assert version["quality_status"] == "pass"
+    assert "quality_status" not in version

@@ -67,6 +67,9 @@ class Settings:
     max_work_archive_bytes: int = 256 * 1024 * 1024
     allow_private_model_base_urls: bool = False
     exa_api_key: str | None = None
+    chapter_edit_buffer_max_chars: int = 200_000
+    max_edit_buffer_chars_per_user: int = 2_000_000
+    edit_buffer_retention_days: int = 30
 
     @property
     def documents_dir(self) -> Path:
@@ -156,6 +159,15 @@ class Settings:
                 os.getenv("APP_ENV", "development").lower() != "production",
             ),
             exa_api_key=os.getenv("EXA_API_KEY") or None,
+            chapter_edit_buffer_max_chars=_as_int(
+                "APP_CHAPTER_EDIT_BUFFER_MAX_CHARS", 200_000
+            ),
+            max_edit_buffer_chars_per_user=_as_int(
+                "APP_MAX_EDIT_BUFFER_CHARS_PER_USER", 2_000_000
+            ),
+            edit_buffer_retention_days=_as_int(
+                "APP_EDIT_BUFFER_RETENTION_DAYS", 30
+            ),
         )
 
     def validate(self) -> None:
@@ -172,6 +184,13 @@ class Settings:
             "APP_MAX_DOCUMENTS_PER_USER": self.max_documents_per_user,
             "APP_MAX_STORED_CHARS_PER_USER": self.max_stored_chars_per_user,
             "APP_MAX_WORK_ARCHIVE_BYTES": self.max_work_archive_bytes,
+            "APP_CHAPTER_EDIT_BUFFER_MAX_CHARS": (
+                self.chapter_edit_buffer_max_chars
+            ),
+            "APP_MAX_EDIT_BUFFER_CHARS_PER_USER": (
+                self.max_edit_buffer_chars_per_user
+            ),
+            "APP_EDIT_BUFFER_RETENTION_DAYS": self.edit_buffer_retention_days,
             "MODEL_MAX_TOKENS": self.model_max_tokens,
             "MODEL_CONNECT_TIMEOUT_SECONDS": self.model_connect_timeout_seconds,
             "MODEL_READ_TIMEOUT_SECONDS": self.model_read_timeout_seconds,

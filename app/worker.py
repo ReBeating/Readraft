@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import time
 from pathlib import Path
 
@@ -26,7 +25,6 @@ from .causal_suggestion_planner import (
 from .causal_suggestion_service import CausalSuggestionService
 from .config import Settings
 from .context_compiler import (
-    build_scene_context_snapshot,
     compile_active_techniques,
     compile_canonical_memory,
     compile_planned_causal_links,
@@ -72,7 +70,6 @@ from .reader_planner import (
 )
 from .reader_service import ReaderDecisionService
 from .security import stable_provider_user_id
-from .scene_service import SceneService
 from .style_editor import (
     BaseStyleEditor,
     ProviderStyleEditor,
@@ -95,7 +92,6 @@ from .voice_extraction import (
     ProviderVoiceProfileExtractor,
     locate_voice_evidence,
 )
-from .writing import BaseWriter, ProviderWriter
 from .web_search import ExaWebSearch, WebSearchError
 from .web_fetch import PublicWebFetcher, WebFetchError
 
@@ -108,7 +104,6 @@ class AnalysisWorker:
         self,
         database: Database,
         analyzer: BaseAnalyzer | None,
-        writer: BaseWriter | None,
         provider_user_secret: str,
         settings: Settings,
         credential_cipher: CredentialCipher,
@@ -129,7 +124,6 @@ class AnalysisWorker:
     ):
         self.database = database
         self.analyzer = analyzer
-        self.writer = writer
         self.provider_user_secret = provider_user_secret
         self.settings = settings
         self.credential_cipher = credential_cipher
@@ -156,7 +150,6 @@ class AnalysisWorker:
             web_fetch=self._fetch_web,
         )
         self.planning_service = PlanningService(database)
-        self.scene_service = SceneService(database)
         self.style_service = StyleService(database)
         self.preference_service = PreferenceService(database)
         self.story_plan_suggestion_service = StoryPlanSuggestionService(
@@ -308,11 +301,9 @@ class AnalysisWorker:
 
     async def run(self) -> None:
         logger.info(
-            "AI worker started analyzer=%s/%s writer=%s/%s",
+            "AI worker started analyzer=%s/%s",
             self.analyzer.provider if self.analyzer else "unconfigured",
             self.analyzer.model if self.analyzer else "unconfigured",
-            self.writer.provider if self.writer else "unconfigured",
-            self.writer.model if self.writer else "unconfigured",
         )
         while not self._stopping:
             item = None
@@ -1115,15 +1106,7 @@ class AnalysisWorker:
             if str(item["operation"]) == "rewrite_style_issue":
                 await self._process_style_rewrite(item)
                 return
-            if str(item["operation"]) in {
-                "generate_scene",
-                "rewrite_scene",
-            }:
-                await self._process_scene_generation(item)
-                return
-            raise AnalyzerError(
-                "旧版整章生成任务已停用，请在共创对话中重新发起"
-            )
+            raise AnalyzerError("不支持的后台任务")
         except AnalyzerError as exc:
             logger.warning("writing task failed id=%s: %s", job_id, exc)
             await asyncio.to_thread(
@@ -1148,107 +1131,6 @@ class AnalysisWorker:
                     else "生成章节时发生内部错误，请重试"
                 ),
             )
-
-    async def _process_scene_generation(self, item: dict) -> None:
-        job_id = str(item["id"])
-        scene_beat_id = str(item["subject_id"] or "")
-        if not scene_beat_id:
-            raise AnalyzerError("场景写作任务没有指定场景节拍")
-        state = await asyncio.to_thread(
-            self.scene_service.get_generation_state,
-            user_id=int(item["user_id"]),
-            project_id=str(item["project_id"]),
-            chapter_id=str(item["chapter_id"]),
-            scene_beat_id=scene_beat_id,
-        )
-        context = await asyncio.to_thread(
-            self.database.get_writing_context,
-            int(item["user_id"]),
-            str(item["chapter_id"]),
-            scene_beat_id,
-            str(item["instruction"] or ""),
-        )
-        if not context or not context.get("task_card"):
-            raise AnalyzerError("章节任务卡尚未确认")
-        previous_chapter = context.get("previous_chapter")
-        previous_chapter_content = ""
-        if previous_chapter and previous_chapter.get("content_path"):
-            previous_chapter_content = await asyncio.to_thread(
-                self._read_optional_text,
-                Path(str(previous_chapter["content_path"])),
-            )
-        context = {
-            **context,
-            "canonical_memory": compile_canonical_memory(
-                context.get("canonical_memory") or {}
-            ),
-            "active_techniques": compile_active_techniques(
-                context.get("technique_cards") or [], usage="write"
-            ),
-            "focused_scene": state["focused_scene"],
-            "scene_sequence": state["scene_sequence"],
-            "previous_scene": state["previous_scene"],
-            "next_scene": state["next_scene"],
-            "previous_scene_content": state["previous_scene_content"],
-            "previous_chapter_content": previous_chapter_content,
-            "scene_target_chars": state["target_chars"],
-            "scene_minimum_chars": state["minimum_chars"],
-        }
-        context_recorded = await asyncio.to_thread(
-            self.database.record_generation_context_snapshot,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            snapshot=build_scene_context_snapshot(
-                context=context,
-                operation=str(item["operation"]),
-                instruction=str(item["instruction"] or ""),
-                current_scene_content=state["current_content"],
-                previous_scene_content=state["previous_scene_content"],
-                previous_chapter_content=previous_chapter_content,
-            ),
-        )
-        if not context_recorded:
-            raise AnalyzerError(
-                "场景写作任务已失效，未向模型发送正文"
-            )
-        response = await self._write_scene(
-            item=item,
-            context=context,
-            current_content=state["current_content"],
-            previous_content=state["previous_scene_content"],
-        )
-        final_content = response.content.strip()
-        if not final_content:
-            raise AnalyzerError(
-                "模型没有返回场景正文",
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-            )
-        total_input_tokens = response.input_tokens
-        total_output_tokens = response.output_tokens
-        warnings: list[str] = []
-        if response.truncated:
-            warnings.append("本次场景写作输出达到 token 上限")
-
-        version_path = await asyncio.to_thread(
-            self._persist_generated_scene,
-            Path(str(state["chapter_content_path"])),
-            scene_beat_id,
-            job_id,
-            final_content,
-        )
-        version_id = await asyncio.to_thread(
-            self.scene_service.complete_generation,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            version_path=version_path,
-            content=final_content,
-            input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens,
-            warning="；".join(warnings),
-        )
-        if not version_id:
-            logger.warning("discarded stale scene generation id=%s", job_id)
 
     async def _process_memory_extraction(self, item: dict) -> None:
         job_id = str(item["id"])
@@ -1810,68 +1692,6 @@ class AnalysisWorker:
         except FileNotFoundError:
             return ""
 
-    @staticmethod
-    def _persist_generated_scene(
-        chapter_content_path: Path,
-        scene_beat_id: str,
-        job_id: str,
-        content: str,
-    ) -> Path:
-        versions_dir = (
-            chapter_content_path.parent
-            / "scenes"
-            / scene_beat_id
-            / "versions"
-        )
-        versions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(versions_dir.parent, 0o700)
-        os.chmod(versions_dir, 0o700)
-        version_path = versions_dir / f"{job_id}.txt"
-        temporary_path = versions_dir / f".{job_id}.tmp"
-        temporary_path.write_text(content, encoding="utf-8")
-        temporary_path.chmod(0o600)
-        os.replace(temporary_path, version_path)
-        version_path.chmod(0o600)
-        return version_path
-
-    async def _write_scene(
-        self,
-        *,
-        item: dict,
-        context: dict,
-        current_content: str,
-        previous_content: str,
-    ):
-        user_id = int(item["user_id"])
-        provider_user_id = stable_provider_user_id(
-            user_id, self.provider_user_secret
-        )
-        writer = self.writer
-        close_writer = False
-        if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(
-                item, "reasoning"
-            )
-            writer = ProviderWriter(personal_settings)
-            close_writer = True
-        elif self.writer is None or (
-            str(item["provider"]) != self.writer.provider
-        ):
-            raise AnalyzerError("任务所需的服务器模型凭据当前未配置")
-
-        try:
-            return await writer.write(
-                context=context,
-                operation=str(item["operation"]),
-                instruction=str(item["instruction"] or ""),
-                current_content=current_content,
-                previous_content=previous_content,
-                provider_user_id=provider_user_id,
-            )
-        finally:
-            if close_writer:
-                await writer.close()
-
     async def _extract_memory(
         self,
         *,
@@ -2271,9 +2091,7 @@ class AnalysisWorker:
                     "style_guide": item.get("style_guide"),
                 },
                 source={
-                    "source_type": item.get("source_type"),
                     "chapter_title": item.get("chapter_title"),
-                    "scene_goal": item.get("scene_goal"),
                     "author_change_summary": item.get(
                         "author_change_summary"
                     ),
@@ -2413,7 +2231,6 @@ class AnalysisWorker:
             task.cancel()
         providers = (
             self.analyzer,
-            self.writer,
             self.memory_extractor,
             self.chapter_planner,
             self.style_editor,

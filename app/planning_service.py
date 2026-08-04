@@ -11,7 +11,6 @@ from .planning_schema import (
     SceneBeat,
     chapter_task_card_fingerprint,
 )
-from .scene_service import scene_plan_fingerprint
 from .story_structure_schema import AuthorChapterSkeleton
 
 
@@ -274,7 +273,6 @@ class PlanningService:
                     "changed": False,
                     "affected_chapter_count": 0,
                     "reset_task_card_count": 0,
-                    "stale_scene_count": 0,
                 }
             current_position = int(
                 volume["current_canonical_position"] or 0
@@ -347,35 +345,11 @@ class PlanningService:
                 """,
                 (now, volume_id, current_position),
             )
-            stale_cursor = connection.execute(
-                """
-                UPDATE novel_scene_beats
-                SET draft_status='stale', updated_at=?
-                WHERE current_version_id IS NOT NULL
-                  AND plan_id IN (
-                    SELECT cp.id
-                    FROM novel_chapter_plans cp
-                    JOIN novel_chapters ch ON ch.id=cp.chapter_id
-                    WHERE ch.volume_id=? AND ch.position>?
-                      AND ch.head_version_id IS NULL
-                  )
-                """,
-                (now, volume_id, current_position),
-            )
             connection.execute(
                 """
                 UPDATE novel_chapters
                 SET needs_recheck=CASE
-                        WHEN head_version_id IS NOT NULL
-                          OR char_count>0
-                          OR EXISTS(
-                              SELECT 1
-                              FROM novel_scene_beats sb
-                              JOIN novel_chapter_plans cp
-                                ON cp.id=sb.plan_id
-                              WHERE cp.chapter_id=novel_chapters.id
-                                AND sb.current_version_id IS NOT NULL
-                          )
+                        WHEN head_version_id IS NOT NULL OR char_count>0
                         THEN 1
                         ELSE needs_recheck
                     END,
@@ -394,7 +368,6 @@ class PlanningService:
             "changed": True,
             "affected_chapter_count": int(affected_row["count"]),
             "reset_task_card_count": int(task_card_row["count"]),
-            "stale_scene_count": int(stale_cursor.rowcount),
         }
 
     def update_future_chapter_skeleton(
@@ -519,7 +492,6 @@ class PlanningService:
                 return {
                     "changed": False,
                     "task_card_reset": False,
-                    "stale_scene_count": 0,
                 }
             task_card_reset = bool(
                 plan and str(plan["status"]) == "confirmed"
@@ -569,14 +541,6 @@ class PlanningService:
                         now,
                     ),
                 )
-            stale_cursor = connection.execute(
-                """
-                UPDATE novel_scene_beats
-                SET draft_status='stale', updated_at=?
-                WHERE plan_id=? AND current_version_id IS NOT NULL
-                """,
-                (now, plan_id),
-            )
             connection.execute(
                 """
                 UPDATE novel_chapters
@@ -585,16 +549,7 @@ class PlanningService:
                     skeleton_ending_hook=?,
                     skeleton_application_id=NULL,
                     needs_recheck=CASE
-                        WHEN head_version_id IS NOT NULL
-                          OR char_count>0
-                          OR EXISTS(
-                              SELECT 1
-                              FROM novel_scene_beats sb
-                              JOIN novel_chapter_plans cp
-                                ON cp.id=sb.plan_id
-                              WHERE cp.chapter_id=novel_chapters.id
-                                AND sb.current_version_id IS NOT NULL
-                          )
+                        WHEN head_version_id IS NOT NULL OR char_count>0
                         THEN 1
                         ELSE needs_recheck
                     END,
@@ -621,7 +576,6 @@ class PlanningService:
         return {
             "changed": True,
             "task_card_reset": task_card_reset,
-            "stale_scene_count": int(stale_cursor.rowcount),
         }
 
     def get_task_card(
@@ -906,12 +860,6 @@ class PlanningService:
             for position, scene in enumerate(card.scenes, start=1):
                 stored = existing_scenes.get(position)
                 if stored:
-                    changed = (
-                        scene_plan_fingerprint(dict(stored))
-                        != scene_plan_fingerprint(
-                            scene.model_dump(mode="json")
-                        )
-                    )
                     connection.execute(
                         """
                         UPDATE novel_scene_beats
@@ -920,11 +868,6 @@ class PlanningService:
                             key_items_json=?, end_state=?, transition=?,
                             requirement_refs_json=?,
                             beat_status='active',
-                            draft_status=CASE
-                                WHEN ? AND current_version_id IS NOT NULL
-                                THEN 'stale'
-                                ELSE draft_status
-                            END,
                             updated_at=?
                         WHERE id=?
                         """,
@@ -946,7 +889,6 @@ class PlanningService:
                                     for item in scene.requirement_refs
                                 ]
                             ),
-                            int(changed),
                             now,
                             stored["id"],
                         ),
@@ -990,12 +932,7 @@ class PlanningService:
             connection.execute(
                 """
                 UPDATE novel_scene_beats
-                SET beat_status='retired',
-                    draft_status=CASE
-                        WHEN current_version_id IS NOT NULL THEN 'stale'
-                        ELSE draft_status
-                    END,
-                    updated_at=?
+                SET beat_status='retired', updated_at=?
                 WHERE plan_id=? AND position>?
                 """,
                 (now, plan_id, len(card.scenes)),

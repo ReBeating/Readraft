@@ -54,7 +54,6 @@ from .db import ChapterHeadConflict, Database, utc_now
 from .model_client import build_analyzer
 from .memory_extraction import build_memory_extractor
 from .memory_identity import (
-    IDENTITY_TYPE_LABELS,
     IDENTITY_TYPES,
     MemoryIdentityService,
 )
@@ -88,8 +87,6 @@ from .security import (
     csrf_token,
     verify_csrf,
 )
-from .scene_service import SceneService
-from .story_planning_schema import PlannedStoryArc, StoryBlueprint
 from .story_planning_service import StoryPlanningService
 from .story_plan_suggestion_service import StoryPlanSuggestionService
 from .story_planner import build_story_planner
@@ -107,11 +104,38 @@ from .work_archive import (
 )
 from .style_editor import build_style_editor
 from .style_service import StyleService
-from .technique_schema import TechniqueObservation
 from .technique_service import TechniqueService
+from .template_filters import (
+    _chapter_structure_role_label,
+    _continuity_issue_label,
+    _edit_preference_category_label,
+    _edit_preference_status_label,
+    _foreshadow_status_label,
+    _human_size,
+    _impact_item_type_label,
+    _knowledge_state_label,
+    _memory_identity_type_label,
+    _plot_status_label,
+    _reader_request_type_label,
+    _reader_scope_label,
+    _reader_status_label,
+    _status_label,
+    _story_arc_lifecycle_label,
+    _story_arc_type_label,
+    _story_memory_label,
+    _story_plan_status_label,
+    _story_planning_mode_label,
+    _style_issue_label,
+    _technique_dimension_label,
+    _technique_scope_label,
+    _technique_usage_label,
+    _voice_dimension_label,
+    _voice_suggestion_status_label,
+    _writing_operation_label,
+    _writing_status_label,
+)
 from .voice_extraction import build_voice_profile_extractor
 from .version_diff import build_version_diff
-from .writing import build_default_writer
 from .work_library import (
     create_main_from_version,
     create_reading_document_from_chunks,
@@ -131,6 +155,27 @@ from .web_security import (
     current_user as _current_user,
     login_redirect as _login_redirect,
 )
+from .web_forms import (
+    _clean_field,
+    _planned_story_arc_from_form,
+    _split_lines,
+    _story_blueprint_from_form,
+    _story_plan_lines,
+    _technique_observation_from_form,
+)
+from .workbench_view import (
+    POV_OPTIONS,
+    STORY_ARC_TYPE_OPTIONS,
+    WORK_ANALYSIS_CATEGORIES,
+    WORK_ARCHIVE_CATEGORIES,
+    WORK_ARCHIVE_TAB_KEYS,
+    WORKBENCH_SETTING_TAB_KEYS,
+    WORKBENCH_SETTING_TABS,
+    WORLD_ENTRY_TYPE_OPTIONS,
+    WorkbenchNotFound,
+    WorkbenchUnavailable,
+    WorkbenchViewBuilder,
+)
 from .web_auth import build_auth_router
 from .web_system import build_system_router
 
@@ -144,40 +189,7 @@ logger = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ALLOWED_EXTENSIONS = {".txt", ".md", ".text"}
-POV_OPTIONS = (
-    "第三人称限知",
-    "第一人称",
-    "第三人称全知",
-    "多视角",
-)
-WORKBENCH_SETTING_TABS = (
-    ("core", "作品概览"),
-    ("world", "世界"),
-    ("characters", "人物"),
-    ("structure", "剧情与结构"),
-    ("style", "叙事与文风"),
-)
-WORKBENCH_SETTING_TAB_KEYS = frozenset(key for key, _label in WORKBENCH_SETTING_TABS)
-WORK_ARCHIVE_TAB_KEYS = frozenset({"creative", "analysis", "versions"})
-WORK_ARCHIVE_CATEGORIES = (
-    ("core", "作品概览"),
-    ("world", "世界"),
-    ("character", "人物"),
-    ("structure", "剧情与结构"),
-    ("style", "叙事与文风"),
-)
-WORK_ANALYSIS_CATEGORIES = (
-    ("uncategorized", "未分类"),
-    *WORK_ARCHIVE_CATEGORIES,
-)
 WORK_ARCHIVE_CATEGORY_KEYS = frozenset(key for key, _label in WORK_ARCHIVE_CATEGORIES)
-WORLD_ENTRY_TYPE_OPTIONS = (
-    ("background", "背景"),
-    ("rule", "规则与边界"),
-    ("faction", "组织与势力"),
-    ("location", "地点"),
-    ("element", "物品、能力或术语"),
-)
 EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "diction",
     "sentence_rhythm",
@@ -190,30 +202,6 @@ EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "paragraph_structure",
     "other",
 )
-STORY_ARC_TYPE_OPTIONS = (
-    "main",
-    "subplot",
-    "character",
-    "relationship",
-    "mystery",
-    "world",
-)
-STORY_ARC_LIFECYCLE_OPTIONS = (
-    "planned",
-    "active",
-    "paused",
-    "resolved",
-    "abandoned",
-)
-CHAPTER_STRUCTURE_ROLE_OPTIONS = (
-    "setup",
-    "escalation",
-    "reversal",
-    "payoff",
-    "transition",
-)
-
-
 def _template_context(
     request: Request,
     *,
@@ -251,517 +239,6 @@ def _template_context(
         "suppress_model_settings_dialog": False,
         **extra,
     }
-
-
-def _human_size(value: int) -> str:
-    if value < 1_000:
-        return f"{value} 字"
-    if value < 1_000_000:
-        return f"{value / 1_000:.1f} 千字"
-    return f"{value / 1_000_000:.2f} 百万字"
-
-
-def _status_label(value: str) -> str:
-    return {
-        "ready": "等待分析",
-        "planned": "待创作",
-        "written": "已写",
-        "final": "已定稿",
-        "queued": "排队中",
-        "running": "分析中",
-        "completed": "已完成",
-        "partial": "部分完成",
-        "failed": "失败",
-    }.get(value, value)
-
-
-def _writing_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "写作中",
-        "completed": "已完成",
-        "failed": "失败",
-    }.get(value, value)
-
-
-def _writing_operation_label(value: str) -> str:
-    return {
-        "draft": "生成初稿",
-        "continue": "续写",
-        "rewrite": "整章重写",
-        "polish": "润色",
-        "manual": "手动保存",
-        "extract_story_delta": "提取故事记忆",
-        "plan_chapter": "规划章节任务卡",
-        "plan_scene_beats": "只拆分场景节拍",
-        "audit_ai_style": "定位 AI 味问题",
-        "rewrite_style_issue": "定点改写",
-        "targeted_rewrite": "定点改写候选",
-        "propose_reader_branches": "评估读者意见",
-        "generate_scene": "生成场景",
-        "rewrite_scene": "重写场景",
-        "scene_assembly": "场景组装",
-    }.get(value, value)
-
-
-def _style_issue_label(value: str) -> str:
-    return {
-        "abstract_emotion": "抽象概括情绪",
-        "over_explanation": "过度解释",
-        "uniform_rhythm": "句段节奏过齐",
-        "generic_atmosphere": "通用氛围",
-        "cliche": "陈词滥调",
-        "dialogue_convergence": "人物对话趋同",
-        "over_complete_paragraph": "段落过度完整",
-        "unnecessary_summary": "无必要总结",
-        "repetition": "重复信息",
-        "non_specific_detail": "伪具体细节",
-    }.get(value, value)
-
-
-def _voice_suggestion_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "正在分析",
-        "ready": "等待作者审核",
-        "applied": "已应用",
-        "rejected": "已放弃",
-        "failed": "提取失败",
-    }.get(value, value)
-
-
-def _story_plan_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "正在规划",
-        "completed": "可比较与采纳",
-        "failed": "生成失败",
-    }.get(value, value)
-
-
-def _story_planning_mode_label(value: str) -> str:
-    return {
-        "create": "从项目资料建立结构",
-        "refine": "优化已确认方向",
-        "rethink": "重想未来结构",
-    }.get(value, value)
-
-
-def _chapter_structure_role_label(value: str) -> str:
-    return {
-        "setup": "建立",
-        "escalation": "升级",
-        "reversal": "反转",
-        "payoff": "兑现",
-        "transition": "转场",
-    }.get(value, value or "待定义")
-
-
-def _voice_dimension_label(value: str) -> str:
-    return {
-        "narration": "叙述距离",
-        "rhythm": "句段节奏",
-        "dialogue": "对话声音",
-        "sensory": "感官与意象",
-        "metaphor": "比喻策略",
-        "omission": "省略与留白",
-    }.get(value, value)
-
-
-def _edit_preference_category_label(value: str) -> str:
-    return {
-        "diction": "用词",
-        "sentence_rhythm": "句段节奏",
-        "narration_distance": "叙述距离",
-        "dialogue": "对话",
-        "emotional_expression": "情绪表达",
-        "sensory_detail": "感官细节",
-        "metaphor": "比喻",
-        "omission": "留白",
-        "paragraph_structure": "段落结构",
-        "other": "其他",
-    }.get(value, value)
-
-
-def _edit_preference_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "正在分析",
-        "ready": "等待作者审核",
-        "applied": "已确认偏好",
-        "rejected": "已放弃",
-        "failed": "提取失败",
-    }.get(value, value)
-
-
-def _story_arc_type_label(value: str) -> str:
-    return {
-        "main": "主线",
-        "subplot": "支线",
-        "character": "人物弧光",
-        "relationship": "关系线",
-        "mystery": "谜团线",
-        "world": "世界线",
-    }.get(value, value)
-
-
-def _story_arc_lifecycle_label(value: str) -> str:
-    return {
-        "planned": "计划中",
-        "active": "正在推进",
-        "paused": "暂缓推进",
-        "resolved": "计划收束",
-        "abandoned": "已放弃",
-    }.get(value, value)
-
-
-def _reader_request_type_label(value: str) -> str:
-    return {
-        "pace": "节奏",
-        "character": "人物",
-        "relationship": "关系",
-        "plot": "剧情",
-        "world": "世界设定",
-        "payoff": "回报 / 爽点",
-        "other": "其他",
-    }.get(value, value)
-
-
-def _reader_scope_label(value: str) -> str:
-    return {
-        "next_chapter": "下一章",
-        "next_three": "未来三章",
-        "current_volume": "当前分卷",
-        "long_term": "长期主线",
-    }.get(value, value)
-
-
-def _reader_status_label(value: str) -> str:
-    return {
-        "draft": "待评估",
-        "proposing": "正在生成方案",
-        "reviewing": "等待作者选择",
-        "adopted": "已采纳",
-        "dismissed": "已归档",
-        "failed": "生成失败",
-    }.get(value, value)
-
-
-def _impact_item_type_label(value: str) -> str:
-    return {
-        "chapter": "后续正史章节",
-        "fact": "后续事实",
-        "knowledge": "人物知情",
-        "plot_thread": "剧情线",
-        "foreshadowing": "伏笔",
-    }.get(value, value)
-
-
-def _technique_dimension_label(value: str) -> str:
-    return {
-        "plot": "剧情",
-        "structure": "结构",
-        "scene": "场景",
-        "pacing": "节奏",
-        "information": "信息释放",
-        "character": "人物",
-        "dialogue": "对话",
-        "language": "语言",
-        "suspense": "悬念",
-    }.get(value, value)
-
-
-def _technique_scope_label(value: str) -> str:
-    return {
-        "project": "全书",
-        "volume": "分卷",
-        "chapter": "章节",
-        "scene": "场景",
-    }.get(value, value)
-
-
-def _technique_usage_label(value: str) -> str:
-    return {
-        "plan": "规划",
-        "write": "正文",
-        "audit": "审校",
-    }.get(value, value)
-
-
-def _scene_draft_status_label(value: str) -> str:
-    return {
-        "empty": "尚未写作",
-        "draft": "场景草稿",
-        "stale": "任务卡变化，待重写",
-        "assembled": "已组装进候选章",
-    }.get(value, value)
-
-
-def _continuity_issue_label(value: str) -> str:
-    return {
-        "state_before_mismatch": "人物状态前后不一致",
-        "relationship_before_mismatch": "人物关系前后不一致",
-        "location_before_mismatch": "地点连续性冲突",
-        "item_holder_mismatch": "物品持有者冲突",
-        "item_after_destroyed": "已毁物品再次出现",
-        "story_time_mismatch": "故事时间衔接冲突",
-        "missing_baseline": "缺少可核对的前置状态",
-        "knowledge_without_baseline": "遗忘缺少知情基线",
-        "plot_thread_without_setup": "剧情线缺少建立记录",
-        "plot_thread_duplicate_open": "剧情线重复建立",
-        "plot_thread_reopened": "已关闭剧情线重新开启",
-        "plot_thread_after_closed": "已关闭剧情线继续推进",
-        "foreshadow_without_setup": "伏笔缺少埋设记录",
-        "foreshadow_duplicate_setup": "伏笔重复埋设",
-        "foreshadow_reopened": "已关闭伏笔重新埋设",
-        "foreshadow_after_closed": "已关闭伏笔继续推进",
-        "duplicate_event_identity": "事件身份重复",
-        "causal_self_reference": "事件因果自指",
-        "causal_reference_missing": "直接原因事件缺失",
-    }.get(value, value)
-
-
-def _memory_identity_type_label(value: str) -> str:
-    return IDENTITY_TYPE_LABELS.get(value, value)
-
-
-def _story_memory_label(value: str) -> str:
-    return {
-        "status": "状态",
-        "location": "位置",
-        "physical": "身体",
-        "emotional": "情绪",
-        "goal": "目标",
-        "ability": "能力",
-        "possession": "持有",
-        "other": "其他",
-        "created": "产生",
-        "acquired": "获得",
-        "lost": "丢失",
-        "transferred": "转移",
-        "used": "使用",
-        "destroyed": "毁坏",
-        "changed": "变化",
-        "knows": "知道",
-        "suspects": "怀疑",
-        "believes_false": "误信",
-        "forgets": "遗忘",
-        "main": "主线",
-        "subplot": "支线",
-        "relationship": "关系线",
-        "mystery": "谜团",
-        "promise": "承诺线",
-        "opened": "建立",
-        "advanced": "推进",
-        "paused": "暂停",
-        "resolved": "解决",
-        "abandoned": "放弃",
-        "setup": "埋设",
-        "payoff": "回收",
-    }.get(value, value)
-
-
-def _knowledge_state_label(value: str) -> str:
-    return {
-        "knows": "知道",
-        "suspects": "怀疑",
-        "believes_false": "相信错误信息",
-        "forgets": "已经遗忘",
-    }.get(value, value)
-
-
-def _plot_status_label(value: str) -> str:
-    return {
-        "open": "已建立",
-        "active": "推进中",
-        "paused": "暂缓",
-        "resolved": "已解决",
-        "abandoned": "已放弃",
-    }.get(value, value)
-
-
-def _foreshadow_status_label(value: str) -> str:
-    return {
-        "setup": "已埋设",
-        "advanced": "已推进",
-        "payoff": "已回收",
-        "abandoned": "已放弃",
-    }.get(value, value)
-
-
-def _clean_field(
-    value: str,
-    label: str,
-    *,
-    max_length: int,
-    required: bool = False,
-    min_length: int = 1,
-) -> str:
-    cleaned = value.strip()
-    if required and len(cleaned) < min_length:
-        raise ValueError(f"{label}至少需要 {min_length} 个字符")
-    if len(cleaned) > max_length:
-        raise ValueError(f"{label}不能超过 {max_length:,} 个字符")
-    return cleaned
-
-
-def _split_lines(value: str, *, limit: int = 30) -> list[str]:
-    items = [line.strip() for line in value.splitlines() if line.strip()]
-    if len(items) > limit:
-        raise ValueError(f"逐行条目不能超过 {limit} 条")
-    return items
-
-
-def _story_plan_lines(
-    value: str,
-    label: str,
-    *,
-    limit: int,
-    item_max_length: int = 1200,
-) -> list[str]:
-    items = _split_lines(value, limit=limit)
-    for item in items:
-        if len(item) > item_max_length:
-            raise ValueError(f"{label}中每条不能超过 {item_max_length:,} 个字符")
-    return items
-
-
-def _story_blueprint_from_form(
-    *,
-    central_question: str,
-    protagonist_goal: str,
-    core_conflict: str,
-    stakes: str,
-    opening_state: str,
-    ending_state: str,
-    major_turns: str,
-    must_payoffs: str,
-    forbidden_shortcuts: str,
-    author_notes: str,
-) -> StoryBlueprint:
-    return StoryBlueprint.model_validate(
-        {
-            "central_question": _clean_field(
-                central_question, "核心悬问", max_length=2000
-            ),
-            "protagonist_goal": _clean_field(
-                protagonist_goal, "主角长期目标", max_length=2000
-            ),
-            "core_conflict": _clean_field(
-                core_conflict, "全书冲突引擎", max_length=3000
-            ),
-            "stakes": _clean_field(stakes, "长期代价与风险", max_length=3000),
-            "opening_state": _clean_field(opening_state, "开篇状态", max_length=3000),
-            "ending_state": _clean_field(ending_state, "终局状态", max_length=3000),
-            "major_turns": _story_plan_lines(major_turns, "全书转折", limit=20),
-            "must_payoffs": _story_plan_lines(must_payoffs, "必须兑现项", limit=30),
-            "forbidden_shortcuts": _story_plan_lines(
-                forbidden_shortcuts, "禁止捷径", limit=30
-            ),
-            "author_notes": _clean_field(author_notes, "蓝图作者备注", max_length=6000),
-        }
-    )
-
-
-def _planned_story_arc_from_form(
-    *,
-    arc_type: str,
-    title: str,
-    dramatic_question: str,
-    promise: str,
-    start_state: str,
-    target_payoff: str,
-    involved_characters: str,
-    planned_turns: str,
-    lifecycle_status: str,
-    priority: int,
-    author_notes: str,
-) -> PlannedStoryArc:
-    if arc_type not in STORY_ARC_TYPE_OPTIONS:
-        raise ValueError("请选择有效的剧情线类型")
-    if lifecycle_status not in STORY_ARC_LIFECYCLE_OPTIONS:
-        raise ValueError("请选择有效的剧情线阶段")
-    return PlannedStoryArc.model_validate(
-        {
-            "arc_type": arc_type,
-            "title": _clean_field(title, "剧情线名称", max_length=160, required=True),
-            "dramatic_question": _clean_field(
-                dramatic_question, "剧情线悬问", max_length=2000
-            ),
-            "promise": _clean_field(promise, "剧情线读者承诺", max_length=2000),
-            "start_state": _clean_field(start_state, "剧情线起始状态", max_length=2000),
-            "target_payoff": _clean_field(
-                target_payoff, "剧情线目标回报", max_length=3000
-            ),
-            "involved_characters": _story_plan_lines(
-                involved_characters, "涉及人物", limit=30, item_max_length=120
-            ),
-            "planned_turns": _story_plan_lines(planned_turns, "剧情线转折", limit=20),
-            "lifecycle_status": lifecycle_status,
-            "priority": priority,
-            "author_notes": _clean_field(
-                author_notes, "剧情线作者备注", max_length=4000
-            ),
-        }
-    )
-
-
-def _technique_observation_from_form(
-    *,
-    name: str,
-    dimension: str,
-    source_location: str,
-    observation: str,
-    effect: str,
-    suitable_for: str,
-    unsuitable_for: str,
-    execution_rule: str,
-    originality_boundary: str,
-) -> TechniqueObservation:
-    return TechniqueObservation.model_validate(
-        {
-            "name": _clean_field(
-                name, "技法名称", max_length=80, required=True, min_length=2
-            ),
-            "dimension": dimension,
-            "source_location": _clean_field(
-                source_location,
-                "来源位置",
-                max_length=200,
-                required=True,
-            ),
-            "observation": _clean_field(
-                observation,
-                "文本观察",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-            "effect": _clean_field(
-                effect,
-                "读者效果",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-            "suitable_for": _split_lines(suitable_for, limit=8),
-            "unsuitable_for": _split_lines(unsuitable_for, limit=8),
-            "execution_rule": _clean_field(
-                execution_rule,
-                "执行规则",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-            "originality_boundary": _clean_field(
-                originality_boundary,
-                "原创性边界",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-        }
-    )
 
 
 def _read_optional_text(path: Path) -> str:
@@ -812,9 +289,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         app_settings.documents_dir,
     )
     technique_service = TechniqueService(database)
-    scene_service = SceneService(database)
     continuity_service = ContinuityService(database)
     identity_service = MemoryIdentityService(database)
+    workbench_view_builder = WorkbenchViewBuilder(
+        database=database,
+        memory_service=memory_service,
+        assistant_chat_service=assistant_chat_service,
+        planning_service=planning_service,
+        story_planning_service=story_planning_service,
+        style_service=style_service,
+        continuity_service=continuity_service,
+    )
     credential_cipher = CredentialCipher(app_settings.credential_secret)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["human_size"] = _human_size
@@ -846,7 +331,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     templates.env.filters["technique_dimension_label"] = _technique_dimension_label
     templates.env.filters["technique_scope_label"] = _technique_scope_label
     templates.env.filters["technique_usage_label"] = _technique_usage_label
-    templates.env.filters["scene_draft_status_label"] = _scene_draft_status_label
     templates.env.filters["continuity_issue_label"] = _continuity_issue_label
     templates.env.filters["knowledge_state_label"] = _knowledge_state_label
     templates.env.filters["plot_status_label"] = _plot_status_label
@@ -1155,6 +639,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             process_lock.acquire()
             database.initialize()
+            database.prune_chapter_edit_buffers(
+                retention_days=app_settings.edit_buffer_retention_days
+            )
             app_settings.ensure_directories()
             default_provider_configured = (
                 bool(app_settings.model_api_key) or app_settings.uses_test_models
@@ -1168,7 +655,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     app_settings, "deep"
                 )
                 analyzer = build_analyzer(reasoning_settings)
-                writer = build_default_writer(reasoning_settings)
                 memory_extractor = build_memory_extractor(fast_settings)
                 chapter_planner = build_chapter_planner(deep_reasoning_settings)
                 style_editor = build_style_editor(reasoning_settings)
@@ -1190,7 +676,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 assistant_chat_model = build_agent_model(reasoning_settings)
             else:
                 analyzer = None
-                writer = None
                 memory_extractor = None
                 chapter_planner = None
                 style_editor = None
@@ -1205,7 +690,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             worker = AnalysisWorker(
                 database,
                 analyzer,
-                writer,
                 app_settings.secret_key,
                 app_settings,
                 credential_cipher,
@@ -1223,7 +707,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 poll_seconds=app_settings.worker_poll_seconds,
             )
             application.state.analyzer = analyzer
-            application.state.writer = writer
             application.state.memory_extractor = memory_extractor
             application.state.chapter_planner = chapter_planner
             application.state.style_editor = style_editor
@@ -2557,328 +2040,60 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         user_id = int(user["id"])
-        project = database.get_novel_project(user_id, project_id)
-        if not project:
+        try:
+            context = workbench_view_builder.build_novel(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                conversation_id=conversation_id,
+                view=view,
+                archive_tab=archive_tab,
+                settings_tab=settings_tab,
+            )
+        except WorkbenchNotFound:
             return render_template(
                 "not_found.html",
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        work = database.get_work_for_project(user_id, project_id)
-        if not work:
-            database.ensure_project_work(user_id=user_id, project_id=project_id)
-            work = database.get_work_for_project(user_id, project_id)
-        current_version = database.get_work_version_for_project(user_id, project_id)
-        if (
-            not work
-            or not current_version
-            or str(current_version.get("ref_name") or "") != "main"
-            or not bool(current_version.get("is_editable"))
-        ):
+        except WorkbenchUnavailable as exc:
             return Response(
-                "只有 main 分支可以进入创作工作台",
+                str(exc),
                 status_code=status.HTTP_409_CONFLICT,
             )
-        chapters = database.list_novel_chapters(user_id, project_id)
-        effective_view = view if view in {"body", "archive"} else "body"
-        if not chapters and effective_view == "body":
-            effective_view = "archive"
-        active_archive_tab = (
-            archive_tab if archive_tab in WORK_ARCHIVE_TAB_KEYS else "creative"
-        )
-        active_settings_tab = (
-            settings_tab if settings_tab in WORKBENCH_SETTING_TAB_KEYS else "core"
-        )
-        display_title = str(project.get("title") or "").strip()
-        display_title = display_title or "未命名作品"
-        selected_chapter = None
-        if effective_view == "body" and chapter_id:
-            selected_chapter = next(
-                (item for item in chapters if str(item["id"]) == chapter_id),
-                None,
-            )
-            if not selected_chapter:
-                return render_template(
-                    "not_found.html",
-                    _template_context(request, user=user),
-                    status_code=status.HTTP_404_NOT_FOUND,
-                )
-        elif effective_view == "body" and chapters:
-            remembered_chapter_id = str(current_version.get("last_chapter_id") or "")
-            selected_chapter = next(
-                (item for item in chapters if str(item["id"]) == remembered_chapter_id),
-                chapters[0],
-            )
-        database.set_work_version(
-            user_id=user_id,
-            work_id=str(work["id"]),
-            version_id=str(current_version["id"]),
-            chapter_id=(str(selected_chapter["id"]) if selected_chapter else None),
-        )
 
-        content = ""
-        selected_index = -1
-        previous_chapter = None
-        next_chapter = None
-        head_version = None
-        head_version_hash = ""
-        has_edit_buffer = False
-        stale_edit_buffer = False
-        chapter_story_memory = None
-        project_story_memory_records: list[dict[str, Any]] = []
-        if selected_chapter:
-            selected_index = next(
-                index
-                for index, item in enumerate(chapters)
-                if str(item["id"]) == str(selected_chapter["id"])
-            )
-            previous_chapter = (
-                chapters[selected_index - 1] if selected_index > 0 else None
-            )
-            next_chapter = (
-                chapters[selected_index + 1]
-                if selected_index + 1 < len(chapters)
-                else None
-            )
-            current_head_id = str(
-                selected_chapter.get("head_version_id") or ""
-            )
-            if current_head_id:
-                head_version = database.get_chapter_version(
-                    user_id,
-                    project_id,
-                    str(selected_chapter["id"]),
-                    current_head_id,
-                )
-            committed_content = (
-                _read_optional_text(Path(str(head_version["content_path"])))
-                if head_version
-                else ""
-            )
-            if head_version:
-                head_version_hash = hashlib.sha256(
-                    committed_content.encode("utf-8")
-                ).hexdigest()
-            buffer_content = selected_chapter.get("edit_buffer_content")
-            buffer_base = str(
-                selected_chapter.get("edit_buffer_base_version_id") or ""
-            )
-            if buffer_content is not None and buffer_base == current_head_id:
-                content = str(buffer_content)
-                has_edit_buffer = True
-            else:
-                content = committed_content
-                stale_edit_buffer = buffer_content is not None
-        if selected_chapter or (
-            effective_view == "archive" and active_archive_tab == "analysis"
-        ):
-            project_story_memory_records = (
-                memory_service.list_project_chapter_memory_records(
-                    user_id=user_id,
-                    project_id=project_id,
-                )
-            )
-        if selected_chapter:
-            chapter_story_memory = next(
-                (
-                    item
-                    for item in project_story_memory_records
-                    if str(item["chapter_id"]) == str(selected_chapter["id"])
-                ),
-                None,
-            )
-
-        conversations = assistant_chat_service.list_project_conversations(
-            user_id=user_id,
-            project_id=project_id,
-        )
-        active_conversation = None
-        if conversation_id:
-            active_conversation = assistant_chat_service.get_conversation(
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            if (
-                not active_conversation
-                or str(active_conversation.get("project_id") or "") != project_id
-            ):
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        elif effective_view == "archive":
-            latest = next(
-                (
-                    item
-                    for item in conversations
-                    if str(item.get("scope_type") or "") == "project"
-                ),
-                None,
-            )
-            if latest:
-                active_conversation = assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=str(latest["id"]),
-                )
-        elif selected_chapter:
-            latest = next(
-                (
-                    item
-                    for item in conversations
-                    if str(item.get("novel_chapter_id") or "")
-                    == str(selected_chapter["id"])
-                ),
-                None,
-            )
-            if latest:
-                active_conversation = assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=str(latest["id"]),
-                )
-
-        setting_characters: list[dict[str, Any]] = []
-        setting_world_entries: list[dict[str, Any]] = []
-        setting_relationships: list[dict[str, Any]] = []
-        setting_volumes: list[dict[str, Any]] = []
-        setting_story_blueprint = None
-        setting_story_arcs: list[dict[str, Any]] = []
-        setting_voice_profile = None
-        current_story_state: dict[str, Any] = {}
-        story_state_refreshing_count = 0
-        archive_entries: list[dict[str, Any]] = []
-        archive_analyses: list[dict[str, Any]] = []
-        archive_story_memory_records: list[dict[str, Any]] = []
-        chapter_histories: list[dict[str, Any]] = []
-        if effective_view == "archive":
-            setting_characters = database.list_novel_characters(user_id, project_id)
-        if effective_view == "archive" and active_archive_tab == "creative":
-            setting_world_entries = database.list_world_entries(user_id, project_id)
-            setting_relationships = database.list_character_relationships(
-                user_id, project_id
-            )
-            setting_volumes = planning_service.list_volumes(
-                user_id=user_id, project_id=project_id
-            )
-            setting_story_blueprint = story_planning_service.get_blueprint(
-                user_id=user_id, project_id=project_id
-            )
-            setting_story_arcs = story_planning_service.list_arcs(
-                user_id=user_id, project_id=project_id
-            )
-            setting_voice_profile = style_service.get_voice_profile(
-                user_id=user_id, project_id=project_id
-            )
-            continuity_dashboard = continuity_service.get_dashboard(
-                user_id=user_id, project_id=project_id
-            )
-            current_story_state = dict((continuity_dashboard or {}).get("state") or {})
-            story_state_refreshing_count = sum(
-                1 for item in chapters if bool(item.get("needs_recheck"))
-            )
-        if effective_view == "archive" and work:
-            archive_entries = database.list_work_archive_entries(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
-            archive_analyses = database.list_work_analyses(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
-            if active_archive_tab == "analysis":
-                archive_story_memory_records = project_story_memory_records
-            elif active_archive_tab == "versions":
-                for item in chapters:
-                    item_versions = database.list_chapter_versions(
-                        user_id,
-                        project_id,
-                        str(item["id"]),
-                        limit=5,
-                    )
-                    version_count = database.count_chapter_versions(
-                        user_id,
-                        project_id,
-                        str(item["id"]),
-                    )
-                    chapter_histories.append(
-                        {
-                            "chapter": item,
-                            "versions": item_versions,
-                            "version_count": version_count,
-                            "history_count": max(0, version_count - 1),
-                        }
-                    )
+        active_conversation = context["active_conversation"]
         available_chat_models = chat_model_groups(user_id)
-
+        context.update(
+            archive_categories=WORK_ARCHIVE_CATEGORIES,
+            analysis_categories=WORK_ANALYSIS_CATEGORIES,
+            setting_tabs=WORKBENCH_SETTING_TABS,
+            model_groups=available_chat_models,
+            selected_model_choice=selected_chat_model(
+                available_chat_models,
+                active_conversation,
+            ),
+            quality_modes=quality_mode_options(user_id),
+            selected_quality_mode=selected_quality_mode(
+                user_id,
+                active_conversation,
+            ),
+            pov_options=POV_OPTIONS,
+            world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
+            story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
+            setting_field_labels=SETTING_FIELD_LABELS,
+            onboarding=onboarding,
+            archive_saved=saved,
+            archive_adopted=adopted,
+            archive_removed=removed,
+            archive_error=error,
+            error=error,
+            saved=saved,
+            sent=sent,
+        )
         return render_template(
             "novel_workbench.html",
-            _template_context(
-                request,
-                user=user,
-                work=work,
-                current_version=current_version,
-                project=project,
-                display_title=display_title,
-                chapters=chapters,
-                chapter=selected_chapter,
-                chapter_story_memory=chapter_story_memory,
-                chapter_content=content,
-                chapter_index=selected_index,
-                previous_chapter=previous_chapter,
-                next_chapter=next_chapter,
-                conversations=conversations,
-                active_conversation=active_conversation,
-                head_version=head_version,
-                head_version_hash=head_version_hash,
-                has_edit_buffer=has_edit_buffer,
-                stale_edit_buffer=stale_edit_buffer,
-                view=effective_view,
-                active_archive_tab=active_archive_tab,
-                archive_categories=WORK_ARCHIVE_CATEGORIES,
-                analysis_categories=WORK_ANALYSIS_CATEGORIES,
-                setting_tabs=WORKBENCH_SETTING_TABS,
-                active_settings_tab=active_settings_tab,
-                setting_characters=setting_characters,
-                setting_world_entries=setting_world_entries,
-                setting_relationships=setting_relationships,
-                setting_volumes=setting_volumes,
-                setting_story_blueprint=setting_story_blueprint,
-                setting_story_arcs=setting_story_arcs,
-                setting_voice_profile=setting_voice_profile,
-                current_story_state=current_story_state,
-                story_state_refreshing_count=story_state_refreshing_count,
-                archive_project=project,
-                archive_base_url=f"/novels/{project_id}/workbench",
-                archive_characters=setting_characters,
-                archive_entries=archive_entries,
-                archive_analyses=archive_analyses,
-                archive_story_memory_records=archive_story_memory_records,
-                chapter_histories=chapter_histories,
-                archive_story_memory_enabled=True,
-                archive_return_to=_workbench_path(
-                    project_id, archive_tab=active_archive_tab
-                ),
-                archive_saved=saved,
-                archive_adopted=adopted,
-                archive_removed=removed,
-                archive_error=error,
-                archive_readonly=False,
-                creative_snapshot={},
-                model_groups=available_chat_models,
-                selected_model_choice=selected_chat_model(
-                    available_chat_models, active_conversation
-                ),
-                quality_modes=quality_mode_options(user_id),
-                selected_quality_mode=selected_quality_mode(
-                    user_id, active_conversation
-                ),
-                pov_options=POV_OPTIONS,
-                world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
-                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
-                setting_field_labels=SETTING_FIELD_LABELS,
-                onboarding=onboarding,
-                error=error,
-                saved=saved,
-                sent=sent,
-            ),
+            _template_context(request, user=user, **context),
         )
 
     @application.get("/techniques", response_class=HTMLResponse)
@@ -3955,7 +3170,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         reverted: bool = False,
         applied_items: int = 0,
         reset_task_cards: int = 0,
-        stale_scenes: int = 0,
     ):
         user = _current_user(request)
         if not user:
@@ -3983,7 +3197,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 reverted=reverted,
                 applied_items=applied_items,
                 reset_task_cards=reset_task_cards,
-                stale_scenes=stale_scenes,
             ),
         )
 
@@ -4072,8 +3285,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return RedirectResponse(
             f"/causal-branch-adoptions/{adoption_id}?applied=true"
             f"&applied_items={result['applied_item_count']}"
-            f"&reset_task_cards={result['reset_task_card_count']}"
-            f"&stale_scenes={result['stale_scene_count']}",
+            f"&reset_task_cards={result['reset_task_card_count']}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -5294,9 +4506,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user_id: int,
         project_id: str,
         chapter_id: str,
-        source_type: str,
         after_version_id: str,
-        scene_beat_id: Optional[str],
         error_path: str,
     ) -> RedirectResponse:
         profile = api_profile(user_id)
@@ -5310,9 +4520,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
-                source_type=source_type,
                 after_version_id=after_version_id,
-                expected_scene_beat_id=scene_beat_id,
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
@@ -5349,37 +4557,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             user_id=int(user["id"]),
             project_id=project_id,
             chapter_id=chapter_id,
-            source_type="chapter",
             after_version_id=version_id,
-            scene_beat_id=None,
-            error_path=_workbench_path(project_id, chapter_id=chapter_id),
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/versions/{version_id}"
-        "/learn-edit-preferences"
-    )
-    async def learn_scene_edit_preferences(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        version_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        return _queue_edit_preference_suggestion(
-            request=request,
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-            source_type="scene",
-            after_version_id=version_id,
-            scene_beat_id=scene_beat_id,
             error_path=_workbench_path(project_id, chapter_id=chapter_id),
         )
 
@@ -6392,7 +5570,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
 
         versions = database.list_chapter_versions(
-            user_id, project_id, chapter_id, limit=None
+            user_id, project_id, chapter_id, limit=30
         )
         versions_by_id = {str(item["id"]): item for item in versions}
         requested_base_id = str(base_id or "").strip()
@@ -6431,6 +5609,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     if str(item["id"]) != version_id:
                         base_version = item
                         break
+
+        for required_version in (target_version, base_version):
+            if not required_version:
+                continue
+            required_id = str(required_version["id"])
+            if required_id not in versions_by_id:
+                versions.append(required_version)
+                versions_by_id[required_id] = required_version
 
         comparison = None
         comparison_error = ""
@@ -6932,9 +6118,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
         verify_csrf(request, csrf)
-        if len(content) > 200_000:
+        if len(content) > app_settings.chapter_edit_buffer_max_chars:
             return JSONResponse(
-                {"error": "单章正文不能超过 200000 字"},
+                {
+                    "error": "单章暂存稿不能超过 "
+                    f"{app_settings.chapter_edit_buffer_max_chars:,} 字"
+                },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         try:
@@ -6947,6 +6136,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 content_hash=hashlib.sha256(
                     content.encode("utf-8")
                 ).hexdigest(),
+                max_chapter_chars=app_settings.chapter_edit_buffer_max_chars,
+                max_user_chars=app_settings.max_edit_buffer_chars_per_user,
+                retention_days=app_settings.edit_buffer_retention_days,
             )
         except ChapterHeadConflict as exc:
             return JSONResponse(
@@ -8493,223 +7685,57 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         user_id = int(user["id"])
-        document = database.get_document(user_id, document_id)
-        if not document:
+        try:
+            context = workbench_view_builder.build_document(
+                user_id=user_id,
+                document_id=document_id,
+                chapter_id=chapter_id,
+                conversation_id=conversation_id,
+                view=view,
+                archive_tab=archive_tab,
+                settings_tab=settings_tab,
+            )
+        except WorkbenchNotFound:
             return render_template(
                 "not_found.html",
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        work = database.get_work_for_document(user_id, document_id)
-        current_version = database.get_work_version_for_document(user_id, document_id)
-        if not work or not current_version:
+        except WorkbenchUnavailable as exc:
             return Response(
-                "固定版本不属于作品版本库",
+                str(exc),
                 status_code=status.HTTP_409_CONFLICT,
             )
-        chapters = database.list_chapters(
-            user_id, document_id, document.get("latest_job_id")
-        )
-        version_story_memory_records = database.list_work_version_story_memory_records(
-            user_id, str(current_version["id"])
-        )
-        story_memory_by_chapter = {
-            str(item["chapter_id"]): item for item in version_story_memory_records
-        }
-        has_story_memory_snapshots = any(
-            item["memory_status"] == "ready" for item in version_story_memory_records
-        )
-        effective_view = "archive" if view == "archive" else "body"
-        active_archive_tab = (
-            archive_tab if archive_tab in WORK_ARCHIVE_TAB_KEYS else "analysis"
-        )
-        active_settings_tab = (
-            settings_tab if settings_tab in WORKBENCH_SETTING_TAB_KEYS else "core"
-        )
-        selected_chapter = None
-        chapter_story_memory = None
-        if effective_view == "body" and chapter_id:
-            selected_chapter = next(
-                (item for item in chapters if str(item["id"]) == chapter_id),
-                None,
-            )
-            if not selected_chapter:
-                return render_template(
-                    "not_found.html",
-                    _template_context(request, user=user),
-                    status_code=status.HTTP_404_NOT_FOUND,
-                )
-        elif effective_view == "body" and chapters:
-            remembered_chapter_id = str(current_version.get("last_chapter_id") or "")
-            selected_chapter = next(
-                (item for item in chapters if str(item["id"]) == remembered_chapter_id),
-                chapters[0],
-            )
-        database.set_work_version(
-            user_id=user_id,
-            work_id=str(work["id"]),
-            version_id=str(current_version["id"]),
-            chapter_id=(str(selected_chapter["id"]) if selected_chapter else None),
-        )
-        if selected_chapter:
-            chapter_story_memory = story_memory_by_chapter.get(
-                str(selected_chapter["id"])
-            )
 
-        chapter_content = ""
-        chapter_content_hash = ""
-        selected_index = -1
-        previous_chapter = None
-        next_chapter = None
-        if selected_chapter:
-            selected_index = next(
-                index
-                for index, item in enumerate(chapters)
-                if str(item["id"]) == str(selected_chapter["id"])
-            )
-            previous_chapter = (
-                chapters[selected_index - 1] if selected_index > 0 else None
-            )
-            next_chapter = (
-                chapters[selected_index + 1]
-                if selected_index + 1 < len(chapters)
-                else None
-            )
-            chapter_content = _read_optional_text(
-                Path(str(selected_chapter["content_path"]))
-            )
-            chapter_content_hash = hashlib.sha256(
-                chapter_content.encode("utf-8")
-            ).hexdigest()
-
-        conversations = assistant_chat_service.list_document_conversations(
-            user_id=user_id, document_id=document_id
-        )
-        active_conversation = None
-        if conversation_id:
-            active_conversation = assistant_chat_service.get_conversation(
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            if (
-                not active_conversation
-                or str(active_conversation.get("document_id") or "") != document_id
-            ):
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        else:
-            latest = None
-            if effective_view == "body" and selected_chapter:
-                latest = next(
-                    (
-                        item
-                        for item in conversations
-                        if str(item.get("reference_chapter_id") or "")
-                        == str(selected_chapter["id"])
-                    ),
-                    None,
-                )
-            elif effective_view == "archive":
-                latest = next(
-                    (
-                        item
-                        for item in conversations
-                        if not item.get("reference_chapter_id")
-                    ),
-                    None,
-                )
-            if latest:
-                active_conversation = assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=str(latest["id"]),
-                )
-
-        archive_project = None
-        archive_characters: list[dict[str, Any]] = []
-        setting_story_blueprint = None
-        setting_story_arcs: list[dict[str, Any]] = []
-        setting_voice_profile = None
-        archive_entries: list[dict[str, Any]] = []
-        archive_analyses: list[dict[str, Any]] = []
-        if effective_view == "archive" and work:
-            archive_entries = database.list_work_archive_entries(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
-            archive_analyses = database.list_work_analyses(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
+        active_conversation = context["active_conversation"]
         available_chat_models = chat_model_groups(user_id)
+        context.update(
+            archive_categories=WORK_ARCHIVE_CATEGORIES,
+            analysis_categories=WORK_ANALYSIS_CATEGORIES,
+            setting_tabs=WORKBENCH_SETTING_TABS,
+            model_groups=available_chat_models,
+            selected_model_choice=selected_chat_model(
+                available_chat_models,
+                active_conversation,
+            ),
+            quality_modes=quality_mode_options(user_id),
+            selected_quality_mode=selected_quality_mode(
+                user_id,
+                active_conversation,
+            ),
+            pov_options=POV_OPTIONS,
+            world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
+            story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
+            archive_saved=saved,
+            archive_adopted=adopted,
+            archive_removed=removed,
+            archive_error=error,
+            error=error,
+            sent=sent,
+        )
         return render_template(
             "document.html",
-            _template_context(
-                request,
-                user=user,
-                work=work,
-                current_version=current_version,
-                document=document,
-                chapters=chapters,
-                chapter=selected_chapter,
-                chapter_story_memory=chapter_story_memory,
-                chapter_content=chapter_content,
-                chapter_content_hash=chapter_content_hash,
-                chapter_index=selected_index,
-                previous_chapter=previous_chapter,
-                next_chapter=next_chapter,
-                conversations=conversations,
-                active_conversation=active_conversation,
-                view=effective_view,
-                active_archive_tab=active_archive_tab,
-                archive_categories=WORK_ARCHIVE_CATEGORIES,
-                analysis_categories=WORK_ANALYSIS_CATEGORIES,
-                setting_tabs=WORKBENCH_SETTING_TABS,
-                active_settings_tab=active_settings_tab,
-                archive_project=archive_project,
-                archive_base_url=f"/documents/{document_id}",
-                archive_characters=archive_characters,
-                setting_characters=archive_characters,
-                setting_story_blueprint=setting_story_blueprint,
-                setting_story_arcs=setting_story_arcs,
-                setting_voice_profile=setting_voice_profile,
-                archive_entries=archive_entries,
-                archive_analyses=archive_analyses,
-                archive_story_memory_records=(
-                    version_story_memory_records
-                    if active_archive_tab == "analysis"
-                    else []
-                ),
-                archive_story_memory_enabled=(
-                    has_story_memory_snapshots
-                    or str(current_version.get("intent") or "") == "snapshot"
-                ),
-                has_story_memory_snapshots=(has_story_memory_snapshots),
-                archive_return_to=_document_workbench_path(
-                    document_id,
-                    view="archive",
-                    archive_tab=active_archive_tab,
-                ),
-                archive_saved=saved,
-                archive_adopted=adopted,
-                archive_removed=removed,
-                archive_error=error,
-                archive_readonly=True,
-                creative_snapshot=current_version.get("creative_snapshot", {}),
-                model_groups=available_chat_models,
-                selected_model_choice=selected_chat_model(
-                    available_chat_models, active_conversation
-                ),
-                quality_modes=quality_mode_options(user_id),
-                selected_quality_mode=selected_quality_mode(
-                    user_id, active_conversation
-                ),
-                pov_options=POV_OPTIONS,
-                world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
-                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
-                error=error,
-                sent=sent,
-            ),
+            _template_context(request, user=user, **context),
         )
 
     @application.post("/documents/{document_id}/analyze")

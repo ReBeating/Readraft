@@ -254,51 +254,6 @@ def test_deepseek_writer_retries_resource_exhaustion_once(tmp_path):
     assert attempts["count"] == 2
 
 
-def test_scene_writer_prompt_is_bounded_to_one_scene():
-    context = writing_context()
-    context.update(
-        {
-            "task_card": {
-                "purpose": "迫使林岚返回雾港",
-                "must_preserve": ["林岚不知道寄信人身份"],
-                "forbidden": ["揭晓父亲下落"],
-            },
-            "focused_scene": {
-                "id": "scene-1",
-                "position": 1,
-                "goal": "确认来信真假",
-                "obstacle": "邮戳日期不可能",
-                "action": "对照旧信并致电邮局",
-                "end_state": "承认信件值得调查",
-                "transition": "查询当夜车票",
-            },
-            "scene_sequence": [
-                {"id": "scene-1", "position": 1, "goal": "确认来信真假"},
-                {"id": "scene-2", "position": 2, "goal": "购买车票"},
-            ],
-            "next_scene": {"position": 2, "goal": "购买车票"},
-            "scene_target_chars": 1400,
-            "scene_minimum_chars": 600,
-            "previous_chapter_content": "上一章正史末尾。",
-        }
-    )
-    messages = build_writing_messages(
-        context=context,
-        operation="rewrite_scene",
-        instruction="不要提前解释邮戳来源",
-        current_content="当前场景旧稿。",
-        previous_content="上一场景以电话挂断结束。",
-    )
-    prompt = str(messages[1]["content"])
-    assert "只创作当前指定场景" not in prompt
-    assert "重写当前指定场景的完整正文" in prompt
-    assert "只输出当前场景正文" in prompt
-    assert "不要代写下一个场景" in prompt
-    assert "当前场景旧稿" in prompt
-    assert "上一场景以电话挂断结束" in prompt
-    assert "购买车票" in prompt
-
-
 def test_writer_system_prompt_combines_base_and_book_instructions():
     context = writing_context()
     context["chapter"]["ai_instructions"] = "本书始终让人物先行动，再解释。"

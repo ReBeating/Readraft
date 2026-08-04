@@ -12,7 +12,6 @@ from app.reader_planner import MockReaderPlanner
 from app.security import hash_password
 from app.style_editor import MockStyleEditor
 from app.worker import AnalysisWorker
-from app.writing import MockWriter
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -67,7 +66,6 @@ def test_personal_model_strategy_routes_two_models_and_three_modes(tmp_path):
     worker = AnalysisWorker(
         database,
         MockAnalyzer(),
-        MockWriter(),
         settings.secret_key,
         settings,
         cipher,
@@ -167,7 +165,6 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,
@@ -192,70 +189,6 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
         "thinking": True,
         "effort": "high",
         "adapter": "受限时保留事件因果并降低细节。",
-    }
-
-
-def test_scene_worker_uses_owning_users_decrypted_api_key(
-    tmp_path, monkeypatch
-):
-    settings = make_settings(tmp_path)
-    database = Database(settings.database_path)
-    database.initialize()
-    user_id = database.create_user("novel-writer", hash_password("password-123"))
-    cipher = CredentialCipher(settings.credential_secret)
-    raw_key = "sk-novel-writer-1357"
-    database.upsert_api_credential(
-        user_id=user_id,
-        encrypted_key=cipher.encrypt(raw_key),
-        key_hint=key_hint(raw_key),
-        model="deepseek-v4-flash",
-    )
-    seen = {}
-
-    class FakePersonalWriter(MockWriter):
-        provider = "deepseek"
-
-        def __init__(self, personal_settings):
-            self.model = personal_settings.model_name
-            seen["api_key"] = personal_settings.model_api_key
-            seen["model"] = personal_settings.model_name
-
-    monkeypatch.setattr("app.worker.ProviderWriter", FakePersonalWriter)
-
-    async def scenario():
-        worker = AnalysisWorker(
-            database,
-            MockAnalyzer(),
-            MockWriter(),
-            settings.secret_key,
-            settings,
-            cipher,
-            poll_seconds=0.01,
-        )
-        return await worker._write_scene(
-            item={
-                "user_id": user_id,
-                "provider": "deepseek",
-                "model": "deepseek-v4-flash",
-                "credential_source": "personal",
-                "operation": "generate_scene",
-                "instruction": "",
-            },
-            context={
-                "chapter": {
-                    "title": "第一章",
-                    "outline": "主角收到来信",
-                }
-            },
-            current_content="",
-            previous_content="",
-        )
-
-    response = asyncio.run(scenario())
-    assert response.content
-    assert seen == {
-        "api_key": raw_key,
-        "model": "deepseek-v4-flash",
     }
 
 
@@ -301,7 +234,6 @@ def test_chat_worker_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,
@@ -388,7 +320,6 @@ def test_memory_worker_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,
@@ -456,7 +387,6 @@ def test_planner_worker_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,
@@ -528,7 +458,6 @@ def test_style_editor_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,
@@ -596,7 +525,6 @@ def test_reader_planner_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,

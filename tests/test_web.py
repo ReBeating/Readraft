@@ -69,7 +69,6 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
         assert health.status_code == 200
         assert health.json()["model_provider"] == "personal-key-only"
         assert application.state.analyzer is None
-        assert application.state.writer is None
 
         register = client.get("/register")
         response = client.post(

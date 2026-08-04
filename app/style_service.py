@@ -795,7 +795,6 @@ class StyleService:
                        p.title AS project_title, p.user_id,
                        v.content_path AS version_content_path,
                        v.content_hash AS version_content_hash,
-                       v.quality_status,
                        vp.status AS voice_status
                 FROM chapter_style_issues i
                 JOIN novel_chapters ch ON ch.id=i.chapter_id
@@ -1019,11 +1018,10 @@ class StyleService:
                 INSERT INTO novel_chapter_versions(
                     id, chapter_id, kind, content_path, char_count, created_at,
                     parent_version_id, source, content_hash,
-                    change_summary, created_by, quality_status,
-                    effective_char_count, hard_issue_count, style_status,
+                    change_summary, created_by, effective_char_count, style_status,
                     style_issue_count
                 ) VALUES (?, ?, 'targeted_rewrite', ?, ?, ?, ?,
-                          'targeted_rewrite', ?, ?, 'ai', 'pass', ?, 0,
+                          'targeted_rewrite', ?, ?, 'ai', ?,
                           'pending', 0)
                 """,
                 (

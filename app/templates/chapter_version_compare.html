@@ -23,6 +23,9 @@
             {% endfor %}
           </select>
         </label>
+        {% if versions|length >= 30 %}
+          <span class="muted">这里只列最近版本；更早版本请从完整历史页打开。</span>
+        {% endif %}
         <button class="button" type="submit">重新比较</button>
       </form>
     {% endif %}

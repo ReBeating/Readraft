@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 
@@ -39,7 +38,7 @@ WRITING_SYSTEM_PROMPT = (
     PROSE_WRITING_SYSTEM_PROMPT
     + """
 
-旧工作流补充约束：
+作品级补充约束：
 1. 参考技法只提供抽象规则和作者改造要求；不得复用参考作品的人名、专有物件、
    具体情节、独特意象或措辞，也不能推翻正史、任务卡和作品声纹。
 2. 编辑偏好只在 applicability 所述场景应用，不能推翻正史、人物知情或视角。
@@ -122,150 +121,7 @@ def _operation_instruction(operation: str, target_chars: int) -> str:
             "润色本章完整正文。保留原有剧情、事实和段落顺序，"
             "改善语言、对话、节奏与重复表达；输出润色后的完整正文。"
         )
-    if operation == "generate_scene":
-        return (
-            f"只创作当前指定场景的完整正文，目标约 {target_chars} 个中文字符。"
-            "从前一场景的结果自然进入，落实当前场景的目标、阻力、行动、"
-            "信息控制和状态变化，并停在 transition 指定的推动点；"
-            "不要代写下一个场景。"
-        )
-    if operation == "rewrite_scene":
-        return (
-            f"重写当前指定场景的完整正文，目标约 {target_chars} 个中文字符。"
-            "保留已确认事实与场景职责，改善行动过程、对话、空间调度、"
-            "潜台词和节奏；只输出替换后的场景，不要输出修改说明，"
-            "不要代写下一个场景。"
-        )
-    if operation == "expand_to_minimum":
-        return (
-            f"现有候选正文低于硬下限。围绕已确认但展开不足的场景节拍，"
-            f"将整章补充到约 {max(target_chars, 2200)} 个有效字符。"
-            "只增加具体行动、阻力、对话、空间调度、感官线索与必要的"
-            "因果过程，不得重复总结、同义改写灌水或新增重大事实。"
-            "输出补齐后的完整正文，不要输出说明。"
-        )
     raise AnalyzerError("不支持的写作操作")
-
-
-def build_scene_writing_messages(
-    *,
-    context: Mapping[str, Any],
-    operation: str,
-    instruction: str,
-    current_content: str,
-    previous_content: str,
-) -> List[Mapping[str, str]]:
-    chapter = context["chapter"]
-    task_card = context.get("task_card") or {}
-    focused_scene = context.get("focused_scene") or {}
-    target_chars = int(context.get("scene_target_chars") or 900)
-    task = _operation_instruction(operation, target_chars)
-    canonical_memory = context.get("canonical_memory") or (
-        compile_canonical_memory({})
-    )
-    active_techniques = context.get("active_techniques") or (
-        compile_active_techniques(
-            context.get("technique_cards") or [], usage="write"
-        )
-    )
-    confirmed_story_plan = compile_story_plan_context(
-        context, usage="write"
-    )
-    planned_causal_links = compile_planned_causal_links(
-        context, usage="write"
-    )
-    prompt_context = {
-        "project": {
-            "title": chapter.get("project_title"),
-            "genre": chapter.get("genre"),
-            "premise": chapter.get("premise"),
-            "story_promise": chapter.get("story_promise"),
-            "target_audience": chapter.get("target_audience"),
-            "core_appeal": chapter.get("core_appeal"),
-            "ending_constraint": chapter.get("ending_constraint"),
-            "world_setting": chapter.get("world_setting"),
-            "style_guide": chapter.get("style_guide"),
-            "point_of_view": chapter.get("point_of_view"),
-        },
-        "chapter": {
-            "position": chapter.get("position"),
-            "title": chapter.get("title"),
-            "outline": chapter.get("outline"),
-            "key_points": chapter.get("key_points"),
-        },
-        "confirmed_chapter_contract": {
-            "purpose": task_card.get("purpose"),
-            "start_state": task_card.get("start_state"),
-            "end_state": task_card.get("end_state"),
-            "central_conflict": task_card.get("central_conflict"),
-            "emotional_value": task_card.get("emotional_value"),
-            "must_happen": task_card.get("must_happen") or [],
-            "must_preserve": task_card.get("must_preserve") or [],
-            "forbidden": task_card.get("forbidden") or [],
-            "ending_hook": task_card.get("ending_hook"),
-        },
-        "scene_sequence": context.get("scene_sequence") or [],
-        "focused_scene": focused_scene,
-        "previous_scene_plan": context.get("previous_scene"),
-        "next_scene_plan": context.get("next_scene"),
-        "characters": context.get("characters") or [],
-        "confirmed_work_archive_settings": (
-            context.get("confirmed_archive_rules") or []
-        ),
-        "confirmed_voice_profile": context.get("voice_profile") or {},
-        "confirmed_editing_preferences": (
-            context.get("confirmed_editing_preferences") or []
-        ),
-        "confirmed_story_plan": confirmed_story_plan,
-        "planned_future_causality": planned_causal_links,
-        "canonical_memory": canonical_memory,
-        "active_writing_techniques": active_techniques,
-    }
-    user_prompt = f"""
-请完成一个长篇小说的单场景写作任务。
-
-<author_confirmed_context>
-{json.dumps(prompt_context, ensure_ascii=False, indent=2)}
-</author_confirmed_context>
-
-<previous_chapter_excerpt>
-{str(context.get("previous_chapter_content") or "")[-5000:] or "无"}
-</previous_chapter_excerpt>
-
-<previous_scene_draft>
-{previous_content[-6000:] if previous_content else "这是本章第一个场景"}
-</previous_scene_draft>
-
-<current_scene_draft>
-{current_content[-16000:] if current_content else "尚无场景草稿"}
-</current_scene_draft>
-
-<extra_instruction>
-{instruction or "无额外要求"}
-</extra_instruction>
-
-<task>
-{task}
-</task>
-
-只输出当前场景正文。不要输出章节名、场景编号、分析、提纲或 Markdown。
-正史、人物知情、任务卡和当前场景节拍优先于额外要求与参考技法。
-""".strip()
-    return [
-        {
-            "role": "system",
-            "content": compose_writing_system_prompt(
-                book_prompt=str(chapter.get("ai_instructions") or ""),
-                craft_context={
-                    "instruction": instruction,
-                    "genre": chapter.get("genre"),
-                    "scene_contract": focused_scene,
-                    "chapter": chapter,
-                },
-            ),
-        },
-        {"role": "user", "content": user_prompt},
-    ]
 
 
 def build_writing_messages(
@@ -276,14 +132,6 @@ def build_writing_messages(
     current_content: str,
     previous_content: str,
 ) -> List[Mapping[str, str]]:
-    if operation in {"generate_scene", "rewrite_scene"}:
-        return build_scene_writing_messages(
-            context=context,
-            operation=operation,
-            instruction=instruction,
-            current_content=current_content,
-            previous_content=previous_content,
-        )
     chapter = context["chapter"]
     characters = context.get("characters") or []
     task_card = context.get("task_card") or {
@@ -491,130 +339,14 @@ class MockWriter(BaseWriter):
         chapter = context["chapter"]
         title = str(chapter["title"] or "未命名章节")
         outline = str(chapter["outline"] or "人物踏入新的场景，故事继续向前")
-        if operation in {"generate_scene", "rewrite_scene"}:
-            focused = context.get("focused_scene") or {}
-            goal = str(focused.get("goal") or "完成眼前的目标")
-            obstacle = str(focused.get("obstacle") or "现实阻力")
-            action = str(focused.get("action") or "换一种办法继续推进")
-            reveal = str(focused.get("reveal") or "一项可核对的新信息")
-            end_state = str(
-                focused.get("end_state") or "局面发生不可忽略的变化"
-            )
-            transition = str(
-                focused.get("transition") or "人物带着新问题离开场景"
-            )
-            location = str(focused.get("location") or "当前地点")
-            previous_anchor = (
-                "前一场景留下的决定仍在起作用"
-                if previous_content.strip()
-                else "前一刻留下的问题仍未解决"
-            )
-            paragraphs = [
-                (
-                    f"{location}里的声响先停了一瞬。{previous_anchor}"
-                    "并没有替她作出决定，她把注意力重新压回眼前。"
-                ),
-                (
-                    f"她要做的是{goal}。{obstacle}没有以一句拒绝出现，"
-                    "而是变成一个必须立刻处理的具体麻烦。"
-                ),
-                (
-                    f"她先{action}。动作带来的结果并不完整，"
-                    "却迫使在场的人重新选择说法。"
-                ),
-                (
-                    "对话没有直接给出答案。一个人避开了最容易回答的部分，"
-                    "另一个人则抓住桌面上位置被挪动的东西，追问刚才没有"
-                    "被解释的时间差。"
-                ),
-                (
-                    f"直到这个选择产生代价，{reveal}才显出分量。"
-                    "她没有急着替线索下结论，只把可以验证的部分记了下来。"
-                ),
-                (
-                    f"场景结束时，{end_state}。{transition}。"
-                    "她停在门边回头看了一眼，确认自己没有遗漏那个仍在"
-                    "改变局面的细节，随后才迈出去。"
-                ),
-            ]
-            if operation == "rewrite_scene" and current_content.strip():
-                paragraphs.insert(
-                    1,
-                    (
-                        "原先草稿里被解释得过早的判断被收了回去。"
-                        "人物没有概括自己的情绪，而是用迟疑、错开的视线"
-                        "和一次没有完成的动作暴露压力。"
-                    ),
-                )
-            del instruction
-            minimum = int(context.get("scene_minimum_chars") or 300)
-            target = int(context.get("scene_target_chars") or minimum + 80)
-            desired = max(minimum + 80, min(target, 1400))
-            texture = (
-                "屋里的光沿着物件边缘缓慢移动，远处的脚步声隔着墙面"
-                "传来。她把一句已经到嘴边的话压下去，先确认眼前证据"
-                "能够支持什么，再决定下一步行动。"
-            )
-            while len(re.sub(r"\s+", "", "\n\n".join(paragraphs))) < desired:
-                paragraphs.insert(-1, texture)
-            await asyncio.sleep(0)
-            return WritingResponse(
-                content="\n\n".join(paragraphs),
-                input_tokens=0,
-                output_tokens=0,
-            )
         del instruction, previous_content
         generated = (
             f"风从远处推来一阵潮湿的气息。\n\n"
             f"围绕“{outline[:120]}”，人物终于迈出了不能收回的一步。"
             "眼前的细节逐渐清晰，原本平静的局面也出现了细小却危险的裂缝。\n\n"
-                f"这是《{title}》的本地演示草稿。配置个人模型 API Key 后，"
+            f"这是《{title}》的本地演示草稿。配置个人模型 API Key 后，"
             "系统会根据项目设定、人物卡、章节大纲和前文生成正式正文。"
         )
-        if operation == "expand_to_minimum":
-            task_card = context.get("task_card") or {}
-            scenes = task_card.get("scenes") or []
-            must_happen = task_card.get("must_happen") or []
-            scene_details = []
-            for position, scene in enumerate(scenes, start=1):
-                scene_details.append(
-                    (
-                        f"第{position}个场景里，人物想要"
-                        f"{scene.get('goal') or '弄清眼前的问题'}，却先被"
-                        f"{scene.get('obstacle') or '现实阻力'}挡住。"
-                        f"她没有停下来解释自己的情绪，而是"
-                        f"{scene.get('action') or '换了一种办法继续尝试'}。"
-                        f"场景结束时，{scene.get('end_state') or '局面发生了变化'}。"
-                    )
-                )
-            required = "、".join(str(item) for item in must_happen) or outline
-            texture_blocks = [
-                "窗缝里的风把桌角那张收据掀起一线，又落回原处。她用指腹压住纸面，先看日期，再看墨迹晕开的方向，最后才把视线移到那个一直不愿碰的名字上。",
-                "楼道里有人拖着行李经过，轮子在每一级台阶上磕出不同的响声。她等声音远了，才把两封旧信并排放好；相同的收笔习惯并不能解释新鲜的邮戳。",
-                "电话接通后，对面先是一阵键盘声。她没有说出全部缘由，只报了编号和投递时间。短暂的沉默比否定更麻烦，因为那意味着记录确实存在。",
-                "杯里的水已经凉透。她喝了一口，舌根尝到一点金属味，才意识到自己一直咬着杯沿。屏幕上的返程班次只剩最后两个座位。",
-                "她把光标移到购买按钮上，又停住。十年前离开时说过的话忽然变得太清楚，但它们没有替她作出选择；真正落下去的是她自己的手指。",
-                "确认信息弹出来的瞬间，屋里并没有任何变化。冰箱仍旧嗡响，邻居仍在关门，可桌上的信已经不再是一件可以明天处理的东西。",
-                "她收拾得很慢，只带了能装进旧背包的物件。每放进一样东西，她都会检查一次信封是否还在内袋，像是在防备某个尚未露面的窃贼。",
-                "站台广播被风吹散，尾音贴着棚顶来回碰撞。她在人群里闻到湿布、咖啡和铁轨的味道，信纸上那点若有若无的咸腥却始终没有消失。",
-                "列车进站时，车灯先从弯道后面照过来。她退了半步，随后站稳，没有给自己留下重新计算得失的时间。",
-                "车门合拢前，她最后一次看向城市的方向。玻璃上映出的脸显得陌生，手却很稳；那封信被压在掌心，纸边留下了一道浅白的痕。",
-                "行驶后的震动让字迹轻轻颤动。她重新读到关键一句，没有获得答案，只发现其中一个用词与父亲旧日习惯并不完全相同。",
-                "她把这个差异记进手机，却没有立刻下结论。车窗外的灯一盏盏退后，前方仍是黑的，而她已经无法假装自己没有看见那条线索。",
-            ]
-            paragraphs = [
-                current_content.strip() or generated,
-                (
-                    "本地演示会执行同样的长度门禁；正式模式由所选模型"
-                    "依据任务卡补齐。以下段落用于验证候选版本、补写与审计链路。"
-                ),
-                f"本章必须落实的行动是：{required}。",
-                *scene_details,
-                *texture_blocks,
-            ]
-            while len(re.sub(r"\s+", "", "\n\n".join(paragraphs))) < 2200:
-                paragraphs.extend(texture_blocks[:3])
-            generated = "\n\n".join(paragraphs)
         if operation == "continue" and current_content:
             generated = (
                 "门外忽然传来第二次敲击，比刚才更轻，也更坚定。\n\n"

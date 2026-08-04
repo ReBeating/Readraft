@@ -181,9 +181,7 @@ class ProviderEditPreferenceExtractor(BaseEditPreferenceExtractor):
                 "style_guide": project.get("style_guide"),
             },
             "author_edit_source": {
-                "source_type": source.get("source_type"),
                 "chapter_title": source.get("chapter_title"),
-                "scene_goal": source.get("scene_goal"),
                 "author_change_summary": source.get(
                     "author_change_summary"
                 ),
