@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}版本历史 · {{ chapter.title or '未命名章节' }}{% endblock %}
+{% block content %}
+  <section class="page-heading split-heading">
+    <div>
+      <a class="back-link" href="/novels/{{ chapter.project_id }}/workbench?view=archive&archive_tab=versions">← 返回版本总览</a>
+      <span class="eyebrow">CHAPTER HISTORY · {{ "%03d"|format(chapter.position) }}</span>
+      <h1>{{ chapter.title or '未命名章节' }}</h1>
+      <p>{{ version_count }} 个不可变版本；main HEAD 由章节指针唯一确定。</p>
+    </div>
+  </section>
+
+  <section class="card">
+    {% if versions %}
+      <div class="studio-chapter-history-list">
+        <article class="studio-chapter-history-card">
+          <ol>
+            {% for version in versions %}
+              <li>
+                <div>
+                  <b>{% if version.is_head %}main HEAD{% else %}历史{% endif %}</b>
+                  <span>
+                    {{ version.kind|writing_operation_label }} ·
+                    {{ (version.created_at or '')[:16]|replace('T', ' ') }} ·
+                    {{ version.char_count|human_size }}
+                  </span>
+                  {% if version.change_summary %}<small>{{ version.change_summary }}</small>{% endif %}
+                </div>
+                {% if version_count > 1 %}
+                  <a class="studio-text-button" href="/novels/{{ chapter.project_id }}/chapters/{{ chapter.id }}/versions/{{ version.id }}/compare">比较</a>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ol>
+        </article>
+      </div>
+    {% else %}
+      <div class="empty-state"><h2>还没有正文版本</h2></div>
+    {% endif %}
+  </section>
+
+  {% if page_count > 1 %}
+    <nav class="pagination" aria-label="版本历史分页">
+      {% if current_page > 1 %}
+        <a class="button" href="?page={{ current_page - 1 }}">上一页</a>
+      {% endif %}
+      <span>第 {{ current_page }} / {{ page_count }} 页</span>
+      {% if current_page < page_count %}
+        <a class="button" href="?page={{ current_page + 1 }}">下一页</a>
+      {% endif %}
+    </nav>
+  {% endif %}
+{% endblock %}

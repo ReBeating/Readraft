@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.deepseek import AnalyzerError
-from app.writing import DeepSeekWriter, build_writing_messages
+from app.model_client import AnalyzerError
+from app.writing import ProviderWriter, build_writing_messages
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -24,15 +24,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key="test-key",
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key="test-key",
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -75,7 +75,7 @@ def test_deepseek_writer_sends_plain_text_request(tmp_path):
         )
 
     async def scenario():
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             make_settings(tmp_path), transport=httpx.MockTransport(handler)
         )
         try:
@@ -137,7 +137,7 @@ def test_deepseek_writer_reports_content_filter_with_usage(tmp_path):
         )
 
     async def scenario():
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             make_settings(tmp_path), transport=httpx.MockTransport(handler)
         )
         try:
@@ -181,10 +181,10 @@ def test_openai_compatible_writer_uses_active_provider(tmp_path):
         settings = replace(
             make_settings(tmp_path),
             model_provider="openai",
-            deepseek_base_url="https://api.openai.com/v1",
-            deepseek_model="gpt-4.1-mini",
+            model_base_url="https://api.openai.com/v1",
+            model_name="gpt-4.1-mini",
         )
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             settings, transport=httpx.MockTransport(handler)
         )
         try:
@@ -230,7 +230,7 @@ def test_deepseek_writer_retries_resource_exhaustion_once(tmp_path):
         return None
 
     async def scenario():
-        writer = DeepSeekWriter(
+        writer = ProviderWriter(
             make_settings(tmp_path),
             transport=httpx.MockTransport(handler),
             sleep=no_sleep,
@@ -252,51 +252,6 @@ def test_deepseek_writer_retries_resource_exhaustion_once(tmp_path):
     assert "系统资源不足" in str(caught.value)
     assert caught.value.input_tokens == 20
     assert attempts["count"] == 2
-
-
-def test_scene_writer_prompt_is_bounded_to_one_scene():
-    context = writing_context()
-    context.update(
-        {
-            "task_card": {
-                "purpose": "迫使林岚返回雾港",
-                "must_preserve": ["林岚不知道寄信人身份"],
-                "forbidden": ["揭晓父亲下落"],
-            },
-            "focused_scene": {
-                "id": "scene-1",
-                "position": 1,
-                "goal": "确认来信真假",
-                "obstacle": "邮戳日期不可能",
-                "action": "对照旧信并致电邮局",
-                "end_state": "承认信件值得调查",
-                "transition": "查询当夜车票",
-            },
-            "scene_sequence": [
-                {"id": "scene-1", "position": 1, "goal": "确认来信真假"},
-                {"id": "scene-2", "position": 2, "goal": "购买车票"},
-            ],
-            "next_scene": {"position": 2, "goal": "购买车票"},
-            "scene_target_chars": 1400,
-            "scene_minimum_chars": 600,
-            "previous_chapter_content": "上一章正史末尾。",
-        }
-    )
-    messages = build_writing_messages(
-        context=context,
-        operation="rewrite_scene",
-        instruction="不要提前解释邮戳来源",
-        current_content="当前场景旧稿。",
-        previous_content="上一场景以电话挂断结束。",
-    )
-    prompt = str(messages[1]["content"])
-    assert "只创作当前指定场景" not in prompt
-    assert "重写当前指定场景的完整正文" in prompt
-    assert "只输出当前场景正文" in prompt
-    assert "不要代写下一个场景" in prompt
-    assert "当前场景旧稿" in prompt
-    assert "上一场景以电话挂断结束" in prompt
-    assert "购买车票" in prompt
 
 
 def test_writer_system_prompt_combines_base_and_book_instructions():

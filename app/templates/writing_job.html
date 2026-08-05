@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if job.operation == 'extract_story_delta' %}后台故事记忆{% elif job.operation == 'plan_chapter' %}章节规划{% elif job.operation == 'plan_scene_beats' %}场景节拍拆解{% elif job.operation == 'propose_reader_branches' %}读者意见方案{% elif job.operation == 'audit_ai_style' %}AI 味审校{% elif job.operation == 'rewrite_style_issue' %}定点改写{% elif job.operation in ['generate_scene','rewrite_scene'] %}场景写作{% else %}AI 写作任务{% endif %} · {{ job.chapter_title }}{% endblock %}
+{% block title %}{% if job.operation == 'extract_story_delta' %}后台故事记忆{% elif job.operation == 'plan_chapter' %}章节规划{% elif job.operation == 'plan_scene_beats' %}场景节拍拆解{% elif job.operation == 'propose_reader_branches' %}读者意见方案{% elif job.operation == 'audit_ai_style' %}AI 味审校{% elif job.operation == 'rewrite_style_issue' %}定点改写{% else %}后台任务{% endif %} · {{ job.chapter_title }}{% endblock %}
 {% block content %}
   <section class="page-heading">
     {% if job.operation == 'propose_reader_branches' and job.subject_id %}
@@ -7,7 +7,7 @@
     {% else %}
       <a class="back-link" href="/novels/{{ job.project_id }}/workbench?chapter_id={{ job.chapter_id }}">← 返回作品工作台</a>
     {% endif %}
-    <span class="eyebrow">{% if job.operation == 'extract_story_delta' %}BACKGROUND MEMORY{% elif job.operation == 'plan_chapter' %}PLANNER JOB{% elif job.operation == 'plan_scene_beats' %}LOCKED TASK CARD · SCENE PLANNER{% elif job.operation == 'propose_reader_branches' %}READER REQUEST PLANNER{% elif job.operation == 'audit_ai_style' %}STYLE AUDIT JOB{% elif job.operation == 'rewrite_style_issue' %}TARGETED REWRITE JOB{% elif job.operation in ['generate_scene','rewrite_scene'] %}SCENE WRITER JOB{% else %}WRITING JOB{% endif %}</span>
+    <span class="eyebrow">{% if job.operation == 'extract_story_delta' %}BACKGROUND MEMORY{% elif job.operation == 'plan_chapter' %}PLANNER JOB{% elif job.operation == 'plan_scene_beats' %}LOCKED TASK CARD · SCENE PLANNER{% elif job.operation == 'propose_reader_branches' %}READER REQUEST PLANNER{% elif job.operation == 'audit_ai_style' %}STYLE AUDIT JOB{% elif job.operation == 'rewrite_style_issue' %}TARGETED REWRITE JOB{% else %}BACKGROUND JOB{% endif %}</span>
     <h1>{{ job.chapter_title }}</h1>
     <p>{{ job.provider }} / {{ job.model }} · {{ job.operation|writing_operation_label }}</p>
   </section>
@@ -28,8 +28,6 @@
         <h2>AI 味问题定位已完成</h2>
       {% elif job.operation == 'rewrite_style_issue' %}
         <h2>两个定点改写候选已生成</h2>
-      {% elif job.operation in ['generate_scene','rewrite_scene'] %}
-        <h2>场景正文已生成</h2>
       {% else %}
         <h2>正文已写入当前版本</h2>
       {% endif %}
@@ -50,32 +48,28 @@
         <a class="button primary" href="/novels/{{ job.project_id }}/chapters/{{ job.chapter_id }}/versions/{{ job.version_id }}/style">查看 AI 味审校报告</a>
       {% elif job.operation == 'rewrite_style_issue' and job.subject_id %}
         <a class="button primary" href="/style-issues/{{ job.subject_id }}">比较两个改写候选</a>
-      {% elif job.operation in ['generate_scene','rewrite_scene'] %}
-        <a class="button primary" href="/novels/{{ job.project_id }}/workbench?chapter_id={{ job.chapter_id }}">查看正文</a>
       {% else %}
         <a class="button primary" href="/novels/{{ job.project_id }}/workbench?chapter_id={{ job.chapter_id }}">查看并编辑正文</a>
       {% endif %}
     {% elif job.status == 'failed' %}
-      <h2>{% if job.operation == 'extract_story_delta' %}后台故事记忆没有更新{% elif job.operation == 'plan_chapter' %}章节规划没有完成{% elif job.operation == 'plan_scene_beats' %}场景节拍拆解没有完成{% elif job.operation == 'propose_reader_branches' %}读者意见方案没有完成{% elif job.operation == 'audit_ai_style' %}AI 味审校没有完成{% elif job.operation == 'rewrite_style_issue' %}定点改写没有完成{% elif job.operation in ['generate_scene','rewrite_scene'] %}场景写作没有完成{% else %}本次生成没有完成{% endif %}</h2>
+      <h2>{% if job.operation == 'extract_story_delta' %}后台故事记忆没有更新{% elif job.operation == 'plan_chapter' %}章节规划没有完成{% elif job.operation == 'plan_scene_beats' %}场景节拍拆解没有完成{% elif job.operation == 'propose_reader_branches' %}读者意见方案没有完成{% elif job.operation == 'audit_ai_style' %}AI 味审校没有完成{% elif job.operation == 'rewrite_style_issue' %}定点改写没有完成{% else %}后台任务没有完成{% endif %}</h2>
       <div class="alert error">{{ job.error or '未知错误' }}</div>
       <a class="button" href="/novels/{{ job.project_id }}/workbench?chapter_id={{ job.chapter_id }}">返回调整后重试</a>
     {% else %}
-      <h2>{% if job.operation == 'extract_story_delta' %}正在后台整理本章故事记忆{% elif job.operation == 'plan_chapter' %}Planner 正在拆解章节任务{% elif job.operation == 'plan_scene_beats' %}Scene Planner 正在把锁定要求分配到场景{% elif job.operation == 'propose_reader_branches' %}Planner 正在比较三种未来走向与代价{% elif job.operation == 'audit_ai_style' %}Style Auditor 正在定位具体原句{% elif job.operation == 'rewrite_style_issue' %}Targeted Rewriter 正在生成两个局部候选{% elif job.operation in ['generate_scene','rewrite_scene'] %}Scene Writer 正在创作当前场景{% else %}DeepSeek 正在创作本章{% endif %}</h2>
+      <h2>{% if job.operation == 'extract_story_delta' %}正在后台整理本章故事记忆{% elif job.operation == 'plan_chapter' %}Planner 正在拆解章节任务{% elif job.operation == 'plan_scene_beats' %}Scene Planner 正在把锁定要求分配到场景{% elif job.operation == 'propose_reader_branches' %}Planner 正在比较三种未来走向与代价{% elif job.operation == 'audit_ai_style' %}Style Auditor 正在定位具体原句{% elif job.operation == 'rewrite_style_issue' %}Targeted Rewriter 正在生成两个局部候选{% else %}后台任务正在运行{% endif %}</h2>
       <p>
         {% if job.operation == 'extract_story_delta' %}
           完成后会自动更新故事记忆，不需要你再审核一遍正文变化。
         {% elif job.operation == 'plan_chapter' %}
           完成后只会保存为规划草稿；你需要检查场景目标、阻力、行动与状态变化并手动确认。
         {% elif job.operation == 'plan_scene_beats' %}
-          当前任务卡的推进线、必做事件、伏笔和钩子已冻结。完成后只替换场景草稿，并逐条显示每场负责的要求；不会改写章节级约束或正文。
+          当前任务卡的推进线、必做事件、伏笔和钩子已冻结。完成后只更新场景节拍，并逐条显示每场负责的要求；不会改写章节级约束或正文。
         {% elif job.operation == 'propose_reader_branches' %}
           读者原话不会进入 Writer。完成后只产生三个带代价和风险的规划候选，只有你采纳的方案才会更新未来细纲。
         {% elif job.operation == 'audit_ai_style' %}
           它只会提出有原文证据的软质量问题，不会自动重写正文或阻止你保留原文。
         {% elif job.operation == 'rewrite_style_issue' %}
           它只改写你选中的连续片段，并保留剧情事实、视角和人物知情边界。
-        {% elif job.operation in ['generate_scene','rewrite_scene'] %}
-          它只写当前场景；生成完成后可以直接编辑或参与章节组装。
         {% else %}
           可以离开这个页面，任务会在后台继续。完成后正文会保存为当前版本。
         {% endif %}

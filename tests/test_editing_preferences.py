@@ -11,17 +11,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.context_compiler import (
-    build_scene_context_snapshot,
-    build_writing_context_snapshot,
-)
+from app.context_compiler import build_writing_context_snapshot
 from app.credentials import CredentialCipher, key_hint
 from app.db import Database
-from app.deepseek import MockAnalyzer
+from app.model_client import MockAnalyzer
 from app.main import create_app
 from app.preference_extraction import (
     BaseEditPreferenceExtractor,
-    DeepSeekEditPreferenceExtractor,
+    ProviderEditPreferenceExtractor,
     EditPreferenceExtractionResponse,
     MockEditPreferenceExtractor,
     build_edit_sample,
@@ -31,7 +28,7 @@ from app.preference_service import PreferenceService
 from app.security import hash_password
 from app.style_service import StyleService
 from app.worker import AnalysisWorker
-from app.writing import MockWriter, build_writing_messages
+from app.writing import build_writing_messages
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -47,15 +44,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -154,7 +151,6 @@ def _confirm_manual_edit_preference(
         user_id=user_id,
         project_id=project_id,
         chapter_id=chapter_id,
-        source_type="chapter",
         after_version_id=after_version_id,
         provider="mock",
         model="mock-edit-preference-learner",
@@ -273,11 +269,11 @@ def test_deepseek_edit_preference_extractor_uses_bounded_diff_and_schema(
         )
 
     settings = replace(
-        _settings(tmp_path), deepseek_api_key="sk-edit-pref-test"
+        _settings(tmp_path), model_api_key="sk-edit-pref-test"
     )
 
     async def scenario():
-        extractor = DeepSeekEditPreferenceExtractor(
+        extractor = ProviderEditPreferenceExtractor(
             settings, transport=httpx.MockTransport(handler)
         )
         try:
@@ -289,7 +285,6 @@ def test_deepseek_edit_preference_extractor_uses_bounded_diff_and_schema(
                     "style_guide": "克制具体",
                 },
                 source={
-                    "source_type": "chapter",
                     "chapter_title": "第一章",
                     "author_change_summary": "减少解释。",
                 },
@@ -349,7 +344,6 @@ def test_manual_edit_preference_is_evidence_gated_and_author_confirmed(
         user_id=user_id,
         project_id=project_id,
         chapter_id="chapter-one",
-        source_type="chapter",
         after_version_id=after_id,
         provider="mock",
         model="mock-edit-preference-learner",
@@ -363,7 +357,6 @@ def test_manual_edit_preference_is_evidence_gated_and_author_confirmed(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
@@ -438,20 +431,9 @@ def test_manual_edit_preference_is_evidence_gated_and_author_confirmed(
         current_content="",
         previous_content="",
     )
-    scene_snapshot = build_scene_context_snapshot(
-        context=context,
-        operation="generate_scene",
-        instruction="",
-        current_scene_content="",
-        previous_scene_content="",
-        previous_chapter_content="",
-    )
     assert chapter_snapshot["confirmed_editing_preferences"][0][
         "guidance"
     ].startswith("人物反应")
-    assert scene_snapshot["confirmed_editing_preferences"] == (
-        chapter_snapshot["confirmed_editing_preferences"]
-    )
     assert before not in json.dumps(chapter_snapshot, ensure_ascii=False)
     audit_preferences = StyleService(database).list_preferences(
         user_id=user_id, project_id=project_id
@@ -488,7 +470,6 @@ def test_edit_preference_hallucinated_evidence_fails_without_mutation(
         user_id=user_id,
         project_id=project_id,
         chapter_id="chapter-one",
-        source_type="chapter",
         after_version_id=after_id,
         provider="mock",
         model="bad-edit-evidence",
@@ -530,7 +511,6 @@ def test_edit_preference_hallucinated_evidence_fails_without_mutation(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
@@ -569,7 +549,6 @@ def test_expired_edit_preference_lease_is_requeued(tmp_path):
         user_id=user_id,
         project_id=project_id,
         chapter_id="chapter-one",
-        source_type="chapter",
         after_version_id=after_id,
         provider="mock",
         model="mock-edit-preference-learner",
@@ -589,125 +568,6 @@ def test_expired_edit_preference_lease_is_requeued(tmp_path):
     second = service.claim_next_suggestion()
     assert second["id"] == suggestion_id
     assert second["claim_token"] != first["claim_token"]
-
-
-def test_scene_manual_edit_source_is_bound_to_exact_scene(tmp_path):
-    settings = _settings(tmp_path)
-    database = Database(settings.database_path)
-    database.initialize()
-    user_id = database.create_user(
-        "scene-edit-owner", hash_password("password-123")
-    )
-    project_id = "scene-edit-project"
-    _create_project(database, user_id=user_id, project_id=project_id)
-    chapter_dir = tmp_path / project_id / "scene-chapter"
-    chapter_dir.mkdir(parents=True)
-    content_path = chapter_dir / "content.txt"
-    content_path.write_text("", encoding="utf-8")
-    database.add_novel_chapter(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id="scene-chapter",
-        title="第一章",
-        outline="核对来信。",
-        key_points="邮戳",
-        content_path=content_path,
-    )
-    before = "她觉得自己十分震惊，也明白这封信必然意味着什么。"
-    after = "她捏住信封一角，指腹在新邮戳上停了两秒。"
-    before_path = chapter_dir / "scene-before.txt"
-    after_path = chapter_dir / "scene-after.txt"
-    before_path.write_text(before, encoding="utf-8")
-    after_path.write_text(after, encoding="utf-8")
-    timestamp = "2026-07-23T00:00:00+00:00"
-    with database.connection() as connection:
-        connection.execute(
-            """
-            INSERT INTO novel_chapter_plans(
-                id, project_id, chapter_id, purpose, start_state,
-                end_state, central_conflict, emotional_value, target_chars,
-                status, source, created_at, updated_at, confirmed_at
-            ) VALUES (
-                'scene-plan', ?, 'scene-chapter', '核对信件',
-                '不相信', '决定调查', '邮戳矛盾', '希望重现',
-                3000, 'confirmed', 'manual', ?, ?, ?
-            )
-            """,
-            (project_id, timestamp, timestamp, timestamp),
-        )
-        connection.execute(
-            """
-            INSERT INTO novel_scene_beats(
-                id, plan_id, position, pov_character, goal, obstacle,
-                action, end_state, created_at, updated_at
-            ) VALUES (
-                'scene-one', 'scene-plan', 1, '林岚', '核对邮戳',
-                '日期矛盾', '对照旧信', '承认值得调查', ?, ?
-            )
-            """,
-            (timestamp, timestamp),
-        )
-        connection.execute(
-            """
-            INSERT INTO novel_scene_versions(
-                id, scene_beat_id, parent_version_id, kind, source, status,
-                content_path, char_count, effective_char_count, content_hash,
-                plan_fingerprint, created_by, quality_status,
-                hard_issue_count, created_at
-            ) VALUES (
-                'scene-before-v', 'scene-one', NULL, 'manual', 'manual',
-                'candidate', ?, ?, ?, ?, 'fingerprint', 'author',
-                'pending', 0, ?
-            )
-            """,
-            (
-                str(before_path),
-                len(before),
-                len(before),
-                hashlib.sha256(before.encode()).hexdigest(),
-                timestamp,
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO novel_scene_versions(
-                id, scene_beat_id, parent_version_id, kind, source, status,
-                content_path, char_count, effective_char_count, content_hash,
-                plan_fingerprint, created_by, quality_status,
-                hard_issue_count, created_at
-            ) VALUES (
-                'scene-after-v', 'scene-one', 'scene-before-v', 'manual',
-                'manual', 'candidate', ?, ?, ?, ?, 'fingerprint', 'author',
-                'pending', 0, ?
-            )
-            """,
-            (
-                str(after_path),
-                len(after),
-                len(after),
-                hashlib.sha256(after.encode()).hexdigest(),
-                timestamp,
-            ),
-        )
-        connection.commit()
-
-    service = PreferenceService(database)
-    suggestion_id = service.create_suggestion(
-        user_id=user_id,
-        project_id=project_id,
-        chapter_id="scene-chapter",
-        source_type="scene",
-        after_version_id="scene-after-v",
-        expected_scene_beat_id="scene-one",
-        provider="mock",
-        model="mock-edit-preference-learner",
-        credential_source="default",
-    )
-    suggestion = service.get_suggestion(
-        user_id=user_id, suggestion_id=suggestion_id
-    )
-    assert suggestion["scene_beat_id"] == "scene-one"
-    assert suggestion["scene_goal"] == "核对邮戳"
 
 
 def test_edit_preference_extractor_uses_owning_personal_key(
@@ -733,14 +593,14 @@ def test_edit_preference_extractor_uses_owning_personal_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekEditPreferenceExtractor",
+        "app.worker.ProviderEditPreferenceExtractor",
         FakePersonalExtractor,
     )
     before = "她觉得这件事显然让人无比难过。"
@@ -750,7 +610,6 @@ def test_edit_preference_extractor_uses_owning_personal_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,
@@ -766,9 +625,7 @@ def test_edit_preference_extractor_uses_owning_personal_key(
                 "genre": "悬疑",
                 "point_of_view": "第三人称限知",
                 "style_guide": "克制具体",
-                "source_type": "chapter",
                 "chapter_title": "第一章",
-                "scene_goal": "",
                 "author_change_summary": "",
                 "change_sample": build_edit_sample(before, after),
             },
@@ -947,7 +804,6 @@ def test_aggregate_requires_two_distinct_manual_edits(tmp_path):
         user_id=user_id,
         project_id=project_id,
         chapter_id="chapter-one",
-        source_type="chapter",
         after_version_id=after_id,
         provider="mock",
         model="mock-edit-preference-learner",
@@ -1158,66 +1014,6 @@ def test_stable_preference_reports_only_non_causal_audit_observation(
     assert effect["after"]["rate_per_10k"] == 0.0
     assert effect["direction"] == "decreased"
     assert "不能证明" in effect["disclaimer"]
-
-
-def test_v13_migration_preserves_existing_style_preferences(tmp_path):
-    settings = _settings(tmp_path)
-    database = Database(settings.database_path)
-    database.initialize()
-    user_id = database.create_user(
-        "edit-migration", hash_password("password-123")
-    )
-    project_id = "edit-migration-project"
-    _create_project(database, user_id=user_id, project_id=project_id)
-    with database.connection() as connection:
-        connection.execute(
-            """
-            INSERT INTO author_style_preferences(
-                id, project_id, issue_id, issue_type, decision,
-                original_text, replacement_text, guidance, created_at
-            ) VALUES (
-                'existing-pref', ?, NULL, 'repetition', 'ignored',
-                '原文', '', '保留这次重复', '2026-01-01T00:00:00+00:00'
-            )
-            """,
-            (project_id,),
-        )
-        connection.execute("DROP TABLE author_editing_preferences")
-        connection.execute("DROP TABLE editing_preference_suggestions")
-        connection.execute(
-            "DELETE FROM schema_migrations WHERE version=13"
-        )
-        connection.commit()
-
-    database.initialize()
-    with database.connection() as connection:
-        legacy = connection.execute(
-            """
-            SELECT guidance FROM author_style_preferences
-            WHERE id='existing-pref'
-            """
-        ).fetchone()
-        migration = connection.execute(
-            "SELECT name FROM schema_migrations WHERE version=13"
-        ).fetchone()
-        tables = {
-            row["name"]
-            for row in connection.execute(
-                """
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name IN (
-                    'editing_preference_suggestions',
-                    'author_editing_preferences'
-                )
-                """
-            ).fetchall()
-        }
-    assert legacy["guidance"] == "保留这次重复"
-    assert migration["name"] == "manual_edit_preference_learning_v13"
-    assert tables == {
-        "editing_preference_suggestions",
-        "author_editing_preferences",
-    }
 
 
 def test_v22_migration_preserves_existing_editing_preferences(tmp_path):

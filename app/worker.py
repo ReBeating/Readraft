@@ -3,31 +3,30 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import time
 from pathlib import Path
 
-from .assistant_chat import (
+from .agent_model import (
     AnswerUpdateCallback,
-    BaseAssistantChatModel,
-    DeepSeekAssistantChatModel,
+    BaseAgentModel,
+    ProviderAgentModel,
 )
 from .agent_orchestrator import AssistantAgentOrchestrator
+from .analysis_repository import AnalysisRepository
+from .reference_analysis_pipeline import ReferenceAnalysisPipeline
 from .assistant_chat_service import AssistantChatService
 from .causal_branch_planner import (
     BaseCausalBranchPlanner,
-    DeepSeekCausalBranchPlanner,
+    ProviderCausalBranchPlanner,
 )
 from .causal_branch_service import CausalBranchSimulationService
 from .causal_suggestion_planner import (
     BaseCausalSuggestionPlanner,
-    DeepSeekCausalSuggestionPlanner,
+    ProviderCausalSuggestionPlanner,
 )
 from .causal_suggestion_service import CausalSuggestionService
 from .config import Settings
 from .context_compiler import (
-    build_scene_context_snapshot,
-    build_writing_context_snapshot,
     compile_active_techniques,
     compile_canonical_memory,
     compile_planned_causal_links,
@@ -35,10 +34,10 @@ from .context_compiler import (
 )
 from .credentials import CredentialCipher, CredentialError
 from .db import Database
-from .deepseek import AnalyzerError, BaseAnalyzer, DeepSeekAnalyzer
+from .model_client import AnalyzerError, BaseAnalyzer, ProviderAnalyzer
 from .memory_extraction import (
     BaseMemoryExtractor,
-    DeepSeekMemoryExtractor,
+    ProviderMemoryExtractor,
 )
 from .memory_service import MemoryService
 from .model_provider import (
@@ -53,7 +52,7 @@ from .model_routing import (
 )
 from .planning_ai import (
     BaseChapterPlanner,
-    DeepSeekChapterPlanner,
+    ProviderChapterPlanner,
 )
 from .planning_schema import (
     ChapterTaskCard,
@@ -63,20 +62,19 @@ from .planning_schema import (
 from .planning_service import PlanningService
 from .preference_extraction import (
     BaseEditPreferenceExtractor,
-    DeepSeekEditPreferenceExtractor,
+    ProviderEditPreferenceExtractor,
     locate_edit_preference_evidence,
 )
 from .preference_service import PreferenceService
 from .reader_planner import (
     BaseReaderPlanner,
-    DeepSeekReaderPlanner,
+    ProviderReaderPlanner,
 )
 from .reader_service import ReaderDecisionService
 from .security import stable_provider_user_id
-from .scene_service import SceneService
 from .style_editor import (
     BaseStyleEditor,
-    DeepSeekStyleEditor,
+    ProviderStyleEditor,
     locate_style_issues,
     surrounding_excerpt,
 )
@@ -84,20 +82,20 @@ from .style_service import StyleService
 from .story_plan_suggestion_service import StoryPlanSuggestionService
 from .story_planner import (
     BaseStoryPlanner,
-    DeepSeekStoryPlanner,
+    ProviderStoryPlanner,
 )
 from .story_structure_planner import (
     BaseStoryStructurePlanner,
-    DeepSeekStoryStructurePlanner,
+    ProviderStoryStructurePlanner,
 )
 from .story_structure_service import StoryStructureSuggestionService
 from .voice_extraction import (
     BaseVoiceProfileExtractor,
-    DeepSeekVoiceProfileExtractor,
+    ProviderVoiceProfileExtractor,
     locate_voice_evidence,
 )
-from .writing import BaseWriter, DeepSeekWriter
 from .web_search import ExaWebSearch, WebSearchError
+from .web_fetch import PublicWebFetcher, WebFetchError
 
 
 logger = logging.getLogger(__name__)
@@ -108,7 +106,6 @@ class AnalysisWorker:
         self,
         database: Database,
         analyzer: BaseAnalyzer | None,
-        writer: BaseWriter | None,
         provider_user_secret: str,
         settings: Settings,
         credential_cipher: CredentialCipher,
@@ -124,15 +121,20 @@ class AnalysisWorker:
             BaseCausalSuggestionPlanner | None
         ) = None,
         causal_branch_planner: BaseCausalBranchPlanner | None = None,
-        assistant_chat_model: BaseAssistantChatModel | None = None,
+        assistant_chat_model: BaseAgentModel | None = None,
         poll_seconds: float = 1.0,
     ):
         self.database = database
+        self.analysis_repository = AnalysisRepository(database)
         self.analyzer = analyzer
-        self.writer = writer
         self.provider_user_secret = provider_user_secret
         self.settings = settings
         self.credential_cipher = credential_cipher
+        self.reference_analysis_pipeline = ReferenceAnalysisPipeline(
+            self.analysis_repository,
+            analyzer_factory=self._analysis_model_for_item,
+            provider_user_secret=provider_user_secret,
+        )
         self.memory_extractor = memory_extractor
         self.memory_service = MemoryService(database)
         self.chapter_planner = chapter_planner
@@ -153,9 +155,9 @@ class AnalysisWorker:
         self.assistant_agent_orchestrator = AssistantAgentOrchestrator(
             self.assistant_chat_service,
             web_search=self._search_web,
+            web_fetch=self._fetch_web,
         )
         self.planning_service = PlanningService(database)
-        self.scene_service = SceneService(database)
         self.style_service = StyleService(database)
         self.preference_service = PreferenceService(database)
         self.story_plan_suggestion_service = StoryPlanSuggestionService(
@@ -176,6 +178,7 @@ class AnalysisWorker:
         self.poll_seconds = poll_seconds
         self._wake = asyncio.Event()
         self._stopping = False
+        self._active_assistant_tasks: dict[str, asyncio.Task[None]] = {}
         self.last_heartbeat = time.monotonic()
         self.last_error: str | None = None
         self.consecutive_loop_failures = 0
@@ -206,6 +209,22 @@ class AnalysisWorker:
             }
             for item in results
         ]
+
+    def _fetch_web(
+        self,
+        user_id: int,
+        url: str,
+        max_chars: int,
+    ) -> dict[str, str]:
+        settings = self.database.get_web_search_settings(user_id)
+        if settings is not None and not settings.get("enabled"):
+            raise ValueError("联网功能尚未启用")
+        try:
+            return PublicWebFetcher().fetch(
+                url, max_chars=max_chars
+            ).as_dict()
+        except WebFetchError as exc:
+            raise ValueError(str(exc)) from exc
 
     @property
     def healthy(self) -> bool:
@@ -290,11 +309,9 @@ class AnalysisWorker:
 
     async def run(self) -> None:
         logger.info(
-            "AI worker started analyzer=%s/%s writer=%s/%s",
+            "AI worker started analyzer=%s/%s",
             self.analyzer.provider if self.analyzer else "unconfigured",
             self.analyzer.model if self.analyzer else "unconfigured",
-            self.writer.provider if self.writer else "unconfigured",
-            self.writer.model if self.writer else "unconfigured",
         )
         while not self._stopping:
             item = None
@@ -380,9 +397,20 @@ class AnalysisWorker:
                 if chat_item:
                     self.consecutive_loop_failures = 0
                     self.last_error = None
-                    await self._process_assistant_chat(chat_item)
+                    chat_message_id = str(chat_item["id"])
+                    chat_task = asyncio.create_task(
+                        self._process_assistant_chat(chat_item),
+                        name=f"assistant-chat-{chat_message_id}",
+                    )
+                    self._active_assistant_tasks[chat_message_id] = chat_task
+                    try:
+                        await chat_task
+                    finally:
+                        self._active_assistant_tasks.pop(
+                            chat_message_id, None
+                        )
                     continue
-                item = await asyncio.to_thread(self.database.claim_next_analysis)
+                item = await asyncio.to_thread(self.analysis_repository.claim_next)
                 self.consecutive_loop_failures = 0
                 self.last_error = None
                 if item:
@@ -524,7 +552,7 @@ class AnalysisWorker:
                 elif item and item.get("claim_token"):
                     try:
                         await asyncio.to_thread(
-                            self.database.release_claim,
+                            self.analysis_repository.release_claim,
                             str(item["analysis_id"]),
                             str(item["job_id"]),
                             str(item["claim_token"]),
@@ -600,12 +628,35 @@ class AnalysisWorker:
                 response=response,
             )
             if not accepted:
-                logger.warning(
-                    "discarded stale assistant chat result id=%s",
-                    message_id,
+                cancel_requested = await asyncio.to_thread(
+                    self.assistant_chat_service.is_message_cancel_requested,
+                    message_id=message_id,
+                    claim_token=claim_token,
                 )
-            else:
-                await self._queue_assistant_memory(item, message_id)
+                if cancel_requested:
+                    await asyncio.to_thread(
+                        self.assistant_chat_service.cancel_running_message,
+                        message_id=message_id,
+                        claim_token=claim_token,
+                    )
+                else:
+                    logger.warning(
+                        "discarded stale assistant chat result id=%s",
+                        message_id,
+                    )
+        except asyncio.CancelledError:
+            cancel_requested = await asyncio.to_thread(
+                self.assistant_chat_service.is_message_cancel_requested,
+                message_id=message_id,
+                claim_token=claim_token,
+            )
+            if not cancel_requested:
+                raise
+            await asyncio.to_thread(
+                self.assistant_chat_service.cancel_running_message,
+                message_id=message_id,
+                claim_token=claim_token,
+            )
         except AnalyzerError as exc:
             await flush_stream()
             logger.warning(
@@ -633,90 +684,15 @@ class AnalysisWorker:
                 str(exc),
             )
 
-    async def _queue_assistant_memory(
-        self, item: dict, message_id: str
-    ) -> None:
-        if not item.get("project_id") or not item.get("novel_chapter_id"):
-            return
-        try:
-            message = await asyncio.to_thread(
-                self.assistant_chat_service.get_message,
-                user_id=int(item["user_id"]),
-                message_id=message_id,
-            )
-            auto_commit = dict(
-                ((message or {}).get("response") or {}).get(
-                    "auto_commit"
-                )
-                or {}
-            )
-            version_id = str(auto_commit.get("version_id") or "")
-            if auto_commit.get("status") != "applied" or not version_id:
-                return
-            await asyncio.to_thread(
-                self.database.create_memory_extraction_job,
-                user_id=int(item["user_id"]),
-                project_id=str(item["project_id"]),
-                chapter_id=str(item["novel_chapter_id"]),
-                version_id=version_id,
-                provider=str(item["provider"]),
-                model=str(item["model"]),
-                credential_source=str(item["credential_source"]),
-            )
-        except Exception:
-            logger.exception(
-                "failed to queue background memory for assistant message id=%s",
-                message_id,
-            )
+    def cancel_assistant_message(self, message_id: str) -> bool:
+        task = self._active_assistant_tasks.get(str(message_id))
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     async def _process(self, item: dict) -> None:
-        analysis_id = str(item["analysis_id"])
-        job_id = str(item["job_id"])
-        claim_token = str(item["claim_token"])
-        try:
-            content = await asyncio.to_thread(
-                Path(str(item["content_path"])).read_text, encoding="utf-8"
-            )
-            response = await self._analyze(
-                item,
-                content,
-            )
-            accepted = await asyncio.to_thread(
-                self.database.complete_analysis,
-                analysis_id=analysis_id,
-                job_id=job_id,
-                result=response.result.model_dump(mode="json"),
-                raw_response=response.raw_response,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                claim_token=claim_token,
-            )
-            if not accepted:
-                logger.warning(
-                    "discarded stale chapter analysis result id=%s", analysis_id
-                )
-        except AnalyzerError as exc:
-            logger.warning("chapter analysis failed id=%s: %s", analysis_id, exc)
-            await asyncio.to_thread(
-                self.database.fail_analysis,
-                analysis_id,
-                job_id,
-                str(exc),
-                claim_token,
-                exc.input_tokens,
-                exc.output_tokens,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("unexpected chapter analysis failure id=%s", analysis_id)
-            await asyncio.to_thread(
-                self.database.fail_analysis,
-                analysis_id,
-                job_id,
-                "处理章节时发生内部错误，请重试",
-                claim_token,
-            )
+        await self.reference_analysis_pipeline.process(item)
 
     async def _process_voice_suggestion(self, item: dict) -> None:
         suggestion_id = str(item["id"])
@@ -1092,119 +1068,7 @@ class AnalysisWorker:
             if str(item["operation"]) == "rewrite_style_issue":
                 await self._process_style_rewrite(item)
                 return
-            if str(item["operation"]) in {
-                "generate_scene",
-                "rewrite_scene",
-            }:
-                await self._process_scene_generation(item)
-                return
-            context = await asyncio.to_thread(
-                self.database.get_writing_context,
-                int(item["user_id"]),
-                str(item["chapter_id"]),
-                None,
-                str(item["instruction"] or ""),
-            )
-            if not context:
-                raise AnalyzerError("写作项目或章节不存在")
-            if not context.get("task_card"):
-                raise AnalyzerError(
-                    "章节任务卡尚未确认，已阻止向 DeepSeek 发送写作请求"
-                )
-            content_path = Path(str(item["content_path"]))
-            current_content = await asyncio.to_thread(
-                self._read_optional_text, content_path
-            )
-            previous = context.get("previous_chapter")
-            previous_content = ""
-            if previous and previous.get("content_path"):
-                previous_content = await asyncio.to_thread(
-                    self._read_optional_text,
-                    Path(str(previous["content_path"])),
-                )
-            context = {
-                **context,
-                "canonical_memory": compile_canonical_memory(
-                    context.get("canonical_memory") or {}
-                ),
-                "active_techniques": compile_active_techniques(
-                    context.get("technique_cards") or [], usage="write"
-                ),
-            }
-            context_recorded = await asyncio.to_thread(
-                self.database.record_generation_context_snapshot,
-                job_id=job_id,
-                claim_token=claim_token,
-                snapshot=build_writing_context_snapshot(
-                    context=context,
-                    operation=str(item["operation"]),
-                    instruction=str(item["instruction"] or ""),
-                    current_content=current_content,
-                    previous_content=previous_content,
-                ),
-            )
-            if not context_recorded:
-                raise AnalyzerError(
-                    "写作任务已失效，未向 DeepSeek 发送正文"
-                )
-            response = await self._write(
-                item=item,
-                context=context,
-                current_content=current_content,
-                previous_content=previous_content,
-            )
-            total_input_tokens = response.input_tokens
-            total_output_tokens = response.output_tokens
-            warnings: list[str] = []
-            if response.truncated:
-                warnings.append("本次写作输出达到 token 上限")
-            if str(item["operation"]) == "continue" and current_content.strip():
-                final_content = (
-                    current_content.rstrip() + "\n\n" + response.content.lstrip()
-                )
-            else:
-                final_content = response.content.strip()
-
-            version_path = await asyncio.to_thread(
-                self._persist_generated_content,
-                content_path,
-                job_id,
-                final_content,
-            )
-            version_id = await asyncio.to_thread(
-                self.database.complete_generation,
-                job_id=job_id,
-                claim_token=claim_token,
-                version_path=version_path,
-                result_char_count=len(final_content),
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
-                content_hash=hashlib.sha256(
-                    final_content.encode("utf-8")
-                ).hexdigest(),
-                warning="；".join(warnings),
-                accept_as_canonical=True,
-            )
-            if not version_id:
-                logger.warning("discarded stale generation result id=%s", job_id)
-                return
-            try:
-                await asyncio.to_thread(
-                    self.database.create_memory_extraction_job,
-                    user_id=int(item["user_id"]),
-                    project_id=str(item["project_id"]),
-                    chapter_id=str(item["chapter_id"]),
-                    version_id=version_id,
-                    provider=str(item["provider"]),
-                    model=str(item["model"]),
-                    credential_source=str(item["credential_source"]),
-                )
-            except Exception:
-                logger.exception(
-                    "background memory extraction was not queued "
-                    "chapter=%s",
-                    item["chapter_id"],
-                )
+            raise AnalyzerError("不支持的后台任务")
         except AnalyzerError as exc:
             logger.warning("writing task failed id=%s: %s", job_id, exc)
             await asyncio.to_thread(
@@ -1230,107 +1094,6 @@ class AnalysisWorker:
                 ),
             )
 
-    async def _process_scene_generation(self, item: dict) -> None:
-        job_id = str(item["id"])
-        scene_beat_id = str(item["subject_id"] or "")
-        if not scene_beat_id:
-            raise AnalyzerError("场景写作任务没有指定场景节拍")
-        state = await asyncio.to_thread(
-            self.scene_service.get_generation_state,
-            user_id=int(item["user_id"]),
-            project_id=str(item["project_id"]),
-            chapter_id=str(item["chapter_id"]),
-            scene_beat_id=scene_beat_id,
-        )
-        context = await asyncio.to_thread(
-            self.database.get_writing_context,
-            int(item["user_id"]),
-            str(item["chapter_id"]),
-            scene_beat_id,
-            str(item["instruction"] or ""),
-        )
-        if not context or not context.get("task_card"):
-            raise AnalyzerError("章节任务卡尚未确认")
-        previous_chapter = context.get("previous_chapter")
-        previous_chapter_content = ""
-        if previous_chapter and previous_chapter.get("content_path"):
-            previous_chapter_content = await asyncio.to_thread(
-                self._read_optional_text,
-                Path(str(previous_chapter["content_path"])),
-            )
-        context = {
-            **context,
-            "canonical_memory": compile_canonical_memory(
-                context.get("canonical_memory") or {}
-            ),
-            "active_techniques": compile_active_techniques(
-                context.get("technique_cards") or [], usage="write"
-            ),
-            "focused_scene": state["focused_scene"],
-            "scene_sequence": state["scene_sequence"],
-            "previous_scene": state["previous_scene"],
-            "next_scene": state["next_scene"],
-            "previous_scene_content": state["previous_scene_content"],
-            "previous_chapter_content": previous_chapter_content,
-            "scene_target_chars": state["target_chars"],
-            "scene_minimum_chars": state["minimum_chars"],
-        }
-        context_recorded = await asyncio.to_thread(
-            self.database.record_generation_context_snapshot,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            snapshot=build_scene_context_snapshot(
-                context=context,
-                operation=str(item["operation"]),
-                instruction=str(item["instruction"] or ""),
-                current_scene_content=state["current_content"],
-                previous_scene_content=state["previous_scene_content"],
-                previous_chapter_content=previous_chapter_content,
-            ),
-        )
-        if not context_recorded:
-            raise AnalyzerError(
-                "场景写作任务已失效，未向 DeepSeek 发送正文"
-            )
-        response = await self._write(
-            item=item,
-            context=context,
-            current_content=state["current_content"],
-            previous_content=state["previous_scene_content"],
-        )
-        final_content = response.content.strip()
-        if not final_content:
-            raise AnalyzerError(
-                "DeepSeek 没有返回场景正文",
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-            )
-        total_input_tokens = response.input_tokens
-        total_output_tokens = response.output_tokens
-        warnings: list[str] = []
-        if response.truncated:
-            warnings.append("本次场景写作输出达到 token 上限")
-
-        version_path = await asyncio.to_thread(
-            self._persist_generated_scene,
-            Path(str(state["chapter_content_path"])),
-            scene_beat_id,
-            job_id,
-            final_content,
-        )
-        version_id = await asyncio.to_thread(
-            self.scene_service.complete_generation,
-            job_id=job_id,
-            claim_token=str(item["claim_token"]),
-            version_path=version_path,
-            content=final_content,
-            input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens,
-            warning="；".join(warnings),
-        )
-        if not version_id:
-            logger.warning("discarded stale scene generation id=%s", job_id)
-
     async def _process_memory_extraction(self, item: dict) -> None:
         job_id = str(item["id"])
         version_id = str(item["version_id"] or "")
@@ -1343,8 +1106,8 @@ class AnalysisWorker:
         )
         if not version:
             raise AnalyzerError("要提取故事记忆的正文版本不存在")
-        if str(version["canonical_version_id"] or "") != version_id:
-            raise AnalyzerError("正文正史已经变化，请重新提取故事记忆")
+        if str(version["head_version_id"] or "") != version_id:
+            raise AnalyzerError("main HEAD 已经变化，请重新提取故事记忆")
         context = await asyncio.to_thread(
             self.database.get_writing_context,
             int(item["user_id"]),
@@ -1434,7 +1197,7 @@ class AnalysisWorker:
         )
         if not context_recorded:
             raise AnalyzerError(
-                "章节规划任务已失效，未向 DeepSeek 发送资料"
+                "章节规划任务已失效，未向模型发送资料"
             )
         response = await self._plan_chapter(
             item=item,
@@ -1540,7 +1303,7 @@ class AnalysisWorker:
         )
         if not context_recorded:
             raise AnalyzerError(
-                "场景拆解任务已失效，未向 DeepSeek 发送资料"
+                "场景拆解任务已失效，未向模型发送资料"
             )
         response = await self._plan_scene_beats(
             item=item,
@@ -1645,7 +1408,7 @@ class AnalysisWorker:
         )
         if not context_recorded:
             raise AnalyzerError(
-                "读者意见规划任务已失效，未向 DeepSeek 发送资料"
+                "读者意见规划任务已失效，未向模型发送资料"
             )
         response = await self._plan_reader_request(
             item=item, context=context
@@ -1739,7 +1502,7 @@ class AnalysisWorker:
         )
         if not context_recorded:
             raise AnalyzerError(
-                "AI 味审校任务已失效，未向 DeepSeek 发送正文"
+                "AI 味审校任务已失效，未向模型发送正文"
             )
         response = await self._audit_style(
             item=item,
@@ -1853,7 +1616,7 @@ class AnalysisWorker:
         )
         if not context_recorded:
             raise AnalyzerError(
-                "定点改写任务已失效，未向 DeepSeek 发送正文"
+                "定点改写任务已失效，未向模型发送正文"
             )
         response = await self._rewrite_style(
             item=item,
@@ -1891,87 +1654,6 @@ class AnalysisWorker:
         except FileNotFoundError:
             return ""
 
-    @staticmethod
-    def _persist_generated_content(
-        content_path: Path, job_id: str, content: str
-    ) -> Path:
-        content_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        versions_dir = content_path.parent / "versions"
-        versions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(content_path.parent, 0o700)
-        os.chmod(versions_dir, 0o700)
-        version_path = versions_dir / f"{job_id}.txt"
-        version_path.write_text(content, encoding="utf-8")
-        version_path.chmod(0o600)
-        temporary_path = content_path.with_name(f".{content_path.name}.{job_id}.tmp")
-        temporary_path.write_text(content, encoding="utf-8")
-        temporary_path.chmod(0o600)
-        os.replace(temporary_path, content_path)
-        content_path.chmod(0o600)
-        return version_path
-
-    @staticmethod
-    def _persist_generated_scene(
-        chapter_content_path: Path,
-        scene_beat_id: str,
-        job_id: str,
-        content: str,
-    ) -> Path:
-        versions_dir = (
-            chapter_content_path.parent
-            / "scenes"
-            / scene_beat_id
-            / "versions"
-        )
-        versions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(versions_dir.parent, 0o700)
-        os.chmod(versions_dir, 0o700)
-        version_path = versions_dir / f"{job_id}.txt"
-        temporary_path = versions_dir / f".{job_id}.tmp"
-        temporary_path.write_text(content, encoding="utf-8")
-        temporary_path.chmod(0o600)
-        os.replace(temporary_path, version_path)
-        version_path.chmod(0o600)
-        return version_path
-
-    async def _write(
-        self,
-        *,
-        item: dict,
-        context: dict,
-        current_content: str,
-        previous_content: str,
-    ):
-        user_id = int(item["user_id"])
-        provider_user_id = stable_provider_user_id(
-            user_id, self.provider_user_secret
-        )
-        writer = self.writer
-        close_writer = False
-        if item.get("credential_source") == "personal":
-            personal_settings = await self._personal_model_settings(
-                item, "reasoning"
-            )
-            writer = DeepSeekWriter(personal_settings)
-            close_writer = True
-        elif self.writer is None or (
-            str(item["provider"]) != self.writer.provider
-        ):
-            raise AnalyzerError("任务所需的服务器 DeepSeek API Key 当前未配置")
-
-        try:
-            return await writer.write(
-                context=context,
-                operation=str(item["operation"]),
-                instruction=str(item["instruction"] or ""),
-                current_content=current_content,
-                previous_content=previous_content,
-                provider_user_id=provider_user_id,
-            )
-        finally:
-            if close_writer:
-                await writer.close()
-
     async def _extract_memory(
         self,
         *,
@@ -1989,13 +1671,13 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "fast"
             )
-            extractor = DeepSeekMemoryExtractor(personal_settings)
+            extractor = ProviderMemoryExtractor(personal_settings)
             close_extractor = True
         elif self.memory_extractor is None or (
             str(item["provider"]) != self.memory_extractor.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await extractor.extract(
@@ -2023,13 +1705,13 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "deep"
             )
-            planner = DeepSeekChapterPlanner(personal_settings)
+            planner = ProviderChapterPlanner(personal_settings)
             close_planner = True
         elif self.chapter_planner is None or (
             str(item["provider"]) != self.chapter_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.propose(
@@ -2058,13 +1740,13 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "deep"
             )
-            planner = DeepSeekChapterPlanner(personal_settings)
+            planner = ProviderChapterPlanner(personal_settings)
             close_planner = True
         elif self.chapter_planner is None or (
             str(item["provider"]) != self.chapter_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.propose_scene_beats(
@@ -2093,13 +1775,13 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "deep"
             )
-            planner = DeepSeekStoryPlanner(personal_settings)
+            planner = ProviderStoryPlanner(personal_settings)
             close_planner = True
         elif self.story_planner is None or (
             str(item["provider"]) != self.story_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.propose(
@@ -2128,14 +1810,14 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "deep"
             )
-            planner = DeepSeekStoryStructurePlanner(personal_settings)
+            planner = ProviderStoryStructurePlanner(personal_settings)
             close_planner = True
         elif self.story_structure_planner is None or (
             str(item["provider"])
             != self.story_structure_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.propose(
@@ -2163,14 +1845,14 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "deep"
             )
-            planner = DeepSeekCausalSuggestionPlanner(personal_settings)
+            planner = ProviderCausalSuggestionPlanner(personal_settings)
             close_planner = True
         elif self.causal_suggestion_planner is None or (
             str(item["provider"])
             != self.causal_suggestion_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.propose(
@@ -2199,13 +1881,13 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "deep"
             )
-            planner = DeepSeekCausalBranchPlanner(personal_settings)
+            planner = ProviderCausalBranchPlanner(personal_settings)
             close_planner = True
         elif self.causal_branch_planner is None or (
             str(item["provider"]) != self.causal_branch_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.simulate(
@@ -2233,13 +1915,13 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "reasoning"
             )
-            planner = DeepSeekReaderPlanner(personal_settings)
+            planner = ProviderReaderPlanner(personal_settings)
             close_planner = True
         elif self.reader_planner is None or (
             str(item["provider"]) != self.reader_planner.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await planner.propose(
@@ -2313,14 +1995,14 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "fast"
             )
-            extractor = DeepSeekVoiceProfileExtractor(personal_settings)
+            extractor = ProviderVoiceProfileExtractor(personal_settings)
             close_extractor = True
         elif self.voice_profile_extractor is None or (
             str(item["provider"])
             != self.voice_profile_extractor.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await extractor.extract(
@@ -2353,14 +2035,14 @@ class AnalysisWorker:
             personal_settings = await self._personal_model_settings(
                 item, "fast"
             )
-            extractor = DeepSeekEditPreferenceExtractor(personal_settings)
+            extractor = ProviderEditPreferenceExtractor(personal_settings)
             close_extractor = True
         elif self.edit_preference_extractor is None or (
             str(item["provider"])
             != self.edit_preference_extractor.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
             return await extractor.extract(
@@ -2371,9 +2053,7 @@ class AnalysisWorker:
                     "style_guide": item.get("style_guide"),
                 },
                 source={
-                    "source_type": item.get("source_type"),
                     "chapter_title": item.get("chapter_title"),
-                    "scene_goal": item.get("scene_goal"),
                     "author_change_summary": item.get(
                         "author_change_summary"
                     ),
@@ -2390,46 +2070,35 @@ class AnalysisWorker:
     async def _style_editor_for_item(
         self, item: dict
     ) -> tuple[BaseStyleEditor, bool]:
-        user_id = int(item["user_id"])
         if item.get("credential_source") == "personal":
             personal_settings = await self._personal_model_settings(
                 item, "reasoning"
             )
-            return DeepSeekStyleEditor(personal_settings), True
+            return ProviderStyleEditor(personal_settings), True
         if self.style_editor is None or (
             str(item["provider"]) != self.style_editor.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         return self.style_editor, False
 
-    async def _analyze(self, item: dict, content: str):
-        user_id = int(item["user_id"])
-        provider_user_id = stable_provider_user_id(
-            user_id, self.provider_user_secret
-        )
+    async def _analysis_model_for_item(
+        self, item: dict
+    ) -> tuple[BaseAnalyzer, bool]:
         if item.get("credential_source") != "personal":
             if self.analyzer is None or (
                 str(item["provider"]) != self.analyzer.provider
             ):
                 raise AnalyzerError(
-                    "任务所需的服务器 DeepSeek API Key 当前未配置"
+                    "任务所需的服务器模型凭据当前未配置"
                 )
-            return await self.analyzer.analyze(
-                str(item["chapter_title"]), content, provider_user_id
-            )
+            return self.analyzer, False
 
         personal_settings = await self._personal_model_settings(
             item, "reasoning"
         )
-        analyzer = DeepSeekAnalyzer(personal_settings)
-        try:
-            return await analyzer.analyze(
-                str(item["chapter_title"]), content, provider_user_id
-            )
-        finally:
-            await analyzer.close()
+        return ProviderAnalyzer(personal_settings), True
 
     async def _reply_assistant_chat(
         self,
@@ -2444,80 +2113,64 @@ class AnalysisWorker:
         )
         model = self.assistant_chat_model
         routing_model = model
-        role_models: dict[str, BaseAssistantChatModel] = {}
-        owned_models: list[BaseAssistantChatModel] = []
+        prose_model = model
+        role_models: dict[str, BaseAgentModel] = {}
+        owned_models: list[BaseAgentModel] = []
         if item.get("credential_source") == "personal":
-            if not (item.get("id") and item.get("claim_token")):
-                personal_settings = await self._personal_model_settings(
-                    item, "discussion"
-                )
-                model = DeepSeekAssistantChatModel(personal_settings)
-                routing_model = model
-                owned_models.append(model)
-            else:
-                (
-                    routing_settings,
-                    discussion_settings,
-                    reasoning_settings,
-                    deep_settings,
-                ) = await asyncio.gather(
-                    self._personal_model_settings(item, "fast"),
-                    self._personal_model_settings(item, "discussion"),
-                    self._personal_model_settings(item, "reasoning"),
-                    self._personal_model_settings(item, "deep"),
-                )
+            (
+                routing_settings,
+                discussion_settings,
+                reasoning_settings,
+                deep_reasoning_settings,
+                prose_settings,
+            ) = await asyncio.gather(
+                self._personal_model_settings(item, "fast"),
+                self._personal_model_settings(item, "discussion"),
+                self._personal_model_settings(item, "reasoning"),
+                self._personal_model_settings(item, "deep"),
+                self._personal_model_settings(item, "prose"),
+            )
 
-                models_by_settings: dict[
-                    Settings, BaseAssistantChatModel
-                ] = {}
+            models_by_settings: dict[Settings, BaseAgentModel] = {}
 
-                def model_for(
-                    settings: Settings,
-                ) -> BaseAssistantChatModel:
-                    selected = models_by_settings.get(settings)
-                    if selected is None:
-                        selected = DeepSeekAssistantChatModel(settings)
-                        models_by_settings[settings] = selected
-                        owned_models.append(selected)
-                    return selected
+            def model_for(settings: Settings) -> BaseAgentModel:
+                selected = models_by_settings.get(settings)
+                if selected is None:
+                    selected = ProviderAgentModel(settings)
+                    models_by_settings[settings] = selected
+                    owned_models.append(selected)
+                return selected
 
-                routing_model = model_for(routing_settings)
-                model = model_for(discussion_settings)
-                reasoning_model = model_for(reasoning_settings)
-                deep_model = model_for(deep_settings)
-                role_models = {
-                    "advisor": model,
-                    "analyst": reasoning_model,
-                    "planner": reasoning_model,
-                    "researcher": reasoning_model,
-                    "writer": reasoning_model,
-                    "editor": reasoning_model,
-                    "story_planner": deep_model,
-                }
+            routing_model = model_for(routing_settings)
+            model = model_for(discussion_settings)
+            reasoning_model = model_for(reasoning_settings)
+            deep_reasoning_model = model_for(deep_reasoning_settings)
+            prose_model = model_for(prose_settings)
+            role_models = {
+                "advisor": model,
+                "analyst": reasoning_model,
+                "planner": reasoning_model,
+                "researcher": reasoning_model,
+                "writer": reasoning_model,
+                "editor": reasoning_model,
+                "story_planner": deep_reasoning_model,
+            }
         elif self.assistant_chat_model is None or (
             str(item["provider"]) != self.assistant_chat_model.provider
         ):
             raise AnalyzerError(
-                "任务所需的服务器 DeepSeek API Key 当前未配置"
+                "任务所需的服务器模型凭据当前未配置"
             )
         try:
-            if item.get("id") and item.get("claim_token"):
-                return await self.assistant_agent_orchestrator.run(
-                    model=model,
-                    routing_model=routing_model,
-                    role_models=role_models,
-                    item=item,
-                    payload=payload,
-                    provider_user_id=provider_user_id,
-                    on_answer_update=on_answer_update,
-                )
-            return await model.reply(
-                context=payload["context"],
-                sources=payload["sources"],
-                history=payload["history"],
-                question=payload["question"],
-                selected_quote=payload["selected_quote"],
+            return await self.assistant_agent_orchestrator.run(
+                model=model,
+                routing_model=routing_model,
+                prose_model=prose_model,
+                role_models=role_models,
+                item=item,
+                payload=payload,
                 provider_user_id=provider_user_id,
+                on_answer_update=on_answer_update,
             )
         finally:
             for owned_model in owned_models:
@@ -2526,9 +2179,10 @@ class AnalysisWorker:
     async def stop(self) -> None:
         self._stopping = True
         self._wake.set()
+        for task in tuple(self._active_assistant_tasks.values()):
+            task.cancel()
         providers = (
             self.analyzer,
-            self.writer,
             self.memory_extractor,
             self.chapter_planner,
             self.style_editor,

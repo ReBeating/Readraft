@@ -3,13 +3,36 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 
-SEARCH_ENGINE = "sqlite_fts5_unicode61_cjk_ngrams"
+SEARCH_ENGINE = "sqlite_fts5_unicode61_cjk_ngrams_rrf_v2"
 SEARCH_SCOPE = "author_confirmed_canon_before_current_chapter"
 DEFAULT_QUERY_TERM_LIMIT = 48
 DEFAULT_RESULT_LIMIT = 18
+DEFAULT_CANDIDATE_MULTIPLIER = 6
+RRF_K = 60
+
+_CAUSAL_SOURCE_TYPES = {"event", "foreshadowing", "plot_thread"}
+_CAUSAL_INTENT_MARKERS = {
+    "为什么",
+    "原因",
+    "因果",
+    "导致",
+    "结果",
+    "影响",
+    "伏笔",
+    "回收",
+    "呼应",
+}
+_SOURCE_TYPE_PRIORITY = {
+    "fact": 1,
+    "knowledge": 2,
+    "event": 3,
+    "foreshadowing": 4,
+    "plot_thread": 5,
+    "chapter_memory": 6,
+}
 
 _LEXEME_PATTERN = re.compile(
     r"[A-Za-z0-9]+|[\u3400-\u4dbf\u4e00-\u9fff]+"
@@ -343,14 +366,6 @@ def _index_canonical_documents(
         """,
         parameters,
     ).fetchall():
-        event_key = (
-            row["event_key"] if "event_key" in row.keys() else ""
-        )
-        cause_event_keys = (
-            row["cause_event_keys_json"]
-            if "cause_event_keys_json" in row.keys()
-            else "[]"
-        )
         _upsert_document(
             connection,
             source_type="chapter_memory",
@@ -382,6 +397,14 @@ def _index_canonical_documents(
         """,
         parameters,
     ).fetchall():
+        event_key = (
+            row["event_key"] if "event_key" in row.keys() else ""
+        )
+        cause_event_keys = (
+            row["cause_event_keys_json"]
+            if "cause_event_keys_json" in row.keys()
+            else "[]"
+        )
         _upsert_document(
             connection,
             source_type="event",
@@ -579,6 +602,7 @@ def search_memory_documents(
     branch_id: str,
     before_chapter_position: int,
     query_terms: Sequence[str],
+    query_concepts: Sequence[str] = (),
     excluded_chapter_ids: Sequence[str] = (),
     limit: int = DEFAULT_RESULT_LIMIT,
 ) -> list[dict[str, Any]]:
@@ -611,7 +635,11 @@ def search_memory_documents(
             + ")"
         )
         parameters.extend(excluded)
-    parameters.append(limit)
+    candidate_limit = min(
+        240,
+        max(limit * DEFAULT_CANDIDATE_MULTIPLIER, 60),
+    )
+    parameters.append(candidate_limit)
     rows = connection.execute(
         f"""
         SELECT d.source_type, d.source_id, d.chapter_id,
@@ -630,25 +658,160 @@ def search_memory_documents(
         """,
         tuple(parameters),
     ).fetchall()
-    results: list[dict[str, Any]] = []
+    concepts = [
+        concept
+        for concept in dict.fromkeys(
+            str(concept).strip().casefold() for concept in query_concepts
+        )
+        if len(concept) >= 2
+    ][:48]
+    causal_intent = any(
+        marker in value
+        for value in (*concepts, *clean_terms)
+        for marker in _CAUSAL_INTENT_MARKERS
+    )
+    candidates: list[dict[str, Any]] = []
     for rank, row in enumerate(rows, start=1):
         indexed_terms = set(str(row["search_terms"] or "").split())
         matched_terms = [
             term for term in clean_terms if term in indexed_terms
         ][:8]
-        results.append(
+        title = str(row["title"])
+        body = str(row["body"])
+        keywords = str(row["keywords"])
+        folded_title = title.casefold()
+        folded_body = body.casefold()
+        folded_keywords = keywords.casefold()
+        matched_concepts = [
+            concept
+            for concept in concepts
+            if concept in folded_title
+            or concept in folded_keywords
+            or concept in folded_body
+        ]
+        exact_strength = sum(
+            3 * int(concept in folded_title)
+            + 2 * int(concept in folded_keywords)
+            + int(concept in folded_body)
+            for concept in matched_concepts
+        )
+        source_type = str(row["source_type"])
+        candidates.append(
             {
-                "rank": rank,
-                "source_type": str(row["source_type"]),
+                "bm25_rank": rank,
+                "source_type": source_type,
                 "source_id": str(row["source_id"]),
                 "source_chapter_id": str(row["chapter_id"]),
                 "source_chapter_position": int(row["chapter_position"]),
                 "source_chapter_title": str(row["chapter_title"]),
-                "title": str(row["title"]),
-                "excerpt": _compact_text(row["body"], max_chars=900),
-                "keywords": _compact_text(row["keywords"], max_chars=240),
+                "title": title,
+                "excerpt": _compact_text(body, max_chars=900),
+                "keywords": _compact_text(keywords, max_chars=240),
                 "matched_terms": matched_terms,
-                "score": round(-float(row["score"] or 0.0), 8),
+                "matched_concepts": matched_concepts[:8],
+                "exact_strength": exact_strength,
+                "causal_match": bool(
+                    causal_intent
+                    and matched_concepts
+                    and source_type in _CAUSAL_SOURCE_TYPES
+                ),
+                "bm25_score": round(-float(row["score"] or 0.0), 8),
             }
         )
+    return _fuse_memory_candidates(candidates, limit=limit)
+
+
+def _rank_map(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    predicate: Callable[[Mapping[str, Any]], bool],
+    sort_key: Callable[[Mapping[str, Any]], Any],
+) -> dict[str, int]:
+    ranked = sorted(
+        (candidate for candidate in candidates if predicate(candidate)),
+        key=sort_key,
+    )
+    return {
+        _candidate_key(candidate): rank
+        for rank, candidate in enumerate(ranked, start=1)
+    }
+
+
+def _candidate_key(candidate: Mapping[str, Any]) -> str:
+    return f"{candidate.get('source_type', '')}:{candidate.get('source_id', '')}"
+
+
+def _fuse_memory_candidates(
+    candidates: Sequence[Mapping[str, Any]], *, limit: int
+) -> list[dict[str, Any]]:
+    """Fuse lexical, exact, causal and recency ranks without a vector service."""
+
+    if limit <= 0:
+        return []
+    exact_ranks = _rank_map(
+        candidates,
+        predicate=lambda item: int(item.get("exact_strength") or 0) > 0,
+        sort_key=lambda item: (
+            -int(item.get("exact_strength") or 0),
+            int(item.get("bm25_rank") or 10**9),
+        ),
+    )
+    causal_ranks = _rank_map(
+        candidates,
+        predicate=lambda item: bool(item.get("causal_match")),
+        sort_key=lambda item: (
+            -int(item.get("exact_strength") or 0),
+            -int(item.get("source_chapter_position") or 0),
+            int(item.get("bm25_rank") or 10**9),
+        ),
+    )
+    recency_ranks = _rank_map(
+        candidates,
+        predicate=lambda _item: True,
+        sort_key=lambda item: (
+            -int(item.get("source_chapter_position") or 0),
+            int(item.get("bm25_rank") or 10**9),
+        ),
+    )
+    fused: list[dict[str, Any]] = []
+    for raw in candidates:
+        item = dict(raw)
+        candidate_key = _candidate_key(item)
+        bm25_rank = int(item.get("bm25_rank") or 10**9)
+        exact_rank = exact_ranks.get(candidate_key)
+        causal_rank = causal_ranks.get(candidate_key)
+        recency_rank = recency_ranks[candidate_key]
+        source_priority = _SOURCE_TYPE_PRIORITY.get(
+            str(item.get("source_type") or ""), 12
+        )
+        fusion_score = 1.0 / (RRF_K + bm25_rank)
+        if exact_rank is not None:
+            fusion_score += 1.8 / (RRF_K + exact_rank)
+        if causal_rank is not None:
+            fusion_score += 0.9 / (RRF_K + causal_rank)
+        fusion_score += 0.35 / (RRF_K + recency_rank)
+        fusion_score += 0.15 / (RRF_K + source_priority)
+        item["fusion_score"] = round(fusion_score, 8)
+        item["score"] = item["fusion_score"]
+        item["ranking_signals"] = {
+            "bm25_rank": bm25_rank,
+            "exact_rank": exact_rank,
+            "causal_rank": causal_rank,
+            "recency_rank": recency_rank,
+            "source_priority": source_priority,
+        }
+        fused.append(item)
+    fused.sort(
+        key=lambda item: (
+            -float(item["fusion_score"]),
+            -int(item.get("exact_strength") or 0),
+            int(item.get("bm25_rank") or 10**9),
+            -int(item.get("source_chapter_position") or 0),
+            str(item.get("source_type") or ""),
+            str(item.get("source_id") or ""),
+        )
+    )
+    results = fused[:limit]
+    for rank, item in enumerate(results, start=1):
+        item["rank"] = rank
     return results

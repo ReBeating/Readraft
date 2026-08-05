@@ -5,11 +5,8 @@ import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
 from .db import Database, utc_now
+from .json_support import dump_json as _json
 from .story_planning_schema import PlannedStoryArc, StoryBlueprint
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _load_list(value: Any) -> List[str]:
@@ -1054,7 +1051,7 @@ class StoryPlanningService:
             FROM novel_chapter_plans cp
             JOIN novel_chapters ch ON ch.id=cp.chapter_id
             WHERE cp.project_id=? AND cp.status='confirmed'
-                AND ch.canonical_version_id IS NULL
+                AND ch.head_version_id IS NULL
             """,
             (project_id,),
         ).fetchall()
@@ -1089,18 +1086,6 @@ class StoryPlanningService:
                 WHERE id=(
                     SELECT chapter_id FROM novel_chapter_plans WHERE id=?
                 )
-                """,
-                (now, plan_id),
-            )
-            connection.execute(
-                """
-                UPDATE novel_scene_beats
-                SET draft_status=CASE
-                        WHEN current_version_id IS NOT NULL THEN 'stale'
-                        ELSE draft_status
-                    END,
-                    updated_at=?
-                WHERE plan_id=? AND beat_status='active'
                 """,
                 (now, plan_id),
             )

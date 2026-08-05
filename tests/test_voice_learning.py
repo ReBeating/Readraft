@@ -11,19 +11,19 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.credentials import CredentialCipher, key_hint
 from app.db import Database
-from app.deepseek import MockAnalyzer
+from app.model_client import MockAnalyzer
 from app.main import create_app
 from app.security import hash_password
 from app.style_service import StyleService
 from app.voice_extraction import (
     BaseVoiceProfileExtractor,
-    DeepSeekVoiceProfileExtractor,
+    ProviderVoiceProfileExtractor,
     MockVoiceProfileExtractor,
     VoiceExtractionResponse,
 )
 from app.voice_schema import VoiceProfileSuggestion
 from app.worker import AnalysisWorker
-from app.writing import MockWriter, build_writing_messages
+from app.writing import build_writing_messages
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -39,15 +39,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -135,11 +135,11 @@ def test_deepseek_voice_extractor_uses_json_schema_and_exact_evidence(
         )
 
     settings = replace(
-        _settings(tmp_path), deepseek_api_key="sk-voice-test"
+        _settings(tmp_path), model_api_key="sk-voice-test"
     )
 
     async def scenario():
-        extractor = DeepSeekVoiceProfileExtractor(
+        extractor = ProviderVoiceProfileExtractor(
             settings, transport=httpx.MockTransport(handler)
         )
         try:
@@ -209,7 +209,6 @@ def test_voice_suggestion_is_evidence_gated_and_author_applied(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
@@ -365,7 +364,6 @@ def test_voice_suggestion_with_hallucinated_quotes_fails_without_mutation(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             CredentialCipher(settings.credential_secret),
@@ -449,14 +447,14 @@ def test_voice_extractor_uses_owning_users_decrypted_api_key(
         provider = "deepseek"
 
         def __init__(self, personal_settings):
-            self.model = personal_settings.deepseek_model
-            seen["api_key"] = personal_settings.deepseek_api_key
-            seen["model"] = personal_settings.deepseek_model
-            seen["thinking"] = personal_settings.deepseek_thinking
-            seen["effort"] = personal_settings.deepseek_reasoning_effort
+            self.model = personal_settings.model_name
+            seen["api_key"] = personal_settings.model_api_key
+            seen["model"] = personal_settings.model_name
+            seen["thinking"] = personal_settings.model_thinking
+            seen["effort"] = personal_settings.model_reasoning_effort
 
     monkeypatch.setattr(
-        "app.worker.DeepSeekVoiceProfileExtractor",
+        "app.worker.ProviderVoiceProfileExtractor",
         FakePersonalVoiceExtractor,
     )
 
@@ -464,7 +462,6 @@ def test_voice_extractor_uses_owning_users_decrypted_api_key(
         worker = AnalysisWorker(
             database,
             MockAnalyzer(),
-            MockWriter(),
             settings.secret_key,
             settings,
             cipher,

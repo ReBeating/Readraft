@@ -1,0 +1,182 @@
+{
+  "schema_version": "1.0",
+  "corpus": [
+    {
+      "source_type": "fact",
+      "source_id": "injury-left-hand",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-1",
+      "chapter_position": 1,
+      "chapter_title": "修理铺",
+      "title": "事实 · 林越 · 左手伤势",
+      "body": "林越的左手掌被玻璃割伤，已经包扎，但暂时不能用力握紧物品。",
+      "keywords": "林越 左手 手掌 伤口 包扎"
+    },
+    {
+      "source_type": "event",
+      "source_id": "tape-decision",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-2",
+      "chapter_position": 2,
+      "chapter_title": "停电预报",
+      "title": "事件 · 停电前的录音带决定",
+      "body": "事件键 tape_decision。林越必须在十四点停电前决定是否把哥哥留下的录音带交给周岚；这个决定会改变两人的合作关系。",
+      "keywords": "林越 周岚 录音带 停电 tape_decision 因果"
+    },
+    {
+      "source_type": "knowledge",
+      "source_id": "zhoulan-tape-knowledge",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-3",
+      "chapter_position": 3,
+      "chapter_title": "门口",
+      "title": "人物知情 · 周岚",
+      "body": "周岚只看见林越拿出录音带，不知道录音的具体内容，也不知道林越哥哥在录音里说了什么。",
+      "keywords": "周岚 阿岚 录音带 不知情 knowledge"
+    },
+    {
+      "source_type": "foreshadowing",
+      "source_id": "blue-glass-key",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-4",
+      "chapter_position": 4,
+      "chapter_title": "潮水线",
+      "title": "伏笔 · 蓝玻璃钥匙",
+      "body": "林越在旧收音机电池仓里发现一把蓝玻璃钥匙，尚不知道它对应哪一扇门。计划在码头仓库线索中回收。",
+      "keywords": "蓝玻璃钥匙 收音机 电池仓 码头仓库 伏笔"
+    },
+    {
+      "source_type": "plot_thread",
+      "source_id": "warehouse-thread",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-5",
+      "chapter_position": 5,
+      "chapter_title": "旧仓库",
+      "title": "剧情线 · 三号码头仓库",
+      "body": "三号码头旧仓库的侧门有一枚蓝色玻璃锁芯，可能与蓝玻璃钥匙对应，但人物尚未验证。",
+      "keywords": "三号码头 旧仓库 侧门 蓝色玻璃锁芯 蓝玻璃钥匙"
+    },
+    {
+      "source_type": "chapter_memory",
+      "source_id": "recent-noise",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-6",
+      "chapter_position": 6,
+      "chapter_title": "广播",
+      "title": "章节摘要 · 广播",
+      "body": "林越和周岚在修理铺讨论停电、仓库、钥匙和录音带，随后各自整理物品。",
+      "keywords": "林越 周岚 停电 仓库 钥匙 录音带"
+    },
+    {
+      "source_type": "event",
+      "source_id": "future-tape-answer",
+      "project_id": "harbor",
+      "branch_id": "main",
+      "chapter_id": "chapter-10",
+      "chapter_position": 10,
+      "chapter_title": "真相",
+      "title": "事件 · 录音带真相",
+      "body": "未来章节才揭示录音内容和仓库真相，当前章节不能提前知道。",
+      "keywords": "录音带 真相 未来"
+    },
+    {
+      "source_type": "fact",
+      "source_id": "tag-left-hand",
+      "project_id": "harbor",
+      "branch_id": "tag-one",
+      "chapter_id": "tag-chapter-1",
+      "chapter_position": 1,
+      "chapter_title": "旧稿",
+      "title": "事实 · 旧 Tag 中的林越伤势",
+      "body": "旧 Tag 里林越伤的是右手，不能混入 main。",
+      "keywords": "林越 右手 伤势 旧版本"
+    },
+    {
+      "source_type": "fact",
+      "source_id": "other-project-key",
+      "project_id": "mountain",
+      "branch_id": "main",
+      "chapter_id": "mountain-1",
+      "chapter_position": 1,
+      "chapter_title": "山门",
+      "title": "事实 · 另一作品的蓝玻璃钥匙",
+      "body": "另一部作品也有蓝玻璃钥匙，但与港区故事无关。",
+      "keywords": "蓝玻璃钥匙 山门"
+    }
+  ],
+  "cases": [
+    {
+      "id": "exact_injury_state",
+      "query": "林越受伤的手现在还能握东西吗",
+      "expansions": ["林越", "左手", "伤口", "握紧"],
+      "concepts": ["林越", "左手", "伤口"],
+      "project_id": "harbor",
+      "branch_id": "main",
+      "before_chapter_position": 8,
+      "expected": ["fact:injury-left-hand"],
+      "forbidden": ["fact:tag-left-hand"]
+    },
+    {
+      "id": "knowledge_boundary",
+      "query": "阿岚是否已经知道磁带里说了什么",
+      "expansions": ["阿岚", "周岚", "录音带", "不知情"],
+      "concepts": ["阿岚", "周岚", "录音带", "不知情"],
+      "project_id": "harbor",
+      "branch_id": "main",
+      "before_chapter_position": 8,
+      "expected": ["knowledge:zhoulan-tape-knowledge"],
+      "forbidden": ["event:future-tape-answer"]
+    },
+    {
+      "id": "foreshadow_origin",
+      "query": "蓝玻璃钥匙最初在哪里被发现",
+      "expansions": ["蓝玻璃钥匙", "收音机", "电池仓"],
+      "concepts": ["蓝玻璃钥匙", "收音机", "电池仓"],
+      "project_id": "harbor",
+      "branch_id": "main",
+      "before_chapter_position": 8,
+      "expected": ["foreshadowing:blue-glass-key"],
+      "forbidden": ["fact:other-project-key"]
+    },
+    {
+      "id": "foreshadow_payoff",
+      "query": "码头仓库侧门和哪条旧线索有关",
+      "expansions": ["码头仓库", "侧门", "蓝玻璃钥匙", "玻璃锁芯"],
+      "concepts": ["码头仓库", "侧门", "蓝玻璃钥匙", "玻璃锁芯"],
+      "project_id": "harbor",
+      "branch_id": "main",
+      "before_chapter_position": 8,
+      "expected": ["plot_thread:warehouse-thread", "foreshadowing:blue-glass-key"],
+      "forbidden": []
+    },
+    {
+      "id": "causal_decision",
+      "query": "停电为什么会迫使林越处理录音带",
+      "expansions": ["停电", "林越", "录音带", "决定", "因果"],
+      "concepts": ["停电", "林越", "录音带", "决定"],
+      "project_id": "harbor",
+      "branch_id": "main",
+      "before_chapter_position": 8,
+      "expected": ["event:tape-decision"],
+      "forbidden": ["event:future-tape-answer"]
+    },
+    {
+      "id": "explicit_exclusion",
+      "query": "录音带和周岚",
+      "expansions": ["录音带", "周岚"],
+      "concepts": ["录音带", "周岚"],
+      "project_id": "harbor",
+      "branch_id": "main",
+      "before_chapter_position": 8,
+      "excluded_chapter_ids": ["chapter-6"],
+      "expected": ["event:tape-decision", "knowledge:zhoulan-tape-knowledge"],
+      "forbidden": ["chapter_memory:recent-noise", "event:future-tape-answer"]
+    }
+  ]
+}

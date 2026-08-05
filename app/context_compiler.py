@@ -13,6 +13,7 @@ DEFAULT_MEMORY_CHAR_BUDGET = 12_000
 DEFAULT_TECHNIQUE_CHAR_BUDGET = 6_000
 DEFAULT_STORY_PLAN_CHAR_BUDGET = 12_000
 DEFAULT_CAUSAL_LINK_CHAR_BUDGET = 8_000
+DEFAULT_CHARACTER_LIMIT = 16
 
 
 def _serialized_length(value: Mapping[str, Any]) -> int:
@@ -489,6 +490,74 @@ def compile_planned_causal_links(
     return result
 
 
+def compile_relevant_characters(
+    context: Mapping[str, Any],
+    *,
+    max_characters: int = DEFAULT_CHARACTER_LIMIT,
+) -> Dict[str, Any]:
+    """Select characters named by this chapter's actual writing context."""
+
+    characters = [
+        dict(item) for item in (context.get("characters") or [])
+    ]
+    if not characters:
+        return {
+            "items": [],
+            "selected_names": [],
+            "total_count": 0,
+            "fallback": False,
+            "truncated": False,
+        }
+    searchable = json.dumps(
+        {
+            "chapter": context.get("chapter"),
+            "volume": context.get("volume"),
+            "task_card": context.get("task_card"),
+            "planned_plot_arcs": context.get("planned_plot_arcs"),
+            "planned_causal_links": context.get("planned_causal_links"),
+            "canonical_memory": (
+                (context.get("canonical_memory") or {}).get(
+                    "current_state"
+                )
+            ),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).casefold()
+    ranked: list[tuple[int, int, Dict[str, Any]]] = []
+    for position, item in enumerate(characters):
+        name = str(item.get("name") or "").strip()
+        role = str(item.get("role") or "").strip()
+        if not name:
+            continue
+        score = 0
+        if name.casefold() in searchable:
+            score += 100
+        if any(token in role for token in ("主角", "主人公", "视角")):
+            score += 50
+        if role and role.casefold() in searchable:
+            score += 10
+        ranked.append((-score, position, item))
+    selected = [
+        item
+        for negative_score, _position, item in sorted(ranked)
+        if negative_score < 0
+    ]
+    fallback = not selected
+    if fallback:
+        selected = [item for _score, _position, item in sorted(ranked)[:8]]
+    selected = selected[: max(1, max_characters)]
+    return {
+        "items": selected,
+        "selected_names": [
+            str(item.get("name") or "") for item in selected
+        ],
+        "total_count": len(characters),
+        "fallback": fallback,
+        "truncated": len(selected) < len(characters),
+    }
+
+
 def build_writing_context_snapshot(
     *,
     context: Mapping[str, Any],
@@ -498,6 +567,7 @@ def build_writing_context_snapshot(
     previous_content: str,
 ) -> Dict[str, Any]:
     chapter = dict(context["chapter"])
+    character_selection = compile_relevant_characters(context)
     return {
         "schema_version": 1,
         "operation": operation,
@@ -534,7 +604,12 @@ def build_writing_context_snapshot(
             "payoff": chapter.get("volume_payoff"),
         },
         "confirmed_task_card": context.get("task_card"),
-        "characters": list(context.get("characters") or []),
+        "characters": character_selection["items"],
+        "character_selection": {
+            key: value
+            for key, value in character_selection.items()
+            if key != "items"
+        },
         "confirmed_voice_profile": dict(
             context.get("voice_profile") or {}
         ),
@@ -563,41 +638,3 @@ def build_writing_context_snapshot(
         "previous_chapter_excerpt": previous_content[-16000:],
         "current_chapter_excerpt": current_content[-30000:],
     }
-
-
-def build_scene_context_snapshot(
-    *,
-    context: Mapping[str, Any],
-    operation: str,
-    instruction: str,
-    current_scene_content: str,
-    previous_scene_content: str,
-    previous_chapter_content: str,
-) -> Dict[str, Any]:
-    """Persist the exact, bounded inputs used for one scene operation."""
-
-    snapshot = build_writing_context_snapshot(
-        context=context,
-        operation=operation,
-        instruction=instruction,
-        current_content="",
-        previous_content=previous_chapter_content,
-    )
-    snapshot.pop("current_chapter_excerpt", None)
-    snapshot["focused_scene"] = dict(context.get("focused_scene") or {})
-    snapshot["scene_sequence"] = list(
-        context.get("scene_sequence") or []
-    )
-    snapshot["previous_scene"] = dict(
-        context.get("previous_scene") or {}
-    )
-    snapshot["next_scene"] = dict(context.get("next_scene") or {})
-    snapshot["previous_scene_excerpt"] = previous_scene_content[-6000:]
-    snapshot["current_scene_excerpt"] = current_scene_content[-12000:]
-    snapshot["scene_target_chars"] = int(
-        context.get("scene_target_chars") or 0
-    )
-    snapshot["scene_minimum_chars"] = int(
-        context.get("scene_minimum_chars") or 0
-    )
-    return snapshot

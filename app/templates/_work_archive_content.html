@@ -7,16 +7,6 @@
     </div>
   </div>
 
-  <nav class="studio-archive-tabs" aria-label="作品版本库分类">
-    {% for tab_key, tab_label in archive_tabs %}
-      <a
-        class="{% if active_archive_tab == tab_key %}active{% endif %}"
-        href="{{ archive_base_url }}?view=archive&archive_tab={{ tab_key }}{% if tab_key == 'creative' %}&settings_tab={{ active_settings_tab }}{% endif %}"
-        data-save-before-navigation
-      >{{ tab_label }}</a>
-    {% endfor %}
-  </nav>
-
   {% if archive_error %}<div class="studio-alert error" role="alert">{{ archive_error }}</div>{% endif %}
   {% if archive_saved %}<div class="studio-alert success" role="status">已保存。</div>{% endif %}
   {% if archive_adopted %}<div class="studio-alert success" role="status">已采纳为创作设定。</div>{% endif %}
@@ -211,10 +201,59 @@
     <section class="studio-archive-section">
       <div class="studio-archive-section-heading">
         <div>
-          <h2>版本</h2>
-          <p>main 是唯一可编辑分支；原始版本和稿次 Tag 永久只读。</p>
+          <h2>main HEAD 与章节历史</h2>
+          <p>保存和 AI 写入都会生成不可变记录，并立即把该章的 main HEAD 移到新记录。</p>
         </div>
-        <span>{{ work.versions|length }}</span>
+        <span>{{ chapters|length }} 章</span>
+      </div>
+      <div class="studio-chapter-history-list">
+        {% for item in chapter_histories %}
+          <article class="studio-chapter-history-card">
+            <header>
+              <div>
+                <small>第 {{ item.chapter.position }} 章</small>
+                <strong>{{ item.chapter.title or '未命名章节' }}</strong>
+              </div>
+              <span>{{ item.history_count }} 个历史版本</span>
+            </header>
+            {% if item.versions %}
+              <ol>
+                {% for version in item.versions %}
+                  <li>
+                    <div>
+                      <b>{% if version.id == item.chapter.head_version_id %}main HEAD{% else %}历史{% endif %}</b>
+                      <span>{{ version.kind|writing_operation_label }} · {{ (version.created_at or '')[:16]|replace('T', ' ') }} · {{ version.char_count|human_size }}</span>
+                    </div>
+                    {% if item.versions|length > 1 %}
+                      <a class="studio-text-button" href="/novels/{{ project.id }}/chapters/{{ item.chapter.id }}/versions/{{ version.id }}/compare">比较</a>
+                    {% endif %}
+                  </li>
+                {% endfor %}
+              </ol>
+              {% if item.version_count > item.versions|length %}
+                <a class="studio-text-button" href="/novels/{{ project.id }}/chapters/{{ item.chapter.id }}/history">
+                  查看全部 {{ item.version_count }} 个版本
+                </a>
+              {% endif %}
+            {% else %}
+              <p class="studio-muted">还没有正文版本。</p>
+            {% endif %}
+          </article>
+        {% else %}
+          <div class="studio-settings-empty">
+            <strong>还没有章节历史</strong>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="studio-archive-section">
+      <div class="studio-archive-section-heading">
+        <div>
+          <h2>Tag</h2>
+          <p>Tag 固定整部作品当时的 main HEAD 与作品资料，创建后只读。</p>
+        </div>
+        <span>{{ work.versions|length - 1 }}</span>
       </div>
       {% if current_version.is_editable and current_version.ref_name == 'main' %}
         <form class="studio-create-tag" method="post" action="/works/{{ work.id }}/tags" data-save-before-submit>
@@ -227,9 +266,8 @@
         </form>
       {% endif %}
       <div class="studio-version-list">
-        {% for version in work.versions %}
-          {% if version.ref_type != 'legacy' %}
-            <article class="studio-version-card {% if version.id == current_version.id %}current{% endif %}">
+        {% for version in work.versions if version.ref_name != 'main' %}
+          <article class="studio-version-card {% if version.id == current_version.id %}current{% endif %}">
               <header>
                 <span>
                   {% if version.ref_name == 'main' %}分支
@@ -298,8 +336,7 @@
                   </form>
                 {% endif %}
               </footer>
-            </article>
-          {% endif %}
+          </article>
         {% else %}
           <div class="studio-settings-empty">
             <strong>还没有版本</strong>

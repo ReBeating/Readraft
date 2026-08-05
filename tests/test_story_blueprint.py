@@ -16,7 +16,7 @@ from app.context_compiler import (
 from app.db import SCHEMA, Database, utc_now
 from app.main import create_app
 from app.migrations import MIGRATIONS
-from app.planning_ai import DeepSeekChapterPlanner, MockChapterPlanner
+from app.planning_ai import ProviderChapterPlanner, MockChapterPlanner
 from app.planning_schema import (
     ChapterTaskCard,
     allocate_scene_requirement_refs,
@@ -41,15 +41,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -435,8 +435,8 @@ def test_mock_and_deepseek_chapter_planners_receive_confirmed_story_plan(
         )
         assert mock.result.plot_threads == ["父亲失踪之谜"]
 
-        planner = DeepSeekChapterPlanner(
-            replace(_settings(tmp_path), deepseek_api_key="sk-test-story")
+        planner = ProviderChapterPlanner(
+            replace(_settings(tmp_path), model_api_key="sk-test-story")
         )
         captured = {}
         expected = _confirmed_card(["父亲失踪之谜"])
@@ -531,7 +531,7 @@ def test_new_confirmed_blueprint_invalidates_future_confirmed_task_cards(
     ] is None
 
 
-def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
+def test_story_blueprint_web_flow_without_legacy_task_card_route(tmp_path: Path):
     application = create_app(_settings(tmp_path))
     with TestClient(application) as client:
         register = client.get("/register")
@@ -628,45 +628,19 @@ def test_story_blueprint_web_flow_and_task_card_picker(tmp_path: Path):
         )
         chapter_location = response.headers["location"]
         chapter_id = chapter_location.split("chapter_id=", 1)[1]
-        chapter_url = f"{project_url}/chapters/{chapter_id}"
-        task_url = f"{chapter_url}/task-card"
-        task_page = client.get(chapter_location)
-        assert 'class="studio-manuscript-view"' in task_page.text
-        assert "本次将读取确认版全书规划" not in task_page.text
+        task_url = f"{project_url}/chapters/{chapter_id}/task-card"
+        assert client.get(task_url).status_code == 404
+        assert client.post(task_url, data={}).status_code == 404
 
-        response = client.post(
-            task_url,
-            data={
-                "selected_plot_threads": "父亲失踪之谜",
-                "purpose": "迫使林岚回港。",
-                "start_state": "拒绝相信。",
-                "end_state": "买下车票。",
-                "central_conflict": "邮戳与结论冲突。",
-                "ending_hook": "盐味来自旧码头。",
-                "target_chars": "3000",
-                "scene_goal_1": "核对来信",
-                "scene_obstacle_1": "邮戳异常",
-                    "scene_action_1": "比对旧信",
-                    "scene_end_state_1": "承认值得调查",
-                    "scene_requirement_1": "plot_thread:0",
-                    "scene_goal_2": "决定回港",
-                "scene_obstacle_2": "抗拒故乡",
-                    "scene_action_2": "购买车票",
-                    "scene_end_state_2": "踏上列车",
-                    "scene_requirement_2": "ending_hook:0",
-                "action": "confirm",
-                "csrf": _csrf(task_page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
         database = application.state.database
         user = database.get_user_by_username("全书蓝图作者")
         context = database.get_writing_context(int(user["id"]), chapter_id)
-        assert context["task_card"]["plot_threads"] == ["父亲失踪之谜"]
         assert context["story_blueprint"]["central_question"] == (
             "父亲为何仍在寄信？"
         )
+        assert {item["title"] for item in context["planned_plot_arcs"]} == {
+            "父亲失踪之谜"
+        }
 
 
 def test_project_delete_cascades_story_plan_without_fk_errors(tmp_path: Path):

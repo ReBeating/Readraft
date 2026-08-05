@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .db import Database, utc_now
+from .json_support import dump_json as _json, load_json as _load_json
 from .reader_schema import ReaderBranchSet
 
 
@@ -26,17 +26,6 @@ REQUEST_SCOPES = {
     "long_term",
 }
 REQUEST_PRIORITIES = {"soft", "hard"}
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
 
 
 class ReaderDecisionService:
@@ -195,7 +184,7 @@ class ReaderDecisionService:
                 """
                 SELECT COALESCE(MAX(position), 0) AS position
                 FROM novel_chapters
-                WHERE project_id=? AND canonical_version_id IS NOT NULL
+                WHERE project_id=? AND head_version_id IS NOT NULL
                 """,
                 (request["project_id"],),
             ).fetchone()
@@ -558,7 +547,7 @@ class ReaderDecisionService:
                     """
                     SELECT COALESCE(MAX(position), 0) AS position
                     FROM novel_chapters
-                    WHERE project_id=? AND canonical_version_id IS NOT NULL
+                    WHERE project_id=? AND head_version_id IS NOT NULL
                     """,
                     (proposal["project_id"],),
                 ).fetchone()
@@ -598,13 +587,13 @@ class ReaderDecisionService:
                     chapter = connection.execute(
                         """
                         SELECT id, title, outline, key_points,
-                               canonical_version_id
+                               head_version_id
                         FROM novel_chapters
                         WHERE project_id=? AND position=?
                         """,
                         (proposal["project_id"], position),
                     ).fetchone()
-                    if chapter and chapter["canonical_version_id"]:
+                    if chapter and chapter["head_version_id"]:
                         raise ValueError("方案试图修改已经确认的正史章节")
                     action = "revised"
                     if chapter:

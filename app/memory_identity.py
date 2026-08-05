@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import unicodedata
 import uuid
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+
+from .json_support import load_json as _load_json
 
 
 IDENTITY_TYPES = (
@@ -43,13 +44,6 @@ def normalize_identity_text(value: Any) -> str:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
 
 
 def _identity_row(

@@ -65,14 +65,14 @@ class StructureLinkService:
                        source.title AS source_title,
                        source.skeleton_role AS source_role,
                        source.skeleton_arc_titles_json AS source_arcs_json,
-                       source.canonical_version_id
-                           AS source_canonical_version_id,
+                       source.head_version_id
+                           AS source_head_version_id,
                        target.position AS target_position,
                        target.title AS target_title,
                        target.skeleton_role AS target_role,
                        target.skeleton_arc_titles_json AS target_arcs_json,
-                       target.canonical_version_id
-                           AS target_canonical_version_id
+                       target.head_version_id
+                           AS target_head_version_id
                 FROM novel_chapter_causal_links link
                 JOIN novel_projects project ON project.id=link.project_id
                 JOIN novel_chapters source
@@ -162,7 +162,7 @@ class StructureLinkService:
             SELECT p.id,
                    COALESCE(MAX(
                        CASE
-                         WHEN ch.canonical_version_id IS NOT NULL
+                         WHEN ch.head_version_id IS NOT NULL
                          THEN ch.position
                        END
                    ), 0) AS current_canonical_position
@@ -177,7 +177,7 @@ class StructureLinkService:
             raise ValueError("小说项目不存在")
         rows = connection.execute(
             """
-            SELECT id, position, canonical_version_id
+            SELECT id, position, head_version_id
             FROM novel_chapters
             WHERE project_id=? AND id IN (?, ?)
             """,
@@ -197,10 +197,10 @@ class StructureLinkService:
         current_position = int(project["current_canonical_position"] or 0)
         if source_position >= target_position:
             raise ValueError("结果章必须晚于起因章，因果链接不能倒流")
-        if target["canonical_version_id"] or target_position <= current_position:
+        if target["head_version_id"] or target_position <= current_position:
             raise ValueError("结果章必须位于当前正史边界之后")
         if (
-            not source["canonical_version_id"]
+            not source["head_version_id"]
             and source_position <= current_position
         ):
             raise ValueError(
@@ -346,13 +346,12 @@ class StructureLinkService:
             FROM novel_chapters ch
             LEFT JOIN novel_chapter_plans cp ON cp.chapter_id=ch.id
             WHERE ch.project_id=?
-              AND ch.canonical_version_id IS NULL
+              AND ch.head_version_id IS NULL
               AND ch.id IN ({placeholders})
             """,
             (project_id, *unique_ids),
         ).fetchall()
         reset_count = 0
-        stale_count = 0
         for row in rows:
             plan_id = str(row["plan_id"] or "")
             if plan_id:
@@ -366,16 +365,6 @@ class StructureLinkService:
                     """,
                     (now, plan_id),
                 )
-                stale = connection.execute(
-                    """
-                    UPDATE novel_scene_beats
-                    SET draft_status='stale', updated_at=?
-                    WHERE plan_id=? AND beat_status='active'
-                      AND current_version_id IS NOT NULL
-                    """,
-                    (now, plan_id),
-                )
-                stale_count += int(stale.rowcount)
             connection.execute(
                 """
                 UPDATE novel_chapters
@@ -387,7 +376,6 @@ class StructureLinkService:
         return {
             "affected_chapter_count": len(rows),
             "reset_task_card_count": reset_count,
-            "stale_scene_count": stale_count,
         }
 
     @staticmethod
@@ -407,10 +395,10 @@ class StructureLinkService:
             str(item.get("relation_type") or ""),
         )
         item["source_is_canonical"] = bool(
-            item.pop("source_canonical_version_id", None)
+            item.pop("source_head_version_id", None)
         )
         item["target_is_canonical"] = bool(
-            item.pop("target_canonical_version_id", None)
+            item.pop("target_head_version_id", None)
         )
         item["planning_status"] = (
             "realized" if item["target_is_canonical"] else "active"

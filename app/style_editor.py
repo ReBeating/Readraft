@@ -10,7 +10,8 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .context_compiler import compile_active_techniques
-from .deepseek import AnalyzerError, DeepSeekAnalyzer
+from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .style_schema import StyleAuditResult, TargetedRewriteResult
 
 
@@ -238,14 +239,12 @@ class MockStyleEditor(BaseStyleEditor):
         )
 
 
-class DeepSeekStyleEditor(BaseStyleEditor):
-    provider = "deepseek"
-
+class ProviderStyleEditor(BaseStyleEditor):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.provider = settings.model_provider
-        self.model = settings.deepseek_model
-        self._analyzer = DeepSeekAnalyzer(settings)
+        self.model = settings.model_name
+        self._analyzer = ProviderAnalyzer(settings)
 
     async def audit(
         self,
@@ -368,7 +367,7 @@ class DeepSeekStyleEditor(BaseStyleEditor):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        max_tokens = min(self.settings.deepseek_max_tokens, 8000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = f"{task_name}返回结构不正确"
@@ -384,24 +383,26 @@ class DeepSeekStyleEditor(BaseStyleEditor):
             total_input += input_tokens
             total_output += output_tokens
             if reason == "length":
-                last_error = f"DeepSeek {task_name}输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                last_error = f"模型 {task_name}输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if attempt == 0:
                     await asyncio.sleep(1)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    f"DeepSeek 内容安全策略拒绝了{task_name}输出",
+                    f"模型 内容安全策略拒绝了{task_name}输出",
                     input_tokens=total_input,
                     output_tokens=total_output,
                 )
             elif reason != "stop":
                 last_error = (
-                    f"DeepSeek 返回了未支持的结束原因：{reason or 'empty'}"
+                    f"模型 返回了未支持的结束原因：{reason or 'empty'}"
                 )
             else:
                 try:
@@ -534,4 +535,4 @@ def _sentence_containing(text: str, trigger: str) -> str:
 def build_style_editor(settings: Settings) -> BaseStyleEditor:
     if settings.uses_test_models:
         return MockStyleEditor()
-    return DeepSeekStyleEditor(settings)
+    return ProviderStyleEditor(settings)

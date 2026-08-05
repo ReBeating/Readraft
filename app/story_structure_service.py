@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import shutil
 import uuid
@@ -9,6 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    json_fingerprint as _fingerprint,
+    load_json as _load_json,
+)
 from .story_plan_suggestion_service import StoryPlanSuggestionService
 from .story_structure_schema import (
     StoryStructureOption,
@@ -31,8 +34,7 @@ CHAPTER_RESTORE_FIELDS = (
     "status",
     "volume_id",
     "char_count",
-    "canonical_version_id",
-    "working_version_id",
+    "head_version_id",
     "needs_recheck",
     "skeleton_role",
     "skeleton_arc_titles_json",
@@ -61,26 +63,6 @@ PLAN_RESTORE_FIELDS = (
     "updated_at",
     "confirmed_at",
 )
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
 def _chapter_values(chapter) -> Dict[str, Any]:
@@ -130,7 +112,7 @@ class StoryStructureSuggestionService:
                    (
                        SELECT COUNT(*) FROM novel_chapters ch
                        WHERE ch.volume_id=v.id
-                         AND ch.canonical_version_id IS NOT NULL
+                         AND ch.head_version_id IS NOT NULL
                    ) AS canonical_chapter_count
             FROM novel_volumes v
             WHERE v.project_id=?
@@ -731,7 +713,7 @@ class StoryStructureSuggestionService:
                        (
                            SELECT COUNT(*) FROM novel_chapters ch
                            WHERE ch.volume_id=v.id
-                             AND ch.canonical_version_id IS NOT NULL
+                             AND ch.head_version_id IS NOT NULL
                        ) AS canonical_chapter_count
                 FROM novel_volumes v
                 WHERE v.project_id=? AND v.position IN ({placeholders})
@@ -754,6 +736,11 @@ class StoryStructureSuggestionService:
                            SELECT COUNT(*) FROM novel_chapter_versions cv
                            WHERE cv.chapter_id=ch.id
                        ) AS version_count,
+                       (
+                           SELECT COUNT(*)
+                           FROM novel_chapter_edit_buffers buffer
+                           WHERE buffer.chapter_id=ch.id
+                       ) AS edit_buffer_count,
                        (
                            SELECT COUNT(*) FROM generation_jobs job
                            WHERE job.chapter_id=ch.id
@@ -790,21 +777,7 @@ class StoryStructureSuggestionService:
                     (chapter["id"],),
                 ).fetchone()
                 plan_item = dict(plan) if plan else None
-                scenes: List[Dict[str, Any]] = []
-                if plan:
-                    scenes = [
-                        dict(item)
-                        for item in connection.execute(
-                            """
-                            SELECT * FROM novel_scene_beats
-                            WHERE plan_id=?
-                            ORDER BY position
-                            """,
-                            (plan["id"],),
-                        ).fetchall()
-                    ]
                 chapter["task_card"] = plan_item
-                chapter["scenes"] = scenes
                 chapters[str(chapter["position"])] = chapter
         return {
             "volume_positions": volume_positions,
@@ -906,7 +879,7 @@ class StoryStructureSuggestionService:
                 )
                 task_card_summary["create"].append(proposed.position)
                 continue
-            if existing["canonical_version_id"]:
+            if existing["head_version_id"]:
                 conflicts.append(
                     f"第 {proposed.position} 章已经成为正史，不能应用骨架"
                 )
@@ -1247,7 +1220,7 @@ class StoryStructureSuggestionService:
                                     END,
                                     updated_at=?
                                 WHERE id=? AND project_id=?
-                                  AND canonical_version_id IS NULL
+                                  AND head_version_id IS NULL
                                 """,
                                 (
                                     proposed.title,
@@ -1291,19 +1264,6 @@ class StoryStructureSuggestionService:
                                 existing_plan["id"],
                                 chapter_id,
                             ),
-                        )
-                        connection.execute(
-                            """
-                            UPDATE novel_scene_beats
-                            SET draft_status=CASE
-                                    WHEN current_version_id IS NOT NULL
-                                    THEN 'stale'
-                                    ELSE draft_status
-                                END,
-                                updated_at=?
-                            WHERE plan_id=? AND beat_status='active'
-                            """,
-                            (now, existing_plan["id"]),
                         )
                     else:
                         connection.execute(
@@ -1446,6 +1406,7 @@ class StoryStructureSuggestionService:
                         continue
                     if (
                         int(after_chapter.get("version_count") or 0)
+                        or int(after_chapter.get("edit_buffer_count") or 0)
                         or int(after_chapter.get("generation_count") or 0)
                         or int(
                             after_chapter.get("reader_application_count")
@@ -1455,8 +1416,7 @@ class StoryStructureSuggestionService:
                             after_chapter.get("technique_binding_count")
                             or 0
                         )
-                        or after_chapter.get("canonical_version_id")
-                        or after_chapter.get("working_version_id")
+                        or after_chapter.get("head_version_id")
                     ):
                         raise ValueError(
                             f"第 {position} 章已经产生正文、任务或绑定，不能撤销"
@@ -1547,24 +1507,6 @@ class StoryStructureSuggestionService:
                                 before_chapter["id"],
                             ),
                         )
-                        before_scenes = {
-                            str(scene["id"]): scene
-                            for scene in before_chapter.get("scenes") or []
-                        }
-                        for scene_id, scene in before_scenes.items():
-                            connection.execute(
-                                """
-                                UPDATE novel_scene_beats
-                                SET draft_status=?, updated_at=?
-                                WHERE id=? AND plan_id=?
-                                """,
-                                (
-                                    scene["draft_status"],
-                                    scene["updated_at"],
-                                    scene_id,
-                                    before_plan["id"],
-                                ),
-                            )
                     chapter_assignments = ", ".join(
                         f"{field}=?" for field in CHAPTER_RESTORE_FIELDS
                     )

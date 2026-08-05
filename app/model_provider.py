@@ -23,6 +23,11 @@ class ProviderConfigError(ValueError):
 
 
 ReasoningPolicy = Literal["fast", "reasoning", "deep"]
+ModelProtocol = Literal[
+    "openai_chat",
+    "openai_responses",
+    "anthropic_messages",
+]
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,37 @@ _PROVIDERS = (
         notes="完整支持当前工作流；系统会按任务复杂度自动使用推理能力。",
     ),
     ProviderSpec(
+        id="opencode_go",
+        label="OpenCode Go",
+        base_url="https://opencode.ai/zen/go/v1",
+        capabilities=ProviderCapabilities(
+            json_object=True,
+            thinking=True,
+            model_catalog=True,
+            api_key_required=True,
+        ),
+        notes=(
+            "使用 OpenCode Go 订阅与 API Key；系统会根据所选模型自动"
+            "使用 Chat Completions、Responses 或 Messages 协议。"
+        ),
+    ),
+    ProviderSpec(
+        id="openai_compatible",
+        label="自定义 OpenAI",
+        base_url="",
+        capabilities=ProviderCapabilities(
+            json_object=True,
+            thinking=False,
+            model_catalog=True,
+            api_key_required=False,
+            configurable_base_url=True,
+        ),
+        notes=(
+            "连接自定义 OpenAI Chat Completions 接口；API Key 可选，"
+            "模型目录不可用时可直接填写模型 ID。"
+        ),
+    ),
+    ProviderSpec(
         id="openai",
         label="OpenAI",
         base_url="https://api.openai.com/v1",
@@ -115,24 +151,21 @@ _PROVIDERS = (
         ),
         notes="默认连接本机 Ollama，也可改为其他 Ollama 服务地址；API Key 可选。",
     ),
-    ProviderSpec(
-        id="openai_compatible",
-        label="OpenAI 兼容接口",
-        base_url="",
-        capabilities=ProviderCapabilities(
-            json_object=True,
-            thinking=False,
-            model_catalog=True,
-            api_key_required=False,
-            configurable_base_url=True,
-        ),
-        notes=(
-            "兼容 /chat/completions；API Key 可选，模型目录不可用时"
-            "可直接填写模型 ID。"
-        ),
-    ),
 )
 PROVIDERS = {provider.id: provider for provider in _PROVIDERS}
+
+
+_OPENCODE_GO_MODEL_PROTOCOLS: Dict[str, ModelProtocol] = {
+    "gpt-5.6-luna": "openai_responses",
+    "minimax-m3": "anthropic_messages",
+    "minimax-m2.7": "anthropic_messages",
+    "minimax-m2.5": "anthropic_messages",
+    "qwen3.8-max": "anthropic_messages",
+    "qwen3.7-max": "anthropic_messages",
+    "qwen3.7-plus": "anthropic_messages",
+    "qwen3.6-plus": "anthropic_messages",
+    "qwen3.5-plus": "anthropic_messages",
+}
 
 
 def list_providers() -> List[ProviderSpec]:
@@ -145,6 +178,28 @@ def get_provider(provider_id: str) -> ProviderSpec:
         return PROVIDERS[normalized]
     except KeyError as exc:
         raise ProviderConfigError("不支持的模型服务商") from exc
+
+
+def resolve_model_protocol(
+    provider: ProviderSpec | str,
+    model: str,
+) -> ModelProtocol:
+    """Resolve the wire protocol for one provider/model pair.
+
+    OpenCode Go deliberately serves models through multiple API contracts.
+    Keeping this decision at model scope prevents a provider-level endpoint
+    assumption from making some of its advertised models unusable.
+    """
+
+    provider_spec = (
+        get_provider(provider) if isinstance(provider, str) else provider
+    )
+    if provider_spec.id == "opencode_go":
+        return _OPENCODE_GO_MODEL_PROTOCOLS.get(
+            str(model or "").strip().lower(),
+            "openai_chat",
+        )
+    return "openai_chat"
 
 
 def _is_private_model_host(hostname: str) -> bool:
@@ -244,12 +299,23 @@ def normalize_provider_base_url(
 
 
 def build_provider_headers(
-    provider: ProviderSpec, api_key: Optional[str]
+    provider: ProviderSpec,
+    api_key: Optional[str],
+    *,
+    model: str = "",
 ) -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     clean_key = str(api_key or "").strip()
     if clean_key:
-        headers["Authorization"] = f"Bearer {clean_key}"
+        if (
+            provider.id == "opencode_go"
+            and resolve_model_protocol(provider, model)
+            == "anthropic_messages"
+        ):
+            headers["x-api-key"] = clean_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {clean_key}"
     elif provider.capabilities.api_key_required:
         raise ProviderConfigError(f"{provider.label} API Key 未配置")
     return headers
@@ -258,11 +324,14 @@ def build_provider_headers(
 def build_chat_payload(
     *,
     settings: "Settings",
-    messages: Iterable[Mapping[str, str]],
+    messages: Iterable[Mapping[str, Any]],
     provider_user_id: str,
-    max_tokens: int,
+    max_tokens: int | None,
     json_object: bool,
     temperature: Optional[float],
+    tools: Iterable[Mapping[str, Any]] | None = None,
+    tool_choice: Any = None,
+    parallel_tool_calls: bool | None = None,
 ) -> Dict[str, Any]:
     provider = get_provider(settings.model_provider)
     if json_object and not provider.capabilities.json_object:
@@ -295,25 +364,37 @@ def build_chat_payload(
                 {"role": "system", "content": adapter_section},
             )
     payload: Dict[str, Any] = {
-        "model": settings.deepseek_model,
+        "model": settings.model_name,
         "messages": prepared_messages,
-        provider.max_tokens_field: max_tokens,
         "stream": False,
     }
+    if max_tokens is not None and int(max_tokens) > 0:
+        payload[provider.max_tokens_field] = int(max_tokens)
     if json_object:
         payload["response_format"] = {"type": "json_object"}
+    prepared_tools = [dict(tool) for tool in (tools or [])]
+    if prepared_tools:
+        payload["tools"] = prepared_tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None and provider.id in {
+            "deepseek",
+            "openai",
+            "opencode_go",
+        }:
+            payload["parallel_tool_calls"] = bool(parallel_tool_calls)
     if provider.user_field and provider_user_id:
         payload[provider.user_field] = provider_user_id
 
     if provider.id == "deepseek":
         payload["thinking"] = {
             "type": (
-                "enabled" if settings.deepseek_thinking else "disabled"
+                "enabled" if settings.model_thinking else "disabled"
             )
         }
-        if settings.deepseek_thinking:
+        if settings.model_thinking:
             payload["reasoning_effort"] = (
-                settings.deepseek_reasoning_effort
+                settings.model_reasoning_effort
             )
         elif temperature is not None:
             payload["temperature"] = temperature
@@ -341,8 +422,8 @@ def settings_for_reasoning_policy(
     )
     return replace(
         settings,
-        deepseek_thinking=thinking,
-        deepseek_reasoning_effort=(
+        model_thinking=thinking,
+        model_reasoning_effort=(
             "max" if thinking and policy == "deep" else "high"
         ),
     )
@@ -366,11 +447,11 @@ def settings_for_credential(
     return replace(
         settings,
         model_provider=provider.id,
-        deepseek_api_key=api_key or None,
-        deepseek_base_url=base_url,
-        deepseek_model=str(model or credential.get("model") or "").strip(),
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
+        model_api_key=api_key or None,
+        model_base_url=base_url,
+        model_name=str(model or credential.get("model") or "").strip(),
+        model_thinking=False,
+        model_reasoning_effort="high",
         model_adapter_prompt=(
             settings.model_adapter_prompt
             if model_adapter_prompt is None

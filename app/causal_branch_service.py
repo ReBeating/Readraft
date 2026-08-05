@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -16,6 +15,11 @@ from .causal_suggestion_service import (
     _task_card_fallbacks,
 )
 from .db import Database, utc_after, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    json_fingerprint as _fingerprint,
+    load_json as _load_json,
+)
 
 
 BRANCH_KEY_LABELS = {
@@ -56,26 +60,6 @@ BRANCH_PAYOFF_TIMING_LABELS = {
     "reframed": "改换兑现方式",
     "at_risk": "可能无法兑现",
 }
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
 def _proposal_signature(proposal: ProposedCausalLink) -> str:

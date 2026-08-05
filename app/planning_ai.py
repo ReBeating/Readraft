@@ -13,7 +13,8 @@ from .context_compiler import (
     compile_planned_causal_links,
     compile_story_plan_context,
 )
-from .deepseek import AnalyzerError, DeepSeekAnalyzer
+from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .planning_schema import (
     ChapterTaskCard,
     SceneBeatPlan,
@@ -316,14 +317,12 @@ class MockChapterPlanner(BaseChapterPlanner):
         )
 
 
-class DeepSeekChapterPlanner(BaseChapterPlanner):
-    provider = "deepseek"
-
+class ProviderChapterPlanner(BaseChapterPlanner):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.provider = settings.model_provider
-        self.model = settings.deepseek_model
-        self._analyzer = DeepSeekAnalyzer(settings)
+        self.model = settings.model_name
+        self._analyzer = ProviderAnalyzer(settings)
 
     async def propose(
         self,
@@ -401,7 +400,7 @@ class DeepSeekChapterPlanner(BaseChapterPlanner):
                 ),
             },
         ]
-        max_tokens = self.settings.deepseek_max_tokens
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "未知结构错误"
@@ -417,24 +416,26 @@ class DeepSeekChapterPlanner(BaseChapterPlanner):
             total_input += input_tokens
             total_output += output_tokens
             if reason == "length":
-                last_error = "DeepSeek 章节规划输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                last_error = "模型 章节规划输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if attempt == 0:
                     await asyncio.sleep(1)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了章节规划输出",
+                    "模型 内容安全策略拒绝了章节规划输出",
                     input_tokens=total_input,
                     output_tokens=total_output,
                 )
             elif reason != "stop":
                 last_error = (
-                    f"DeepSeek 返回了未支持的结束原因：{reason or 'empty'}"
+                    f"模型 返回了未支持的结束原因：{reason or 'empty'}"
                 )
             else:
                 try:
@@ -537,7 +538,7 @@ class DeepSeekChapterPlanner(BaseChapterPlanner):
                 ),
             },
         ]
-        max_tokens = self.settings.deepseek_max_tokens
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "未知结构错误"
@@ -553,24 +554,26 @@ class DeepSeekChapterPlanner(BaseChapterPlanner):
             total_input += input_tokens
             total_output += output_tokens
             if reason == "length":
-                last_error = "DeepSeek 场景拆解输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                last_error = "模型 场景拆解输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if attempt == 0:
                     await asyncio.sleep(1)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了场景拆解输出",
+                    "模型 内容安全策略拒绝了场景拆解输出",
                     input_tokens=total_input,
                     output_tokens=total_output,
                 )
             elif reason != "stop":
                 last_error = (
-                    f"DeepSeek 返回了未支持的结束原因：{reason or 'empty'}"
+                    f"模型 返回了未支持的结束原因：{reason or 'empty'}"
                 )
             else:
                 try:
@@ -614,4 +617,4 @@ class DeepSeekChapterPlanner(BaseChapterPlanner):
 def build_chapter_planner(settings: Settings) -> BaseChapterPlanner:
     if settings.uses_test_models:
         return MockChapterPlanner()
-    return DeepSeekChapterPlanner(settings)
+    return ProviderChapterPlanner(settings)

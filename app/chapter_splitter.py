@@ -32,6 +32,9 @@ class ChapterChunk:
     source_end: int
     part_number: int = 1
     part_count: int = 1
+    split_confidence: float = 1.0
+    split_reason: str = ""
+    title_source: str = "detected"
 
 
 @dataclass(frozen=True)
@@ -160,13 +163,20 @@ def _split_long_chunk(
 ) -> List[ChapterChunk]:
     if len(chunk.text) <= max_chars:
         return [chunk]
-    ranges: List[Tuple[int, int]] = []
+    ranges: List[Tuple[int, int, float, str]] = []
     local_start = 0
     while local_start < len(chunk.text):
         local_end = _best_cut(chunk.text, local_start, target_chars, max_chars)
         if local_end <= local_start:
             local_end = min(len(chunk.text), local_start + max_chars)
-        ranges.append((local_start, local_end))
+        hard_end = min(len(chunk.text), local_start + max_chars)
+        if local_end < hard_end or hard_end == len(chunk.text):
+            confidence = 0.55
+            reason = "章节过长，按自然段或句末自动拆分"
+        else:
+            confidence = 0.35
+            reason = "章节过长，未找到稳定分隔符，按长度拆分"
+        ranges.append((local_start, local_end, confidence, reason))
         local_start = local_end
 
     total = len(ranges)
@@ -179,8 +189,13 @@ def _split_long_chunk(
             source_end=chunk.source_start + end,
             part_number=index,
             part_count=total,
+            split_confidence=confidence,
+            split_reason=reason,
+            title_source="generated",
         )
-        for index, (start, end) in enumerate(ranges, start=1)
+        for index, (start, end, confidence, reason) in enumerate(
+            ranges, start=1
+        )
     ]
 
 
@@ -206,6 +221,9 @@ def split_chapters(
                 kind="fallback",
                 source_start=0,
                 source_end=len(text),
+                split_confidence=1.0,
+                split_reason="全文没有识别到章节标题",
+                title_source="generated",
             )
         )
     else:
@@ -218,6 +236,9 @@ def split_chapters(
                     kind="preamble",
                     source_start=0,
                     source_end=first_start,
+                    split_confidence=0.9,
+                    split_reason="首个章节标题之前的内容",
+                    title_source="generated",
                 )
             )
         for index, heading in enumerate(headings):
@@ -231,6 +252,15 @@ def split_chapters(
                     kind=heading.kind,
                     source_start=heading.start,
                     source_end=end,
+                    split_confidence=(
+                        0.98 if heading.kind == "chapter" else 0.94
+                    ),
+                    split_reason=(
+                        "识别到编号章节标题"
+                        if heading.kind == "chapter"
+                        else "识别到特殊章节或卷标题"
+                    ),
+                    title_source="detected",
                 )
             )
 

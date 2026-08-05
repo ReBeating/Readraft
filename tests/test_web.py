@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 from app.memory_service import MemoryService
-from app.planning_service import PlanningService
+from app.technique_service import TechniqueService
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -29,15 +29,15 @@ def make_settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key=None,
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key=None,
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -46,6 +46,20 @@ def csrf_from(html: str) -> str:
     match = re.search(r'name="csrf" value="([^"]+)"', html)
     assert match
     return match.group(1)
+
+
+def commit_text_import(client: TestClient, response):
+    assert response.status_code == 303
+    preview_url = response.headers["location"]
+    assert preview_url.startswith("/import/previews/")
+    preview = client.get(preview_url)
+    assert preview.status_code == 200
+    assert "检查分章" in preview.text
+    return client.post(
+        preview_url + "/commit",
+        data={"csrf": csrf_from(preview.text)},
+        follow_redirects=False,
+    )
 
 
 def project_id_from_workbench(path: str) -> str:
@@ -67,9 +81,8 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
     with TestClient(application) as client:
         health = client.get("/healthz")
         assert health.status_code == 200
-        assert health.json()["analyzer"] == "personal-key-only"
+        assert health.json()["model_provider"] == "personal-key-only"
         assert application.state.analyzer is None
-        assert application.state.writer is None
 
         register = client.get("/register")
         response = client.post(
@@ -107,6 +120,7 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         document_url = imported.headers["location"]
         document = client.get(document_url)
@@ -124,6 +138,107 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
                 ).fetchone()[0]
                 == 0
             )
+
+
+def test_chapter_buffer_does_not_create_history_and_rejects_stale_head(tmp_path):
+    application = create_app(make_settings(tmp_path))
+    with TestClient(application) as client:
+        register = client.get("/register")
+        response = client.post(
+            "/register",
+            data={
+                "username": "暂存并发作者",
+                "password": "password-123",
+                "password_confirm": "password-123",
+                "csrf": csrf_from(register.text),
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        create_page = client.get("/novels/new")
+        response = client.post(
+            "/novels/new",
+            data={
+                "title": "暂存测试",
+                "premise": "验证编辑缓冲与 main HEAD 分离。",
+                "csrf": csrf_from(create_page.text),
+            },
+            follow_redirects=False,
+        )
+        project_id = project_id_from_workbench(response.headers["location"])
+        workbench = client.get(response.headers["location"])
+        response = client.post(
+            f"/novels/{project_id}/chapters",
+            data={
+                "title": "第一章",
+                "csrf": csrf_from(workbench.text),
+            },
+            follow_redirects=False,
+        )
+        chapter_id = chapter_id_from_workbench(response.headers["location"])
+        chapter_url = f"/novels/{project_id}/chapters/{chapter_id}"
+        chapter_page = client.get(response.headers["location"])
+        csrf = csrf_from(chapter_page.text)
+
+        buffered = client.post(
+            f"{chapter_url}/buffer",
+            data={
+                "content": "这只是尚未正式保存的编辑。",
+                "expected_head_version_id": "",
+                "csrf": csrf,
+            },
+        )
+        assert buffered.status_code == 200
+        assert buffered.json()["buffered"] is True
+        user_id = int(
+            application.state.database.get_user_by_username("暂存并发作者")[
+                "id"
+            ]
+        )
+        assert application.state.database.count_chapter_versions(
+            user_id,
+            project_id,
+            chapter_id,
+        ) == 0
+        recovered = client.get(response.headers["location"])
+        assert "这只是尚未正式保存的编辑。" in recovered.text
+        assert "已恢复上次未正式提交的暂存内容" in recovered.text
+
+        saved = client.post(
+            f"{chapter_url}/save",
+            data={
+                "content": "这是第一个正式版本。",
+                "expected_head_version_id": "",
+                "csrf": csrf_from(recovered.text),
+            },
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert saved.status_code == 200
+        first_head = saved.json()["version_id"]
+        assert saved.json()["created_new_version"] is True
+        assert application.state.database.count_chapter_versions(
+            user_id,
+            project_id,
+            chapter_id,
+        ) == 1
+
+        stale = client.post(
+            f"{chapter_url}/buffer",
+            data={
+                "content": "基于空白 HEAD 的过期编辑。",
+                "expected_head_version_id": "",
+                "csrf": csrf_from(client.get(response.headers["location"]).text),
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["conflict"] is True
+        chapter = application.state.database.get_novel_chapter(
+            user_id,
+            project_id,
+            chapter_id,
+        )
+        assert chapter["head_version_id"] == first_head
 
 
 def test_full_mock_workflow(tmp_path):
@@ -154,6 +269,7 @@ def test_full_mock_workflow(tmp_path):
             },
             follow_redirects=False,
         )
+        response = commit_text_import(client, response)
         assert response.status_code == 303
         document_url = response.headers["location"]
 
@@ -180,11 +296,13 @@ def test_full_mock_workflow(tmp_path):
         job_page = client.get(job_url)
         assert job_page.status_code == 200
         assert "已完成" in job_page.text
+        assert "全书文风画像" in job_page.text
         analysis_match = re.search(r'href="/analyses/([^"]+)"', job_page.text)
         assert analysis_match
         analysis_page = client.get(f"/analyses/{analysis_match.group(1)}")
         assert analysis_page.status_code == 200
         assert "章节摘要" in analysis_page.text
+        assert "文风证据" in analysis_page.text
         export = client.get(f"/jobs/{job_id}/export.json")
         assert export.status_code == 200
         assert len(export.json()["chapters"]) == 2
@@ -266,231 +384,9 @@ def test_full_mock_workflow(tmp_path):
         )
 
 
-def test_scene_only_planner_locks_task_card_and_maps_requirements(tmp_path):
-    application = create_app(make_settings(tmp_path))
-    with TestClient(application) as client:
-        register = client.get("/register")
-        response = client.post(
-            "/register",
-            data={
-                "username": "场景拆解作者",
-                "password": "password-123",
-                "password_confirm": "password-123",
-                "csrf": csrf_from(register.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-
-        novel_form = client.get("/novels/new")
-        response = client.post(
-            "/novels/new",
-            data={
-                "title": "雾港来信",
-                "genre": "悬疑",
-                "premise": "林岚核对异常来信并返回雾港。",
-                "csrf": csrf_from(novel_form.text),
-            },
-            follow_redirects=False,
-        )
-        workbench_url = response.headers["location"]
-        project_id = project_id_from_workbench(workbench_url)
-        project_url = f"/novels/{project_id}"
-        workspace = client.get(workbench_url)
-        response = client.post(
-            f"{project_url}/chapters",
-            data={
-                "title": "第一章 迟到的信",
-                "outline": "林岚核对来信。",
-                "key_points": "确认邮戳",
-                "csrf": csrf_from(workspace.text),
-            },
-            follow_redirects=False,
-        )
-        chapter_id = chapter_id_from_workbench(
-            response.headers["location"]
-        )
-        chapter_url = f"{project_url}/chapters/{chapter_id}"
-        task_url = f"{chapter_url}/task-card"
-        task_page = client.get(task_url)
-        response = client.post(
-            task_url,
-            data={
-                "custom_plot_threads": "父亲失踪之谜",
-                "purpose": "迫使林岚回到雾港。",
-                "start_state": "林岚拒绝相信来信。",
-                "end_state": "林岚买下返回雾港的车票。",
-                "central_conflict": "新邮戳与十年前结论冲突。",
-                "emotional_value": "希望与戒备同时抬升。",
-                "must_happen": "确认邮戳\n购买车票",
-                "must_preserve": "林岚不知道寄信人",
-                "forbidden": "揭晓父亲下落",
-                "foreshadow_setup": "信纸有海水气味",
-                "foreshadow_payoff": "",
-                "ending_hook": "气味来自雾港旧码头。",
-                "target_chars": "3000",
-                "action": "save_draft",
-                "csrf": csrf_from(task_page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-
-        database = application.state.database
-        user = database.get_user_by_username("场景拆解作者")
-        planning = PlanningService(database)
-        before = planning.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        task_page = client.get(task_url)
-        assert 'class="studio-manuscript-view"' in task_page.text
-        assert "只拆场景，不改章节要求" not in task_page.text
-        response = client.post(
-            f"{task_url}/generate-scenes",
-            data={
-                "instruction": "让决定返乡发生在第二场。",
-                "csrf": csrf_from(task_page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        job_id = response.headers["location"].rsplit("/", 1)[-1]
-        deadline = time.monotonic() + 3
-        payload = {}
-        while time.monotonic() < deadline:
-            payload = client.get(f"/api/writing-jobs/{job_id}").json()
-            if payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert payload["status"] == "completed"
-        assert payload["redirect_url"] == (
-            f"{project_url}/workbench?chapter_id={chapter_id}"
-        )
-
-        after = planning.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        for field in (
-            "purpose",
-            "start_state",
-            "end_state",
-            "central_conflict",
-            "emotional_value",
-            "plot_threads",
-            "must_happen",
-            "must_preserve",
-            "forbidden",
-            "foreshadow_setup",
-            "foreshadow_payoff",
-            "ending_hook",
-            "target_chars",
-        ):
-            assert after[field] == before[field]
-        assert after["status"] == "draft"
-        assert len(after["scenes"]) == 2
-        expected = {
-            ("plot_thread", "父亲失踪之谜"),
-            ("must_happen", "确认邮戳"),
-            ("must_happen", "购买车票"),
-            ("foreshadow_setup", "信纸有海水气味"),
-            ("ending_hook", "气味来自雾港旧码头。"),
-        }
-        actual = {
-            (item["kind"], item["text"])
-            for scene in after["scenes"]
-            for item in scene["requirement_refs"]
-        }
-        assert actual == expected
-        job = database.get_generation_job(int(user["id"]), job_id)
-        snapshot = json.loads(str(job["context_snapshot_json"]))
-        assert snapshot["operation"] == "plan_scene_beats"
-        assert snapshot["locked_task_card"]["must_happen"] == [
-            "确认邮戳",
-            "购买车票",
-        ]
-        assert snapshot["task_card_fingerprint"]
-
-        task_page = client.get(payload["redirect_url"])
-        assert 'class="studio-manuscript-view"' in task_page.text
-        assert "这个场景负责落实哪些任务要求" not in task_page.text
-        requirement_sources = {
-            "plot_thread": after["plot_threads"],
-            "must_happen": after["must_happen"],
-            "foreshadow_setup": after["foreshadow_setup"],
-            "foreshadow_payoff": after["foreshadow_payoff"],
-            "ending_hook": [after["ending_hook"]],
-        }
-        confirm_data = {
-            "custom_plot_threads": "\n".join(after["plot_threads"]),
-            "purpose": after["purpose"],
-            "start_state": after["start_state"],
-            "end_state": after["end_state"],
-            "central_conflict": after["central_conflict"],
-            "emotional_value": after["emotional_value"],
-            "must_happen": "\n".join(after["must_happen"]),
-            "must_preserve": "\n".join(after["must_preserve"]),
-            "forbidden": "\n".join(after["forbidden"]),
-            "foreshadow_setup": "\n".join(
-                after["foreshadow_setup"]
-            ),
-            "foreshadow_payoff": "\n".join(
-                after["foreshadow_payoff"]
-            ),
-            "ending_hook": after["ending_hook"],
-            "target_chars": str(after["target_chars"]),
-            "action": "confirm",
-            "csrf": csrf_from(task_page.text),
-        }
-        for position, scene in enumerate(after["scenes"], start=1):
-            for field in (
-                "pov_character",
-                "goal",
-                "obstacle",
-                "action",
-                "reveal",
-                "conceal",
-                "subtext",
-                "location",
-                "end_state",
-                "transition",
-            ):
-                confirm_data[f"scene_{field}_{position}"] = scene[field]
-            confirm_data[f"scene_key_items_{position}"] = "\n".join(
-                scene["key_items"]
-            )
-            confirm_data[f"scene_requirement_{position}"] = [
-                (
-                    f"{item['kind']}:"
-                    f"{requirement_sources[item['kind']].index(item['text'])}"
-                )
-                for item in scene["requirement_refs"]
-            ]
-        response = client.post(
-            task_url,
-            data=confirm_data,
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        assert "confirmed=true" in response.headers["location"]
-        confirmed = planning.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        assert confirmed["status"] == "confirmed"
-        context = database.get_writing_context(
-            int(user["id"]), chapter_id
-        )
-        assert context["task_card"]["scenes"][1][
-            "requirement_refs"
-        ]
 
 
-def test_analysis_technique_card_returns_to_planner_context(tmp_path):
+def test_analysis_technique_card_can_bind_to_project(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         page = client.get("/register")
@@ -522,6 +418,7 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
             },
             follow_redirects=False,
         )
+        response = commit_text_import(client, response)
         document_url = response.headers["location"]
         document_page = client.get(document_url)
         response = client.post(
@@ -593,53 +490,16 @@ def test_analysis_technique_card_returns_to_planner_context(tmp_path):
             follow_redirects=False,
         )
         assert response.status_code == 303
-        workspace = client.get(workbench_url)
-
-        response = client.post(
-            f"{project_url}/chapters",
-            data={
-                "title": "第一章 来信",
-                "outline": "调查者收到异常来信。",
-                "key_points": "核对邮戳",
-                "volume_id": "",
-                "csrf": csrf_from(workspace.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        chapter_id = chapter_id_from_workbench(
-            response.headers["location"]
-        )
-        chapter_url = f"{project_url}/chapters/{chapter_id}"
-        chapter_page = client.get(chapter_url)
-        assert 'class="studio-manuscript-view"' in chapter_page.text
-
-        task_page = client.get(f"{chapter_url}/task-card")
-        assert "本次将使用 1 张技法卡" not in task_page.text
-        response = client.post(
-            f"{chapter_url}/task-card/generate",
-            data={"instruction": "", "csrf": csrf_from(task_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        planning_job_id = response.headers["location"].rsplit("/", 1)[-1]
         user = application.state.database.get_user_by_username("技法回流作者")
-        deadline = time.monotonic() + 3
-        job = None
-        while time.monotonic() < deadline:
-            job = application.state.database.get_generation_job(
-                int(user["id"]), planning_job_id
-            )
-            if job and job["status"] in {"completed", "failed"}:
-                break
-            time.sleep(0.03)
-        assert job and job["status"] == "completed"
-        snapshot = json.loads(str(job["context_snapshot_json"]))
-        assert snapshot["active_techniques"]["included_count"] == 1
-        assert (
-            snapshot["active_techniques"]["items"][0]["name"]
-            == "让信息先影响行动、再补充解释"
+        bindings = TechniqueService(
+            application.state.database
+        ).list_project_bindings(
+            user_id=int(user["id"]),
+            project_id=project_id,
         )
+        assert len(bindings) == 1
+        assert bindings[0]["name"] == "让信息先影响行动、再补充解释"
+        assert bindings[0]["usage_modes"] == ["plan", "write", "audit"]
 
 
 def test_registration_can_be_closed_even_for_empty_database(tmp_path):
@@ -917,7 +777,8 @@ def test_user_can_select_ollama_without_api_key(tmp_path):
         page = client.get("/settings/api")
         assert "Google Gemini" in page.text
         assert "Ollama" in page.text
-        assert "OpenAI 兼容接口" in page.text
+        assert "自定义 OpenAI" in page.text
+        assert "OpenCode Go" in page.text
         response = client.post(
             "/settings/api",
             data={
@@ -1132,7 +993,7 @@ def test_provider_settings_keep_separate_keys_and_model_lists(tmp_path):
         assert "加入我的模型" in compatible_page.text
         assert 'aria-label="删除 DeepSeek 配置"' in compatible_page.text
         assert (
-            'aria-label="删除 OpenAI 兼容接口 配置"'
+            'aria-label="删除 自定义 OpenAI 配置"'
             in compatible_page.text
         )
 
@@ -1841,7 +1702,7 @@ def test_five_material_sections_are_editable_and_fixed_in_tags(tmp_path):
         assert 'action="/novels/' not in readonly.text
 
 
-def test_zero_input_project_enters_settings_and_applies_ai_candidate(
+def test_zero_input_project_enters_settings_and_ai_writes_directly(
     tmp_path,
 ):
     application = create_app(make_settings(tmp_path))
@@ -1901,29 +1762,13 @@ def test_zero_input_project_enters_settings_and_applies_ai_candidate(
         rendered = ""
         while time.monotonic() < deadline:
             rendered = client.get(conversation_url).text
-            if "应用到创作设定" in rendered:
+            if "已直接写入" in rendered:
                 break
             time.sleep(0.03)
-        assert "候选创作设定" in rendered
-        assert "尚未写入" in rendered
+        assert "已更新作品资料" in rendered
+        assert "已直接写入" in rendered
         assert re.search(r"<small>\s*AI\s*</small>", rendered)
-        action = re.search(
-            r'action="/assistant/messages/([a-f0-9]+)/apply-settings"',
-            rendered,
-        )
-        assert action
-
-        response = client.post(
-            f"/assistant/messages/{action.group(1)}/apply-settings",
-            data={
-                "csrf": csrf_from(rendered),
-                "return_to_workbench": "1",
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        applied_page = client.get(response.headers["location"])
-        assert "已应用" in applied_page.text
+        assert "/apply-settings" not in rendered
         user = application.state.database.get_user_by_username(
             "空白项目作者"
         )
@@ -1969,14 +1814,14 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         project_dir = tmp_path / "novels" / str(user_id) / project_id
         assert project_dir.is_dir()
         conversation_id = (
-            application.state.assistant_chat_service.create_conversation(
+            application.state.assistant_chat_service.conversations.create(
                 user_id=user_id,
                 scope_type="project",
                 title="删除作品前的讨论",
                 project_id=project_id,
             )
         )
-        assert application.state.assistant_chat_service.get_conversation(
+        assert application.state.assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=conversation_id,
         )
@@ -2016,7 +1861,7 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         assert "作品已删除" in deleted_dashboard.text
         assert database.get_novel_project(user_id, project_id) is None
         assert (
-            application.state.assistant_chat_service.get_conversation(
+            application.state.assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -2180,6 +2025,7 @@ def test_import_creates_readonly_source_then_one_editable_main(
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         assert imported.headers["location"].startswith("/documents/")
         reader = client.get(imported.headers["location"])
@@ -2394,6 +2240,7 @@ def test_imported_source_can_create_main_and_fixed_tag(tmp_path):
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         assert imported.headers["location"].startswith("/documents/")
         source_reader = client.get(imported.headers["location"])
@@ -2545,6 +2392,7 @@ def test_dashboard_resumes_each_version_at_its_last_chapter(tmp_path):
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         document_id = imported.headers["location"].split(
             "/documents/", 1
@@ -2910,381 +2758,9 @@ def test_tag_reuses_exact_main_analysis_and_can_be_deleted(tmp_path):
         assert not document_dir.exists()
 
 
-def test_full_mock_novel_writing_workflow(tmp_path):
-    application = create_app(make_settings(tmp_path))
-    with TestClient(application) as client:
-        page = client.get("/register")
-        response = client.post(
-            "/register",
-            data={
-                "username": "小说作者",
-                "password": "password-123",
-                "password_confirm": "password-123",
-                "csrf": csrf_from(page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-
-        page = client.get("/novels/new")
-        response = client.post(
-            "/novels/new",
-            data={
-                "title": "雾港来信",
-                "genre": "悬疑",
-                "premise": "记者收到失踪父亲寄出的新信件，并返回雾港追查真相。",
-                "world_setting": "当代海港小城。",
-                "style_guide": "克制冷峻。",
-                "point_of_view": "第三人称限知",
-                "target_chapter_chars": "3000",
-                "csrf": csrf_from(page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        workbench_url = response.headers["location"]
-        project_id = project_id_from_workbench(workbench_url)
-        project_url = f"/novels/{project_id}"
-
-        page = client.get(workbench_url)
-        response = client.post(
-            f"{project_url}/voice",
-            data={
-                "narration_rules": "第三人称紧贴林岚，只写她能观察或推断的内容。",
-                "sentence_rhythm": "调查段落用短句推进，转折前允许一个长句。",
-                "dialogue_voice": "林岚少解释，习惯用追问回避情绪。",
-                "sensory_palette": "盐雾、旧金属、潮湿纸张。",
-                "metaphor_policy": "低密度，只用人物经验范围内的意象。",
-                "allowed_omissions": "不直接解释恐惧，让动作和停顿承担。",
-                "preferred_patterns": "动作先于情绪判断",
-                "banned_expressions": "不禁\n内心深处",
-                "author_notes": "",
-                "action": "confirm",
-                "csrf": csrf_from(page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        assert "view=archive" in response.headers["location"]
-        assert "archive_tab=creative" in response.headers["location"]
-        assert "settings_tab=style" in response.headers["location"]
-        assert "saved=true" in response.headers["location"]
-
-        page = client.get(workbench_url)
-        response = client.post(
-            f"{project_url}/characters",
-            data={
-                "name": "林岚",
-                "role": "调查记者",
-                "traits": "冷静、执拗",
-                "background": "父亲十年前失踪",
-                "character_arc": "直面家庭秘密",
-                "csrf": csrf_from(page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-
-        page = client.get(workbench_url)
-        response = client.post(
-            f"{project_url}/chapters",
-            data={
-                "title": "第一章 迟到的信",
-                "outline": "林岚收到父亲署名的信，决定返回雾港。",
-                "key_points": "邮戳是三天前",
-                "csrf": csrf_from(page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        chapter_id = chapter_id_from_workbench(
-            response.headers["location"]
-        )
-        chapter_url = f"{project_url}/chapters/{chapter_id}"
-
-        task_page = client.get(f"{chapter_url}/task-card")
-        assert 'class="studio-manuscript-view"' in task_page.text
-        assert "章节职责与边界" not in task_page.text
-        response = client.post(
-            f"{chapter_url}/task-card/generate",
-            data={
-                "instruction": "保持现实悬疑，不提前揭晓寄信人。",
-                "csrf": csrf_from(task_page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        planning_job_id = response.headers["location"].rsplit("/", 1)[-1]
-        deadline = time.monotonic() + 3
-        planning_payload = {}
-        while time.monotonic() < deadline:
-            planning_payload = client.get(
-                f"/api/writing-jobs/{planning_job_id}"
-            ).json()
-            if planning_payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert planning_payload["status"] == "completed"
-        assert planning_payload["redirect_url"] == (
-            f"{project_url}/workbench?chapter_id={chapter_id}"
-        )
-        task_page = client.get(planning_payload["redirect_url"])
-        generated_task = PlanningService(
-            application.state.database
-        ).get_task_card(
-            user_id=int(
-                application.state.database.get_user_by_username(
-                    "小说作者"
-                )["id"]
-            ),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        assert generated_task["status"] == "draft"
-        assert generated_task["end_state"] == (
-            "人物做出不可轻易撤回的选择，局面发生变化。"
-        )
-
-        response = client.post(
-            f"{chapter_url}/task-card",
-            data={
-                "purpose": "林岚确认来信不可能出现，并决定返回雾港。",
-                "start_state": "林岚仍在外地，认为父亲早已失踪。",
-                "end_state": "林岚买下回雾港的车票。",
-                "central_conflict": "理性判断与父亲笔迹证据相互冲突。",
-                "emotional_value": "压抑多年的希望重新出现。",
-                "must_happen": "核对邮戳\n确认笔迹\n购买车票",
-                "must_preserve": "父亲已经失踪十年",
-                "forbidden": "本章揭晓寄信人",
-                "ending_hook": "信纸散发出雾港海水的气味。",
-                "target_chars": "3000",
-                "scene_pov_character_1": "林岚",
-                "scene_location_1": "林岚住处",
-                "scene_goal_1": "确认来信真假",
-                "scene_obstacle_1": "邮戳与常识矛盾",
-                "scene_action_1": "对照旧信笔迹并检查邮戳",
-                "scene_end_state_1": "确认笔迹属于父亲",
-                "scene_transition_1": "她开始查询返程车票",
-                "scene_requirement_1": [
-                    "must_happen:0",
-                    "must_happen:1",
-                ],
-                "scene_pov_character_2": "林岚",
-                "scene_location_2": "车站",
-                "scene_goal_2": "决定是否返回雾港",
-                "scene_obstacle_2": "她抗拒回到故乡",
-                "scene_action_2": "买下当夜车票并再次检查信纸",
-                "scene_end_state_2": "她踏上返程列车",
-                "scene_transition_2": "发现信纸带有海水气味",
-                "scene_requirement_2": [
-                    "must_happen:2",
-                    "ending_hook:0",
-                ],
-                "action": "confirm",
-                "csrf": csrf_from(task_page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        assert "confirmed=true" in response.headers["location"]
-
-        page = client.get(chapter_url)
-        assert "共创对话" in page.text
-        assert "AI 创作助手" not in page.text
-        confirmed_task = PlanningService(
-            application.state.database
-        ).get_task_card(
-            user_id=int(
-                application.state.database.get_user_by_username(
-                    "小说作者"
-                )["id"]
-            ),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        assert confirmed_task["status"] == "confirmed"
-        response = client.post(
-            f"{chapter_url}/generate",
-            data={
-                "operation": "draft",
-                "instruction": "从拆信开始",
-                "csrf": csrf_from(page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        job_url = response.headers["location"]
-        job_id = job_url.rsplit("/", 1)[-1]
-
-        deadline = time.monotonic() + 3
-        payload = {}
-        while time.monotonic() < deadline:
-            payload = client.get(f"/api/writing-jobs/{job_id}").json()
-            if payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert payload["status"] == "completed"
-        user = application.state.database.get_user_by_username("小说作者")
-        stored_job = application.state.database.get_generation_job(
-            int(user["id"]), job_id
-        )
-        context_snapshot = json.loads(stored_job["context_snapshot_json"])
-        assert context_snapshot["schema_version"] == 1
-        assert context_snapshot["chapter"]["title"] == "第一章 迟到的信"
-        assert context_snapshot["canonical_memory"]["source"] == (
-            "author_confirmed_canon_only"
-        )
-        assert context_snapshot["canonical_memory"]["retrieval"][
-            "engine"
-        ].startswith("sqlite_fts5")
-        assert context_snapshot["canonical_memory"]["retrieval"][
-            "query_terms"
-        ]
-        generation_result = json.loads(stored_job["result_json"])
-        assert generation_result["canonical"] is True
-        generated_version_id = generation_result["version_id"]
-        job_page = client.get(job_url)
-        assert "本次相关故事记忆" in job_page.text
-        assert "仅检索本作品、当前正史分支" in job_page.text
-
-        chapter_page = client.get(chapter_url)
-        assert "本地演示草稿" in chapter_page.text
-        assert 'class="studio-manuscript-view"' in chapter_page.text
-        assert "最近版本" not in chapter_page.text
-        assert "候选稿" not in chapter_page.text
-        assert "硬审计" not in chapter_page.text
-        generated_version = application.state.database.get_chapter_version(
-            int(user["id"]),
-            project_url.rsplit("/", 1)[-1],
-            chapter_url.rsplit("/", 1)[-1],
-            generated_version_id,
-        )
-        assert generated_version["status"] == "canonical"
-        quality_url = (
-            f"{chapter_url}/versions/{generated_version_id}/quality"
-        )
-        quality_page = client.get(quality_url)
-        assert quality_page.status_code == 404
-
-        style_url = (
-            f"{chapter_url}/versions/{generated_version_id}/style"
-        )
-        style_page = client.get(style_url)
-        assert "先定位，再决定是否修改" in style_page.text
-        response = client.post(
-            style_url,
-            data={"csrf": csrf_from(style_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        style_job_id = response.headers["location"].rsplit("/", 1)[-1]
-        deadline = time.monotonic() + 3
-        style_payload = {}
-        while time.monotonic() < deadline:
-            style_payload = client.get(
-                f"/api/writing-jobs/{style_job_id}"
-            ).json()
-            if style_payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert style_payload["status"] == "completed"
-        assert style_payload["redirect_url"] == style_url
-
-        style_page = client.get(style_url)
-        assert "具体问题" in style_page.text
-        assert "工具说明" in style_page.text
-        issue_match = re.search(r'href="/style-issues/([a-f0-9]+)"', style_page.text)
-        assert issue_match
-        issue_url = f"/style-issues/{issue_match.group(1)}"
-        issue_page = client.get(issue_url)
-        response = client.post(
-            f"{issue_url}/rewrite",
-            data={
-                "instruction": "保留核对信件的动作，不新增事实。",
-                "csrf": csrf_from(issue_page.text),
-            },
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        rewrite_job_id = response.headers["location"].rsplit("/", 1)[-1]
-        deadline = time.monotonic() + 3
-        rewrite_payload = {}
-        while time.monotonic() < deadline:
-            rewrite_payload = client.get(
-                f"/api/writing-jobs/{rewrite_job_id}"
-            ).json()
-            if rewrite_payload.get("terminal"):
-                break
-            time.sleep(0.03)
-        assert rewrite_payload["status"] == "completed"
-        assert rewrite_payload["redirect_url"] == issue_url
-
-        issue_page = client.get(issue_url)
-        assert "候选 1" in issue_page.text
-        assert "原文" in issue_page.text
-        assert "改写后" in issue_page.text
-        candidate_match = re.search(
-            r'action="/style-rewrite-candidates/([a-f0-9]+)/accept"',
-            issue_page.text,
-        )
-        assert candidate_match
-        response = client.post(
-            f"/style-rewrite-candidates/{candidate_match.group(1)}/accept",
-            data={"csrf": csrf_from(issue_page.text)},
-            follow_redirects=False,
-        )
-        assert response.status_code == 303
-        assert response.headers["location"].startswith(chapter_url)
-
-        revised_page = client.get(response.headers["location"])
-        assert 'class="studio-manuscript-view"' in revised_page.text
-        assert "待硬审计" not in revised_page.text
-        chapter_record = application.state.database.get_novel_chapter(
-            int(user["id"]),
-            project_url.rsplit("/", 1)[-1],
-            chapter_url.rsplit("/", 1)[-1],
-        )
-        revised_version_id = chapter_record["working_version_id"]
-        assert chapter_record["canonical_version_id"] == revised_version_id
-        revised_quality_url = (
-            f"{chapter_url}/versions/{revised_version_id}/quality"
-        )
-        revised_quality_page = client.get(revised_quality_url)
-        assert revised_quality_page.status_code == 404
-
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            deltas = MemoryService(
-                application.state.database
-            ).list_chapter_deltas(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-            )
-            projected_delta = next(
-                (
-                    item
-                    for item in deltas
-                    if str(item["version_id"]) == revised_version_id
-                    and str(item["status"]) == "projected"
-                ),
-                None,
-            )
-            if projected_delta:
-                break
-            time.sleep(0.03)
-        else:
-            raise AssertionError("定点改写后的故事记忆没有自动更新")
-        assert client.get(
-            f"/story-deltas/{projected_delta['id']}"
-        ).status_code == 404
-
-        export = client.get(f"/novels/{project_id}/export.txt")
-        assert export.status_code == 200
-        assert "第一章 迟到的信" in export.text
 
 
-def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
+def test_reader_branches_and_chapter_history_restore_web_workflow(tmp_path):
     application = create_app(make_settings(tmp_path))
     with TestClient(application) as client:
         page = client.get("/register")
@@ -3386,14 +2862,6 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
             return version_id
 
         first_version = candidate(first_id, "甲")
-        application.state.database.accept_chapter_version(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=first_id,
-            version_id=first_version,
-            override_reason="测试环境作者确认第一版正史",
-        )
-
         page = client.get(workbench_url)
         response = client.post(
             f"{project_url}/reader-requests",
@@ -3457,59 +2925,40 @@ def test_reader_branches_and_old_canon_impact_web_workflow(tmp_path):
         assert [item["position"] for item in chapters] == [1, 2, 3, 4]
 
         second_version = candidate(second_id, "乙")
-        application.state.database.accept_chapter_version(
-            user_id=user_id,
-            project_id=project_id,
-            chapter_id=second_id,
-            version_id=second_version,
-            override_reason="测试环境作者确认第二版正史",
-        )
+        assert application.state.database.get_novel_chapter(
+            user_id, project_id, second_id
+        )["head_version_id"] == second_version
         replacement_id = candidate(first_id, "新")
-        first_page = client.get(first_url)
+        first_page = client.get(
+            f"{project_url}/workbench?chapter_id={first_id}"
+        )
         response = client.post(
-            f"{first_url}/versions/{replacement_id}/accept",
+            f"{first_url}/versions/{first_version}/restore",
             data={
-                "override_reason": "作者确认改动不会破坏核心设定",
                 "csrf": csrf_from(first_page.text),
             },
             follow_redirects=False,
         )
-        impact_url = response.headers["location"]
-        assert impact_url.startswith("/canon-impact-reports/")
-        assert (
+        assert response.headers["location"].startswith(
+            f"{project_url}/workbench?chapter_id={first_id}"
+        )
+        assert "restored=true" in response.headers["location"]
+        restored_head = str(
             application.state.database.get_novel_chapter(
                 user_id, project_id, first_id
-            )["canonical_version_id"]
-            == first_version
+            )["head_version_id"]
         )
-        impact_page = client.get(impact_url)
-        assert "尚未切换正史" in impact_page.text
-        assert "第二章" in impact_page.text
-        response = client.post(
-            impact_url,
-            data={
-                "action": "confirm",
-                "csrf": csrf_from(impact_page.text),
-            },
-            follow_redirects=False,
+        assert restored_head not in {first_version, replacement_id}
+        restored_version = application.state.database.get_chapter_version(
+            user_id, project_id, first_id, restored_head
         )
-        assert response.headers["location"].endswith("?canonical=true")
-        assert (
-            application.state.database.get_novel_chapter(
-                user_id, project_id, first_id
-            )["canonical_version_id"]
-            == replacement_id
-        )
+        assert restored_version["kind"] == "history_restore"
+        assert Path(restored_version["content_path"]).read_text(
+            encoding="utf-8"
+        ) == "甲" * 2100
         assert application.state.database.get_novel_chapter(
             user_id, project_id, second_id
         )["needs_recheck"] == 1
-        report_id = impact_url.rsplit("/", 1)[-1]
-        with application.state.database.connection() as connection:
-            report = connection.execute(
-                "SELECT status FROM canon_impact_reports WHERE id=?",
-                (report_id,),
-            ).fetchone()
-        assert report["status"] == "applied"
 
 
 def test_chapter_version_comparison_renders_full_diff(tmp_path):
@@ -3559,7 +3008,9 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
         )
         chapter_url = f"{project_url}/chapters/{chapter_id}"
 
-        first_page = client.get(chapter_url)
+        first_page = client.get(
+            f"{project_url}/workbench?chapter_id={chapter_id}"
+        )
         response = client.post(
             f"{chapter_url}/save",
             data={
@@ -3571,7 +3022,9 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
         )
         assert response.status_code == 303
 
-        second_page = client.get(chapter_url)
+        second_page = client.get(
+            f"{project_url}/workbench?chapter_id={chapter_id}"
+        )
         response = client.post(
             f"{chapter_url}/save",
             data={
@@ -3589,6 +3042,13 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
         user = application.state.database.get_user_by_username(
             "版本比较作者"
         )
+        versions_archive = client.get(
+            f"{project_url}/workbench?view=archive&archive_tab=versions"
+        )
+        assert versions_archive.status_code == 200
+        assert "main HEAD 与章节历史" in versions_archive.text
+        assert "1 个历史版本" in versions_archive.text
+        assert "创建 Tag" in versions_archive.text
         versions = application.state.database.list_chapter_versions(
             int(user["id"]), project_id, chapter_id
         )
@@ -3597,7 +3057,9 @@ def test_chapter_version_comparison_renders_full_diff(tmp_path):
         base_id = str(versions[1]["id"])
         compare_url = f"{chapter_url}/versions/{target_id}/compare"
 
-        chapter_page = client.get(chapter_url)
+        chapter_page = client.get(
+            f"{project_url}/workbench?chapter_id={chapter_id}"
+        )
         assert 'class="studio-manuscript-view"' in chapter_page.text
         assert f'href="{compare_url}"' not in chapter_page.text
 

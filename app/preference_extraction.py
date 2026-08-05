@@ -10,7 +10,8 @@ import httpx
 from pydantic import ValidationError
 
 from .config import Settings
-from .deepseek import AnalyzerError, DeepSeekAnalyzer
+from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .preference_schema import EditPreferenceSuggestion
 
 
@@ -146,9 +147,7 @@ class MockEditPreferenceExtractor(BaseEditPreferenceExtractor):
         )
 
 
-class DeepSeekEditPreferenceExtractor(BaseEditPreferenceExtractor):
-    provider = "deepseek"
-
+class ProviderEditPreferenceExtractor(BaseEditPreferenceExtractor):
     def __init__(
         self,
         settings: Settings,
@@ -158,9 +157,9 @@ class DeepSeekEditPreferenceExtractor(BaseEditPreferenceExtractor):
     ):
         self.settings = settings
         self.provider = settings.model_provider
-        self.model = settings.deepseek_model
+        self.model = settings.model_name
         self._sleep = sleep
-        self._analyzer = DeepSeekAnalyzer(
+        self._analyzer = ProviderAnalyzer(
             settings, transport=transport, sleep=sleep
         )
 
@@ -183,9 +182,7 @@ class DeepSeekEditPreferenceExtractor(BaseEditPreferenceExtractor):
                 "style_guide": project.get("style_guide"),
             },
             "author_edit_source": {
-                "source_type": source.get("source_type"),
                 "chapter_title": source.get("chapter_title"),
-                "scene_goal": source.get("scene_goal"),
                 "author_change_summary": source.get(
                     "author_change_summary"
                 ),
@@ -203,7 +200,7 @@ class DeepSeekEditPreferenceExtractor(BaseEditPreferenceExtractor):
                 ),
             },
         ]
-        max_tokens = min(self.settings.deepseek_max_tokens, 6000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "编辑偏好建议返回结构不正确"
@@ -219,24 +216,26 @@ class DeepSeekEditPreferenceExtractor(BaseEditPreferenceExtractor):
             total_input += input_tokens
             total_output += output_tokens
             if reason == "length":
-                last_error = "DeepSeek 编辑偏好提取输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                last_error = "模型 编辑偏好提取输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if attempt == 0:
                     await self._sleep(1)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了编辑偏好提取",
+                    "模型 内容安全策略拒绝了编辑偏好提取",
                     input_tokens=total_input,
                     output_tokens=total_output,
                 )
             elif reason != "stop":
                 last_error = (
-                    f"DeepSeek 返回了未支持的结束原因：{reason or 'empty'}"
+                    f"模型 返回了未支持的结束原因：{reason or 'empty'}"
                 )
             else:
                 try:
@@ -430,7 +429,7 @@ def build_edit_preference_extractor(
 ) -> BaseEditPreferenceExtractor:
     if settings.uses_test_models:
         return MockEditPreferenceExtractor()
-    return DeepSeekEditPreferenceExtractor(settings)
+    return ProviderEditPreferenceExtractor(settings)
 
 
 def _focus_large_change(

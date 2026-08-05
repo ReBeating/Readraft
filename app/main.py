@@ -10,14 +10,12 @@ import shutil
 import sqlite3
 import tempfile
 import time
-from collections import deque
 from contextlib import asynccontextmanager
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, Request, UploadFile, status
+from fastapi import FastAPI, Form, Request, status
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -31,26 +29,19 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
-from .assistant_chat import build_assistant_chat_model
-from .assistant_chat_service import (
-    SETTING_FIELD_LABELS,
-    AssistantChatService,
-)
-from .canon_impact_service import CanonImpactService
+from .agent_model import build_agent_model
+from .analysis_repository import AnalysisRepository
+from .analysis_routes import build_analysis_router
+from .assistant_application import SETTING_FIELD_LABELS
+from .assistant_chat_service import AssistantChatService
 from .causal_branch_adoption_schema import CausalBranchTaskPatch
 from .causal_branch_adoption_service import CausalBranchAdoptionService
 from .causal_branch_planner import build_causal_branch_planner
 from .causal_branch_service import CausalBranchSimulationService
 from .causal_suggestion_planner import build_causal_suggestion_planner
 from .causal_suggestion_service import CausalSuggestionService
-from .chapter_splitter import decode_upload, split_chapters
 from .config import Settings
 from .continuity import ContinuityService
-from .context_compiler import (
-    compile_active_techniques,
-    compile_planned_causal_links,
-    compile_story_plan_context,
-)
 from .credentials import (
     CredentialCipher,
     CredentialError,
@@ -58,11 +49,10 @@ from .credentials import (
     validate_api_key,
     validate_model,
 )
-from .db import Database, utc_now
-from .deepseek import build_analyzer
+from .db import ChapterHeadConflict, Database, utc_now
+from .model_client import build_analyzer
 from .memory_extraction import build_memory_extractor
 from .memory_identity import (
-    IDENTITY_TYPE_LABELS,
     IDENTITY_TYPES,
     MemoryIdentityService,
 )
@@ -80,6 +70,8 @@ from .model_routing import (
     normalize_quality_mode,
     route_model_task,
 )
+from .import_preview import ImportPreviewStore
+from .import_routes import build_import_router
 from .planning_schema import ChapterTaskCard, SceneBeat
 from .planning_ai import build_chapter_planner
 from .planning_service import PlanningService
@@ -94,14 +86,8 @@ from .reader_planner import build_reader_planner
 from .reader_service import ReaderDecisionService
 from .security import (
     csrf_token,
-    hash_password,
-    validate_password,
-    validate_username,
     verify_csrf,
-    verify_password,
 )
-from .scene_service import SceneService
-from .story_planning_schema import PlannedStoryArc, StoryBlueprint
 from .story_planning_service import StoryPlanningService
 from .story_plan_suggestion_service import StoryPlanSuggestionService
 from .story_planner import build_story_planner
@@ -111,25 +97,85 @@ from .story_structure_service import StoryStructureSuggestionService
 from .structure_link_service import StructureLinkService
 from .worker import AnalysisWorker
 from .work_archive import (
-    WORK_ARCHIVE_FORMAT,
     WorkArchiveError,
     create_work_archive,
-    detect_archive_format,
-    import_work_archive,
 )
 from .style_editor import build_style_editor
 from .style_service import StyleService
-from .technique_schema import TechniqueObservation
 from .technique_service import TechniqueService
+from .technique_routes import build_technique_router
+from .template_filters import (
+    _chapter_structure_role_label,
+    _continuity_issue_label,
+    _edit_preference_category_label,
+    _edit_preference_status_label,
+    _foreshadow_status_label,
+    _human_size,
+    _impact_item_type_label,
+    _knowledge_state_label,
+    _memory_identity_type_label,
+    _plot_status_label,
+    _reader_request_type_label,
+    _reader_scope_label,
+    _reader_status_label,
+    _reference_style_axis_label,
+    _status_label,
+    _story_arc_lifecycle_label,
+    _story_arc_type_label,
+    _story_memory_label,
+    _story_plan_status_label,
+    _story_planning_mode_label,
+    _style_issue_label,
+    _technique_dimension_label,
+    _technique_scope_label,
+    _technique_usage_label,
+    _voice_dimension_label,
+    _voice_suggestion_status_label,
+    _writing_operation_label,
+    _writing_status_label,
+)
 from .voice_extraction import build_voice_profile_extractor
 from .version_diff import build_version_diff
-from .writing import build_default_writer
 from .work_library import (
     create_main_from_version,
-    create_reading_document_from_chunks,
     create_version_tag,
-    create_writing_project_from_chunks,
 )
+from .web_paths import (
+    api_settings_path as _api_settings_path,
+    append_query as _append_query,
+    document_workbench_path as _document_workbench_path,
+    request_relative_url as _request_relative_url,
+    safe_next as _safe_next,
+    wants_json as _wants_json,
+    work_archive_destination as _work_archive_destination,
+    workbench_path as _workbench_path,
+)
+from .web_security import (
+    current_user as _current_user,
+    login_redirect as _login_redirect,
+)
+from .web_forms import (
+    _clean_field,
+    _planned_story_arc_from_form,
+    _split_lines,
+    _story_blueprint_from_form,
+    _story_plan_lines,
+)
+from .workbench_view import (
+    POV_OPTIONS,
+    STORY_ARC_TYPE_OPTIONS,
+    WORK_ANALYSIS_CATEGORIES,
+    WORK_ARCHIVE_CATEGORIES,
+    WORK_ARCHIVE_TAB_KEYS,
+    WORKBENCH_SETTING_TAB_KEYS,
+    WORKBENCH_SETTING_TABS,
+    WORLD_ENTRY_TYPE_OPTIONS,
+    WorkbenchNotFound,
+    WorkbenchUnavailable,
+    WorkbenchViewBuilder,
+)
+from .web_auth import build_auth_router
+from .web_system import build_system_router
 
 
 logging.basicConfig(
@@ -140,52 +186,7 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-ALLOWED_EXTENSIONS = {".txt", ".md", ".text"}
-POV_OPTIONS = (
-    "第三人称限知",
-    "第一人称",
-    "第三人称全知",
-    "多视角",
-)
-WORKBENCH_SETTING_TABS = (
-    ("core", "作品概览"),
-    ("world", "世界"),
-    ("characters", "人物"),
-    ("structure", "剧情与结构"),
-    ("style", "叙事与文风"),
-)
-WORKBENCH_SETTING_TAB_KEYS = frozenset(
-    key for key, _label in WORKBENCH_SETTING_TABS
-)
-WORK_ARCHIVE_TABS = (
-    ("creative", "作品资料"),
-    ("analysis", "分析与笔记"),
-    ("versions", "版本"),
-)
-WORK_ARCHIVE_TAB_KEYS = frozenset(
-    key for key, _label in WORK_ARCHIVE_TABS
-)
-WORK_ARCHIVE_CATEGORIES = (
-    ("core", "作品概览"),
-    ("world", "世界"),
-    ("character", "人物"),
-    ("structure", "剧情与结构"),
-    ("style", "叙事与文风"),
-)
-WORK_ANALYSIS_CATEGORIES = (
-    ("uncategorized", "未分类"),
-    *WORK_ARCHIVE_CATEGORIES,
-)
-WORK_ARCHIVE_CATEGORY_KEYS = frozenset(
-    key for key, _label in WORK_ARCHIVE_CATEGORIES
-)
-WORLD_ENTRY_TYPE_OPTIONS = (
-    ("background", "背景"),
-    ("rule", "规则与边界"),
-    ("faction", "组织与势力"),
-    ("location", "地点"),
-    ("element", "物品、能力或术语"),
-)
+WORK_ARCHIVE_CATEGORY_KEYS = frozenset(key for key, _label in WORK_ARCHIVE_CATEGORIES)
 EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "diction",
     "sentence_rhythm",
@@ -198,231 +199,6 @@ EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "paragraph_structure",
     "other",
 )
-STORY_ARC_TYPE_OPTIONS = (
-    "main",
-    "subplot",
-    "character",
-    "relationship",
-    "mystery",
-    "world",
-)
-STORY_ARC_LIFECYCLE_OPTIONS = (
-    "planned",
-    "active",
-    "paused",
-    "resolved",
-    "abandoned",
-)
-CHAPTER_STRUCTURE_ROLE_OPTIONS = (
-    "setup",
-    "escalation",
-    "reversal",
-    "payoff",
-    "transition",
-)
-
-
-class SlidingWindowLimiter:
-    def __init__(self):
-        self._events: dict[str, deque[float]] = {}
-
-    def allow(self, key: str, *, limit: int, window_seconds: int) -> bool:
-        now = time.monotonic()
-        events = self._events.setdefault(key, deque())
-        cutoff = now - window_seconds
-        while events and events[0] <= cutoff:
-            events.popleft()
-        if len(events) >= limit:
-            return False
-        events.append(now)
-        if len(self._events) > 10_000:
-            self._events = {
-                item_key: item_events
-                for item_key, item_events in self._events.items()
-                if item_events and item_events[-1] > cutoff
-            }
-        return True
-
-
-def _client_address(request: Request) -> str:
-    direct = request.client.host if request.client else "unknown"
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if direct in {"127.0.0.1", "::1"} and forwarded:
-        return forwarded.split(",", 1)[0].strip()[:128]
-    return direct[:128]
-
-
-def _current_user(request: Request) -> Optional[Dict[str, Any]]:
-    user_id = request.session.get("user_id")
-    if not isinstance(user_id, int):
-        return None
-    database: Database = request.app.state.database
-    user = database.get_user(user_id)
-    if not user:
-        request.session.clear()
-    return user
-
-
-def _login_redirect(request: Request) -> RedirectResponse:
-    next_path = request.url.path
-    return RedirectResponse(
-        f"/login?next={quote(next_path, safe='/')}",
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
-
-
-def _safe_next(value: str, fallback: str = "/") -> str:
-    clean_value = str(value or "").strip()
-    if (
-        not clean_value.startswith("/")
-        or clean_value.startswith("//")
-        or "\\" in clean_value
-        or any(ord(character) < 32 for character in clean_value)
-    ):
-        return fallback
-    parsed = urlsplit(clean_value)
-    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
-        return fallback
-    return clean_value
-
-
-def _request_relative_url(request: Request) -> str:
-    path = request.url.path
-    if request.url.query:
-        path = f"{path}?{request.url.query}"
-    return _safe_next(path, "/dashboard")
-
-
-def _wants_json(request: Request) -> bool:
-    return "application/json" in request.headers.get("accept", "")
-
-
-def _api_settings_path(
-    *,
-    return_to: str = "/dashboard",
-    **params: Any,
-) -> str:
-    query = [
-        (key, str(value))
-        for key, value in params.items()
-        if value is not None
-    ]
-    safe_return_to = _safe_next(return_to, "/dashboard")
-    if safe_return_to != "/dashboard":
-        query.append(("return_to", safe_return_to))
-    return "/settings/api" + (f"?{urlencode(query)}" if query else "")
-
-
-def _workbench_path(
-    project_id: str,
-    *,
-    settings_tab: Optional[str] = None,
-    chapter_id: Optional[str] = None,
-    archive_tab: Optional[str] = None,
-    **params: Any,
-) -> str:
-    query: list[tuple[str, str]] = []
-    if settings_tab:
-        query.extend(
-            (
-                ("view", "archive"),
-                ("archive_tab", "creative"),
-                ("settings_tab", settings_tab),
-            )
-        )
-    elif archive_tab:
-        query.extend(
-            (
-                ("view", "archive"),
-                ("archive_tab", archive_tab),
-            )
-        )
-    if chapter_id:
-        query.append(("chapter_id", chapter_id))
-    query.extend(
-        (key, str(value))
-        for key, value in params.items()
-        if value is not None
-    )
-    path = f"/novels/{quote(project_id, safe='')}/workbench"
-    return f"{path}?{urlencode(query)}" if query else path
-
-
-def _document_workbench_path(
-    document_id: str,
-    *,
-    chapter_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    view: Optional[str] = None,
-    **params: Any,
-) -> str:
-    query: list[tuple[str, str]] = []
-    if chapter_id:
-        query.append(("chapter_id", chapter_id))
-    if conversation_id:
-        query.append(("conversation_id", conversation_id))
-    if view:
-        query.append(("view", view))
-    query.extend(
-        (key, str(value))
-        for key, value in params.items()
-        if value is not None
-    )
-    path = f"/documents/{quote(document_id, safe='')}"
-    return f"{path}?{urlencode(query)}" if query else path
-
-
-def _append_query(path: str, **params: Any) -> str:
-    query = [
-        (key, str(value))
-        for key, value in params.items()
-        if value is not None
-    ]
-    if not query:
-        return path
-    separator = "&" if "?" in path else "?"
-    return f"{path}{separator}{urlencode(query)}"
-
-
-def _work_archive_destination(
-    work: Mapping[str, Any],
-    *,
-    saved: bool = False,
-    error: Optional[str] = None,
-) -> str:
-    current_version = work.get("current_version")
-    main_version = work.get("main_version")
-    if current_version and current_version.get("document_id"):
-        destination = _document_workbench_path(
-            str(current_version["document_id"]),
-            view="archive",
-            archive_tab="analysis",
-        )
-    elif current_version and current_version.get("project_id"):
-        destination = _workbench_path(
-            str(current_version["project_id"]),
-            archive_tab="creative",
-        )
-    elif main_version:
-        destination = _workbench_path(
-            str(main_version["project_id"]),
-            archive_tab="creative",
-        )
-    elif work.get("source_version"):
-        destination = _document_workbench_path(
-            str(work["source_version"]["document_id"]),
-            view="archive",
-            archive_tab="analysis",
-        )
-    else:
-        destination = "/dashboard"
-    return _append_query(
-        destination,
-        saved="true" if saved else None,
-        error=error,
-    )
-
-
 def _template_context(
     request: Request,
     *,
@@ -437,7 +213,7 @@ def _template_context(
         personal_api_configured = database.has_api_credential(int(user["id"]))
     using_mock = (
         not personal_api_configured
-        and not settings.deepseek_api_key
+        and not settings.model_api_key
         and settings.uses_test_models
     )
     return {
@@ -448,13 +224,11 @@ def _template_context(
         "using_mock": using_mock,
         "api_missing": (
             not personal_api_configured
-            and not settings.deepseek_api_key
+            and not settings.model_api_key
             and not using_mock
         ),
         "personal_api_configured": personal_api_configured,
-        "model_settings_url": _api_settings_path(
-            return_to=current_url
-        ),
+        "model_settings_url": _api_settings_path(return_to=current_url),
         "model_settings_panel_url": _api_settings_path(
             embedded="true",
             return_to=current_url,
@@ -462,540 +236,6 @@ def _template_context(
         "suppress_model_settings_dialog": False,
         **extra,
     }
-
-
-def _human_size(value: int) -> str:
-    if value < 1_000:
-        return f"{value} 字"
-    if value < 1_000_000:
-        return f"{value / 1_000:.1f} 千字"
-    return f"{value / 1_000_000:.2f} 百万字"
-
-
-def _status_label(value: str) -> str:
-    return {
-        "ready": "等待分析",
-        "planned": "待创作",
-        "draft": "草稿",
-        "canonical": "正史",
-        "final": "已定稿",
-        "queued": "排队中",
-        "running": "分析中",
-        "completed": "已完成",
-        "partial": "部分完成",
-        "failed": "失败",
-    }.get(value, value)
-
-
-def _writing_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "写作中",
-        "completed": "已完成",
-        "failed": "失败",
-    }.get(value, value)
-
-
-def _writing_operation_label(value: str) -> str:
-    return {
-        "draft": "生成初稿",
-        "continue": "续写",
-        "rewrite": "整章重写",
-        "polish": "润色",
-        "manual": "手动保存",
-        "extract_story_delta": "提取故事记忆",
-        "plan_chapter": "规划章节任务卡",
-        "plan_scene_beats": "只拆分场景节拍",
-        "audit_ai_style": "定位 AI 味问题",
-        "rewrite_style_issue": "定点改写",
-        "targeted_rewrite": "定点改写候选",
-        "propose_reader_branches": "评估读者意见",
-        "generate_scene": "生成场景",
-        "rewrite_scene": "重写场景",
-        "scene_assembly": "场景组装",
-    }.get(value, value)
-
-
-def _style_issue_label(value: str) -> str:
-    return {
-        "abstract_emotion": "抽象概括情绪",
-        "over_explanation": "过度解释",
-        "uniform_rhythm": "句段节奏过齐",
-        "generic_atmosphere": "通用氛围",
-        "cliche": "陈词滥调",
-        "dialogue_convergence": "人物对话趋同",
-        "over_complete_paragraph": "段落过度完整",
-        "unnecessary_summary": "无必要总结",
-        "repetition": "重复信息",
-        "non_specific_detail": "伪具体细节",
-    }.get(value, value)
-
-
-def _voice_suggestion_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "正在分析",
-        "ready": "等待作者审核",
-        "applied": "已应用",
-        "rejected": "已放弃",
-        "failed": "提取失败",
-    }.get(value, value)
-
-
-def _story_plan_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "正在规划",
-        "completed": "可比较与采纳",
-        "failed": "生成失败",
-    }.get(value, value)
-
-
-def _story_planning_mode_label(value: str) -> str:
-    return {
-        "create": "从项目资料建立结构",
-        "refine": "优化已确认方向",
-        "rethink": "重想未来结构",
-    }.get(value, value)
-
-
-def _chapter_structure_role_label(value: str) -> str:
-    return {
-        "setup": "建立",
-        "escalation": "升级",
-        "reversal": "反转",
-        "payoff": "兑现",
-        "transition": "转场",
-    }.get(value, value or "待定义")
-
-
-def _voice_dimension_label(value: str) -> str:
-    return {
-        "narration": "叙述距离",
-        "rhythm": "句段节奏",
-        "dialogue": "对话声音",
-        "sensory": "感官与意象",
-        "metaphor": "比喻策略",
-        "omission": "省略与留白",
-    }.get(value, value)
-
-
-def _edit_preference_category_label(value: str) -> str:
-    return {
-        "diction": "用词",
-        "sentence_rhythm": "句段节奏",
-        "narration_distance": "叙述距离",
-        "dialogue": "对话",
-        "emotional_expression": "情绪表达",
-        "sensory_detail": "感官细节",
-        "metaphor": "比喻",
-        "omission": "留白",
-        "paragraph_structure": "段落结构",
-        "other": "其他",
-    }.get(value, value)
-
-
-def _edit_preference_status_label(value: str) -> str:
-    return {
-        "queued": "排队中",
-        "running": "正在分析",
-        "ready": "等待作者审核",
-        "applied": "已确认偏好",
-        "rejected": "已放弃",
-        "failed": "提取失败",
-    }.get(value, value)
-
-
-def _story_arc_type_label(value: str) -> str:
-    return {
-        "main": "主线",
-        "subplot": "支线",
-        "character": "人物弧光",
-        "relationship": "关系线",
-        "mystery": "谜团线",
-        "world": "世界线",
-    }.get(value, value)
-
-
-def _story_arc_lifecycle_label(value: str) -> str:
-    return {
-        "planned": "计划中",
-        "active": "正在推进",
-        "paused": "暂缓推进",
-        "resolved": "计划收束",
-        "abandoned": "已放弃",
-    }.get(value, value)
-
-
-def _reader_request_type_label(value: str) -> str:
-    return {
-        "pace": "节奏",
-        "character": "人物",
-        "relationship": "关系",
-        "plot": "剧情",
-        "world": "世界设定",
-        "payoff": "回报 / 爽点",
-        "other": "其他",
-    }.get(value, value)
-
-
-def _reader_scope_label(value: str) -> str:
-    return {
-        "next_chapter": "下一章",
-        "next_three": "未来三章",
-        "current_volume": "当前分卷",
-        "long_term": "长期主线",
-    }.get(value, value)
-
-
-def _reader_status_label(value: str) -> str:
-    return {
-        "draft": "待评估",
-        "proposing": "正在生成方案",
-        "reviewing": "等待作者选择",
-        "adopted": "已采纳",
-        "dismissed": "已归档",
-        "failed": "生成失败",
-    }.get(value, value)
-
-
-def _impact_item_type_label(value: str) -> str:
-    return {
-        "chapter": "后续正史章节",
-        "fact": "后续事实",
-        "knowledge": "人物知情",
-        "plot_thread": "剧情线",
-        "foreshadowing": "伏笔",
-    }.get(value, value)
-
-
-def _technique_dimension_label(value: str) -> str:
-    return {
-        "plot": "剧情",
-        "structure": "结构",
-        "scene": "场景",
-        "pacing": "节奏",
-        "information": "信息释放",
-        "character": "人物",
-        "dialogue": "对话",
-        "language": "语言",
-        "suspense": "悬念",
-    }.get(value, value)
-
-
-def _technique_scope_label(value: str) -> str:
-    return {
-        "project": "全书",
-        "volume": "分卷",
-        "chapter": "章节",
-        "scene": "场景",
-    }.get(value, value)
-
-
-def _technique_usage_label(value: str) -> str:
-    return {
-        "plan": "规划",
-        "write": "正文",
-        "audit": "审校",
-    }.get(value, value)
-
-
-def _scene_draft_status_label(value: str) -> str:
-    return {
-        "empty": "尚未写作",
-        "draft": "场景草稿",
-        "stale": "任务卡变化，待重写",
-        "assembled": "已组装进候选章",
-    }.get(value, value)
-
-
-def _continuity_issue_label(value: str) -> str:
-    return {
-        "state_before_mismatch": "人物状态前后不一致",
-        "relationship_before_mismatch": "人物关系前后不一致",
-        "location_before_mismatch": "地点连续性冲突",
-        "item_holder_mismatch": "物品持有者冲突",
-        "item_after_destroyed": "已毁物品再次出现",
-        "story_time_mismatch": "故事时间衔接冲突",
-        "missing_baseline": "缺少可核对的前置状态",
-        "knowledge_without_baseline": "遗忘缺少知情基线",
-        "plot_thread_without_setup": "剧情线缺少建立记录",
-        "plot_thread_duplicate_open": "剧情线重复建立",
-        "plot_thread_reopened": "已关闭剧情线重新开启",
-        "plot_thread_after_closed": "已关闭剧情线继续推进",
-        "foreshadow_without_setup": "伏笔缺少埋设记录",
-        "foreshadow_duplicate_setup": "伏笔重复埋设",
-        "foreshadow_reopened": "已关闭伏笔重新埋设",
-        "foreshadow_after_closed": "已关闭伏笔继续推进",
-        "duplicate_event_identity": "事件身份重复",
-        "causal_self_reference": "事件因果自指",
-        "causal_reference_missing": "直接原因事件缺失",
-    }.get(value, value)
-
-
-def _memory_identity_type_label(value: str) -> str:
-    return IDENTITY_TYPE_LABELS.get(value, value)
-
-
-def _story_memory_label(value: str) -> str:
-    return {
-        "status": "状态",
-        "location": "位置",
-        "physical": "身体",
-        "emotional": "情绪",
-        "goal": "目标",
-        "ability": "能力",
-        "possession": "持有",
-        "other": "其他",
-        "created": "产生",
-        "acquired": "获得",
-        "lost": "丢失",
-        "transferred": "转移",
-        "used": "使用",
-        "destroyed": "毁坏",
-        "changed": "变化",
-        "knows": "知道",
-        "suspects": "怀疑",
-        "believes_false": "误信",
-        "forgets": "遗忘",
-        "main": "主线",
-        "subplot": "支线",
-        "relationship": "关系线",
-        "mystery": "谜团",
-        "promise": "承诺线",
-        "opened": "建立",
-        "advanced": "推进",
-        "paused": "暂停",
-        "resolved": "解决",
-        "abandoned": "放弃",
-        "setup": "埋设",
-        "payoff": "回收",
-    }.get(value, value)
-
-
-def _knowledge_state_label(value: str) -> str:
-    return {
-        "knows": "知道",
-        "suspects": "怀疑",
-        "believes_false": "相信错误信息",
-        "forgets": "已经遗忘",
-    }.get(value, value)
-
-
-def _plot_status_label(value: str) -> str:
-    return {
-        "open": "已建立",
-        "active": "推进中",
-        "paused": "暂缓",
-        "resolved": "已解决",
-        "abandoned": "已放弃",
-    }.get(value, value)
-
-
-def _foreshadow_status_label(value: str) -> str:
-    return {
-        "setup": "已埋设",
-        "advanced": "已推进",
-        "payoff": "已回收",
-        "abandoned": "已放弃",
-    }.get(value, value)
-
-
-def _clean_field(
-    value: str,
-    label: str,
-    *,
-    max_length: int,
-    required: bool = False,
-    min_length: int = 1,
-) -> str:
-    cleaned = value.strip()
-    if required and len(cleaned) < min_length:
-        raise ValueError(f"{label}至少需要 {min_length} 个字符")
-    if len(cleaned) > max_length:
-        raise ValueError(f"{label}不能超过 {max_length:,} 个字符")
-    return cleaned
-
-
-def _split_lines(value: str, *, limit: int = 30) -> list[str]:
-    items = [line.strip() for line in value.splitlines() if line.strip()]
-    if len(items) > limit:
-        raise ValueError(f"逐行条目不能超过 {limit} 条")
-    return items
-
-
-def _story_plan_lines(
-    value: str,
-    label: str,
-    *,
-    limit: int,
-    item_max_length: int = 1200,
-) -> list[str]:
-    items = _split_lines(value, limit=limit)
-    for item in items:
-        if len(item) > item_max_length:
-            raise ValueError(
-                f"{label}中每条不能超过 {item_max_length:,} 个字符"
-            )
-    return items
-
-
-def _story_blueprint_from_form(
-    *,
-    central_question: str,
-    protagonist_goal: str,
-    core_conflict: str,
-    stakes: str,
-    opening_state: str,
-    ending_state: str,
-    major_turns: str,
-    must_payoffs: str,
-    forbidden_shortcuts: str,
-    author_notes: str,
-) -> StoryBlueprint:
-    return StoryBlueprint.model_validate(
-        {
-            "central_question": _clean_field(
-                central_question, "核心悬问", max_length=2000
-            ),
-            "protagonist_goal": _clean_field(
-                protagonist_goal, "主角长期目标", max_length=2000
-            ),
-            "core_conflict": _clean_field(
-                core_conflict, "全书冲突引擎", max_length=3000
-            ),
-            "stakes": _clean_field(
-                stakes, "长期代价与风险", max_length=3000
-            ),
-            "opening_state": _clean_field(
-                opening_state, "开篇状态", max_length=3000
-            ),
-            "ending_state": _clean_field(
-                ending_state, "终局状态", max_length=3000
-            ),
-            "major_turns": _story_plan_lines(
-                major_turns, "全书转折", limit=20
-            ),
-            "must_payoffs": _story_plan_lines(
-                must_payoffs, "必须兑现项", limit=30
-            ),
-            "forbidden_shortcuts": _story_plan_lines(
-                forbidden_shortcuts, "禁止捷径", limit=30
-            ),
-            "author_notes": _clean_field(
-                author_notes, "蓝图作者备注", max_length=6000
-            ),
-        }
-    )
-
-
-def _planned_story_arc_from_form(
-    *,
-    arc_type: str,
-    title: str,
-    dramatic_question: str,
-    promise: str,
-    start_state: str,
-    target_payoff: str,
-    involved_characters: str,
-    planned_turns: str,
-    lifecycle_status: str,
-    priority: int,
-    author_notes: str,
-) -> PlannedStoryArc:
-    if arc_type not in STORY_ARC_TYPE_OPTIONS:
-        raise ValueError("请选择有效的剧情线类型")
-    if lifecycle_status not in STORY_ARC_LIFECYCLE_OPTIONS:
-        raise ValueError("请选择有效的剧情线阶段")
-    return PlannedStoryArc.model_validate(
-        {
-            "arc_type": arc_type,
-            "title": _clean_field(
-                title, "剧情线名称", max_length=160, required=True
-            ),
-            "dramatic_question": _clean_field(
-                dramatic_question, "剧情线悬问", max_length=2000
-            ),
-            "promise": _clean_field(
-                promise, "剧情线读者承诺", max_length=2000
-            ),
-            "start_state": _clean_field(
-                start_state, "剧情线起始状态", max_length=2000
-            ),
-            "target_payoff": _clean_field(
-                target_payoff, "剧情线目标回报", max_length=3000
-            ),
-            "involved_characters": _story_plan_lines(
-                involved_characters, "涉及人物", limit=30, item_max_length=120
-            ),
-            "planned_turns": _story_plan_lines(
-                planned_turns, "剧情线转折", limit=20
-            ),
-            "lifecycle_status": lifecycle_status,
-            "priority": priority,
-            "author_notes": _clean_field(
-                author_notes, "剧情线作者备注", max_length=4000
-            ),
-        }
-    )
-
-
-def _technique_observation_from_form(
-    *,
-    name: str,
-    dimension: str,
-    source_location: str,
-    observation: str,
-    effect: str,
-    suitable_for: str,
-    unsuitable_for: str,
-    execution_rule: str,
-    originality_boundary: str,
-) -> TechniqueObservation:
-    return TechniqueObservation.model_validate(
-        {
-            "name": _clean_field(
-                name, "技法名称", max_length=80, required=True, min_length=2
-            ),
-            "dimension": dimension,
-            "source_location": _clean_field(
-                source_location,
-                "来源位置",
-                max_length=200,
-                required=True,
-            ),
-            "observation": _clean_field(
-                observation,
-                "文本观察",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-            "effect": _clean_field(
-                effect,
-                "读者效果",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-            "suitable_for": _split_lines(suitable_for, limit=8),
-            "unsuitable_for": _split_lines(unsuitable_for, limit=8),
-            "execution_rule": _clean_field(
-                execution_rule,
-                "执行规则",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-            "originality_boundary": _clean_field(
-                originality_boundary,
-                "原创性边界",
-                max_length=600,
-                required=True,
-                min_length=10,
-            ),
-        }
-    )
 
 
 def _read_optional_text(path: Path) -> str:
@@ -1021,32 +261,12 @@ def _atomic_write_text(path: Path, content: str, token: str) -> None:
     path.chmod(0o600)
 
 
-def _diff_segments(original: str, replacement: str) -> dict[str, list[dict]]:
-    before: list[dict[str, str]] = []
-    after: list[dict[str, str]] = []
-    matcher = SequenceMatcher(None, original, replacement, autojunk=False)
-    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
-        old_text = original[old_start:old_end]
-        new_text = replacement[new_start:new_end]
-        if tag == "equal":
-            if old_text:
-                before.append({"kind": "same", "text": old_text})
-                after.append({"kind": "same", "text": new_text})
-        elif tag == "delete":
-            before.append({"kind": "removed", "text": old_text})
-        elif tag == "insert":
-            after.append({"kind": "added", "text": new_text})
-        else:
-            before.append({"kind": "removed", "text": old_text})
-            after.append({"kind": "added", "text": new_text})
-    return {"before": before, "after": after}
-
-
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app_settings = settings or Settings.from_env()
     app_settings.validate()
     app_settings.ensure_directories()
     database = Database(app_settings.database_path)
+    analysis_repository = AnalysisRepository(database)
     memory_service = MemoryService(database)
     planning_service = PlanningService(database)
     story_planning_service = StoryPlanningService(database)
@@ -1060,81 +280,64 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     causal_branch_adoption_service = CausalBranchAdoptionService(database)
     style_service = StyleService(database)
     preference_service = PreferenceService(database)
-    reader_service = ReaderDecisionService(
-        database, app_settings.novels_dir
-    )
+    reader_service = ReaderDecisionService(database, app_settings.novels_dir)
     assistant_chat_service = AssistantChatService(
         database,
         app_settings.novels_dir,
         app_settings.documents_dir,
     )
-    impact_service = CanonImpactService(database)
     technique_service = TechniqueService(database)
-    scene_service = SceneService(database)
     continuity_service = ContinuityService(database)
     identity_service = MemoryIdentityService(database)
+    import_preview_store = ImportPreviewStore(app_settings.import_previews_dir)
+    workbench_view_builder = WorkbenchViewBuilder(
+        database=database,
+        memory_service=memory_service,
+        assistant_chat_service=assistant_chat_service,
+        planning_service=planning_service,
+        story_planning_service=story_planning_service,
+        style_service=style_service,
+        continuity_service=continuity_service,
+    )
     credential_cipher = CredentialCipher(app_settings.credential_secret)
-    auth_limiter = SlidingWindowLimiter()
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["human_size"] = _human_size
     templates.env.filters["status_label"] = _status_label
     templates.env.filters["writing_status_label"] = _writing_status_label
     templates.env.filters["writing_operation_label"] = _writing_operation_label
     templates.env.filters["style_issue_label"] = _style_issue_label
-    templates.env.filters[
-        "voice_suggestion_status_label"
-    ] = _voice_suggestion_status_label
-    templates.env.filters[
-        "voice_dimension_label"
-    ] = _voice_dimension_label
-    templates.env.filters[
-        "edit_preference_category_label"
-    ] = _edit_preference_category_label
-    templates.env.filters[
-        "edit_preference_status_label"
-    ] = _edit_preference_status_label
+    templates.env.filters["voice_suggestion_status_label"] = (
+        _voice_suggestion_status_label
+    )
+    templates.env.filters["voice_dimension_label"] = _voice_dimension_label
+    templates.env.filters["edit_preference_category_label"] = (
+        _edit_preference_category_label
+    )
+    templates.env.filters["edit_preference_status_label"] = (
+        _edit_preference_status_label
+    )
     templates.env.filters["story_arc_type_label"] = _story_arc_type_label
-    templates.env.filters[
-        "story_arc_lifecycle_label"
-    ] = _story_arc_lifecycle_label
-    templates.env.filters[
-        "story_plan_status_label"
-    ] = _story_plan_status_label
-    templates.env.filters[
-        "story_planning_mode_label"
-    ] = _story_planning_mode_label
-    templates.env.filters[
-        "chapter_structure_role_label"
-    ] = _chapter_structure_role_label
-    templates.env.filters[
-        "reader_request_type_label"
-    ] = _reader_request_type_label
+    templates.env.filters["story_arc_lifecycle_label"] = _story_arc_lifecycle_label
+    templates.env.filters["story_plan_status_label"] = _story_plan_status_label
+    templates.env.filters["story_planning_mode_label"] = _story_planning_mode_label
+    templates.env.filters["chapter_structure_role_label"] = (
+        _chapter_structure_role_label
+    )
+    templates.env.filters["reader_request_type_label"] = _reader_request_type_label
     templates.env.filters["reader_scope_label"] = _reader_scope_label
     templates.env.filters["reader_status_label"] = _reader_status_label
-    templates.env.filters[
-        "impact_item_type_label"
-    ] = _impact_item_type_label
-    templates.env.filters[
-        "technique_dimension_label"
-    ] = _technique_dimension_label
+    templates.env.filters["impact_item_type_label"] = _impact_item_type_label
+    templates.env.filters["technique_dimension_label"] = _technique_dimension_label
+    templates.env.filters["reference_style_axis_label"] = (
+        _reference_style_axis_label
+    )
     templates.env.filters["technique_scope_label"] = _technique_scope_label
     templates.env.filters["technique_usage_label"] = _technique_usage_label
-    templates.env.filters[
-        "scene_draft_status_label"
-    ] = _scene_draft_status_label
-    templates.env.filters[
-        "continuity_issue_label"
-    ] = _continuity_issue_label
-    templates.env.filters[
-        "knowledge_state_label"
-    ] = _knowledge_state_label
+    templates.env.filters["continuity_issue_label"] = _continuity_issue_label
+    templates.env.filters["knowledge_state_label"] = _knowledge_state_label
     templates.env.filters["plot_status_label"] = _plot_status_label
-    templates.env.filters[
-        "foreshadow_status_label"
-    ] = _foreshadow_status_label
-    templates.env.filters[
-        "memory_identity_type_label"
-    ] = _memory_identity_type_label
+    templates.env.filters["foreshadow_status_label"] = _foreshadow_status_label
+    templates.env.filters["memory_identity_type_label"] = _memory_identity_type_label
     templates.env.filters["story_memory_label"] = _story_memory_label
 
     def render_template(
@@ -1144,27 +347,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             context["request"], name, context, status_code=status_code
         )
 
-    def api_profile(
-        user_id: int, model_choice: str = ""
-    ) -> Optional[Dict[str, str]]:
+    def api_profile(user_id: int, model_choice: str = "") -> Optional[Dict[str, str]]:
         clean_choice = str(model_choice or "").strip()
         if clean_choice:
             try:
                 provider, model = clean_choice.split("|", 1)
             except ValueError as exc:
                 raise ValueError("所选模型无效，请刷新页面后重试") from exc
-            credential = database.get_api_credential_summary(
-                user_id, provider
-            )
+            credential = database.get_api_credential_summary(user_id, provider)
             if credential:
-                allowed_models = set(
-                    database.list_api_models(user_id, provider)
-                )
+                allowed_models = set(database.list_api_models(user_id, provider))
                 allowed_models.add(str(credential["model"]))
                 if model not in allowed_models:
-                    raise ValueError(
-                        "所选模型不在“我的模型”中，请先到模型设置添加"
-                    )
+                    raise ValueError("所选模型不在“我的模型”中，请先到模型设置添加")
                 return {
                     "provider": provider,
                     "model": model,
@@ -1172,7 +367,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 }
             default_profile = {
                 "provider": app_settings.model_provider,
-                "model": app_settings.deepseek_model,
+                "model": app_settings.model_name,
                 "credential_source": "default",
             }
             if app_settings.uses_test_models:
@@ -1182,7 +377,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "credential_source": "default",
                 }
             if (
-                app_settings.deepseek_api_key or app_settings.uses_test_models
+                app_settings.model_api_key or app_settings.uses_test_models
             ) and clean_choice == (
                 f"{default_profile['provider']}|{default_profile['model']}"
             ):
@@ -1195,10 +390,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "model": str(credential["model"]),
                 "credential_source": "personal",
             }
-        if app_settings.deepseek_api_key:
+        if app_settings.model_api_key:
             return {
                 "provider": app_settings.model_provider,
-                "model": app_settings.deepseek_model,
+                "model": app_settings.model_name,
                 "credential_source": "default",
             }
         if app_settings.uses_test_models:
@@ -1267,9 +462,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         conversation: Optional[Mapping[str, Any]] = None,
     ) -> str:
         available = {
-            str(model["value"])
-            for group in groups
-            for model in group["models"]
+            str(model["value"]) for group in groups for model in group["models"]
         }
         if conversation:
             for message in reversed(conversation.get("messages") or []):
@@ -1278,9 +471,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     and message.get("provider")
                     and message.get("model")
                 ):
-                    previous = (
-                        f"{message['provider']}|{message['model']}"
-                    )
+                    previous = f"{message['provider']}|{message['model']}"
                     if previous in available:
                         return previous
         for group in groups:
@@ -1297,18 +488,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ) -> Dict[str, Any]:
         groups = chat_model_groups(user_id)
         available = {
-            str(model["value"])
-            for group in groups
-            for model in group["models"]
+            str(model["value"]) for group in groups for model in group["models"]
         }
         preferences = database.get_model_routing_preferences(user_id)
         fallback = selected_chat_model(groups)
 
         def configured_choice(role: str) -> str:
-            value = (
-                f"{preferences[f'{role}_provider']}|"
-                f"{preferences[f'{role}_model']}"
-            )
+            value = f"{preferences[f'{role}_provider']}|{preferences[f'{role}_model']}"
             return value if value in available else fallback
 
         return {
@@ -1335,9 +521,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             normalize_quality_mode(quality_mode),
             task_policy,
         )
-        choice = str(
-            configuration[f"{decision.model_role}_model_choice"]
-        )
+        choice = str(configuration[f"{decision.model_role}_model_choice"])
         return api_profile(user_id, choice) if choice else api_profile(user_id)
 
     def selected_quality_mode(
@@ -1346,36 +530,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ) -> str:
         if conversation and conversation.get("quality_mode"):
             return normalize_quality_mode(conversation["quality_mode"])
-        return str(
-            model_routing_configuration(user_id)[
-                "default_quality_mode"
-            ]
-        )
+        return str(model_routing_configuration(user_id)["default_quality_mode"])
 
     def quality_mode_options(user_id: int) -> list[Dict[str, str]]:
         configuration = model_routing_configuration(user_id)
-        fast_model = str(
-            configuration["fast_model_choice"]
-        ).partition("|")[2]
-        quality_model = str(
-            configuration["quality_model_choice"]
-        ).partition("|")[2]
+        fast_model = str(configuration["fast_model_choice"]).partition("|")[2]
+        quality_model = str(configuration["quality_model_choice"]).partition("|")[2]
         return [
             {
                 "value": "low",
                 "label": "Low",
                 "detail": fast_model or "快速模型",
-                "description": (
-                    "全部使用快速模型；服务商支持时关闭思考。"
-                ),
+                "description": ("全部使用快速模型；服务商支持时关闭思考。"),
             },
             {
                 "value": "standard",
                 "label": "Standard",
                 "detail": "自动",
-                "description": (
-                    "轻量步骤使用快速模型，写作与分析使用高质量模型。"
-                ),
+                "description": ("轻量步骤使用快速模型，写作与分析使用高质量模型。"),
             },
             {
                 "value": "max",
@@ -1396,44 +568,64 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         version_id: str,
     ) -> None:
         try:
-            deltas = memory_service.list_chapter_deltas(
+            targets = database.list_memory_refresh_targets(
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
             )
-            active_delta = next(
-                (
-                    item
-                    for item in deltas
-                    if str(item["version_id"]) == version_id
-                    and str(item["status"])
-                    in {"proposed", "author_edited", "projected"}
-                ),
-                None,
-            )
-            if active_delta:
-                if str(active_delta["status"]) in {
-                    "proposed",
-                    "author_edited",
-                }:
-                    memory_service.accept_delta(
-                        user_id=user_id,
-                        delta_id=str(active_delta["id"]),
-                    )
-                return
-            profile = api_profile(user_id)
-            if not profile:
-                return
-            database.create_memory_extraction_job(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-                version_id=version_id,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-            )
-            request.app.state.worker.wake()
+            if not targets:
+                targets = [
+                    {
+                        "chapter_id": chapter_id,
+                        "head_version_id": version_id,
+                    }
+                ]
+            profile: Optional[dict[str, str]] = None
+            queued = False
+            for target in targets:
+                target_chapter_id = str(target["chapter_id"])
+                target_version_id = str(target["head_version_id"])
+                deltas = memory_service.list_chapter_deltas(
+                    user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=target_chapter_id,
+                )
+                active_delta = next(
+                    (
+                        item
+                        for item in deltas
+                        if str(item["version_id"]) == target_version_id
+                        and str(item["status"])
+                        in {"proposed", "author_edited", "projected"}
+                    ),
+                    None,
+                )
+                if active_delta:
+                    if str(active_delta["status"]) in {
+                        "proposed",
+                        "author_edited",
+                    }:
+                        memory_service.accept_delta(
+                            user_id=user_id,
+                            delta_id=str(active_delta["id"]),
+                        )
+                    continue
+                if profile is None:
+                    profile = api_profile(user_id)
+                if not profile:
+                    continue
+                database.create_memory_extraction_job(
+                    user_id=user_id,
+                    project_id=project_id,
+                    chapter_id=target_chapter_id,
+                    version_id=target_version_id,
+                    provider=profile["provider"],
+                    model=profile["model"],
+                    credential_source=profile["credential_source"],
+                )
+                queued = True
+            if queued:
+                request.app.state.worker.wake()
         except Exception:
             logger.exception(
                 "background story memory was not queued chapter=%s",
@@ -1449,48 +641,43 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             process_lock.acquire()
             database.initialize()
+            database.prune_chapter_edit_buffers(
+                retention_days=app_settings.edit_buffer_retention_days
+            )
             app_settings.ensure_directories()
-            default_provider_configured = bool(
-                app_settings.deepseek_api_key
-            ) or app_settings.uses_test_models
+            default_provider_configured = (
+                bool(app_settings.model_api_key) or app_settings.uses_test_models
+            )
             if default_provider_configured:
-                fast_settings = settings_for_reasoning_policy(
-                    app_settings, "fast"
-                )
+                fast_settings = settings_for_reasoning_policy(app_settings, "fast")
                 reasoning_settings = settings_for_reasoning_policy(
                     app_settings, "reasoning"
                 )
-                deep_settings = settings_for_reasoning_policy(
+                deep_reasoning_settings = settings_for_reasoning_policy(
                     app_settings, "deep"
                 )
                 analyzer = build_analyzer(reasoning_settings)
-                writer = build_default_writer(reasoning_settings)
                 memory_extractor = build_memory_extractor(fast_settings)
-                chapter_planner = build_chapter_planner(deep_settings)
+                chapter_planner = build_chapter_planner(deep_reasoning_settings)
                 style_editor = build_style_editor(reasoning_settings)
                 reader_planner = build_reader_planner(reasoning_settings)
-                story_planner = build_story_planner(deep_settings)
-                story_structure_planner = (
-                    build_story_structure_planner(deep_settings)
+                story_planner = build_story_planner(deep_reasoning_settings)
+                story_structure_planner = build_story_structure_planner(
+                    deep_reasoning_settings
                 )
-                causal_suggestion_planner = (
-                    build_causal_suggestion_planner(deep_settings)
+                causal_suggestion_planner = build_causal_suggestion_planner(
+                    deep_reasoning_settings
                 )
                 causal_branch_planner = build_causal_branch_planner(
-                    deep_settings
+                    deep_reasoning_settings
                 )
-                voice_profile_extractor = (
-                    build_voice_profile_extractor(fast_settings)
+                voice_profile_extractor = build_voice_profile_extractor(fast_settings)
+                edit_preference_extractor = build_edit_preference_extractor(
+                    fast_settings
                 )
-                edit_preference_extractor = (
-                    build_edit_preference_extractor(fast_settings)
-                )
-                assistant_chat_model = build_assistant_chat_model(
-                    reasoning_settings
-                )
+                assistant_chat_model = build_agent_model(reasoning_settings)
             else:
                 analyzer = None
-                writer = None
                 memory_extractor = None
                 chapter_planner = None
                 style_editor = None
@@ -1505,7 +692,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             worker = AnalysisWorker(
                 database,
                 analyzer,
-                writer,
                 app_settings.secret_key,
                 app_settings,
                 credential_cipher,
@@ -1523,27 +709,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 poll_seconds=app_settings.worker_poll_seconds,
             )
             application.state.analyzer = analyzer
-            application.state.writer = writer
             application.state.memory_extractor = memory_extractor
             application.state.chapter_planner = chapter_planner
             application.state.style_editor = style_editor
             application.state.reader_planner = reader_planner
             application.state.story_planner = story_planner
-            application.state.story_structure_planner = (
-                story_structure_planner
-            )
-            application.state.causal_suggestion_planner = (
-                causal_suggestion_planner
-            )
-            application.state.causal_branch_planner = (
-                causal_branch_planner
-            )
-            application.state.voice_profile_extractor = (
-                voice_profile_extractor
-            )
-            application.state.edit_preference_extractor = (
-                edit_preference_extractor
-            )
+            application.state.story_structure_planner = story_structure_planner
+            application.state.causal_suggestion_planner = causal_suggestion_planner
+            application.state.causal_branch_planner = causal_branch_planner
+            application.state.voice_profile_extractor = voice_profile_extractor
+            application.state.edit_preference_extractor = edit_preference_extractor
             application.state.assistant_chat_model = assistant_chat_model
             application.state.worker = worker
             application.state.credential_cipher = credential_cipher
@@ -1571,13 +746,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     )
     application.state.settings = app_settings
     application.state.database = database
+    application.state.analysis_repository = analysis_repository
     application.state.structure_link_service = structure_link_service
     application.state.causal_suggestion_service = causal_suggestion_service
     application.state.causal_branch_service = causal_branch_service
-    application.state.causal_branch_adoption_service = (
-        causal_branch_adoption_service
-    )
+    application.state.causal_branch_adoption_service = causal_branch_adoption_service
     application.state.assistant_chat_service = assistant_chat_service
+    application.state.import_preview_store = import_preview_store
     application.state.templates = templates
     application.add_middleware(
         SessionMiddleware,
@@ -1589,190 +764,43 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     )
     application.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    @application.get("/healthz", include_in_schema=False)
-    async def healthz():
-        worker = getattr(application.state, "worker", None)
-        worker_task = getattr(application.state, "worker_task", None)
-        try:
-            database_ok = await asyncio.to_thread(database.ping)
-        except Exception:
-            logger.exception("health check database failure")
-            database_ok = False
-        worker_ok = bool(
-            worker
-            and worker.healthy
-            and worker_task
-            and not worker_task.done()
+    application.include_router(
+        build_system_router(database=database, settings=app_settings)
+    )
+    application.include_router(
+        build_auth_router(
+            database=database,
+            settings=app_settings,
+            template_context=_template_context,
+            render_template=render_template,
         )
-        healthy = database_ok and worker_ok
-        return JSONResponse(
-            {
-                "status": "ok" if healthy else "unhealthy",
-                "analyzer": (
-                    "mock"
-                    if app_settings.uses_test_models
-                    else (
-                        "deepseek"
-                        if app_settings.deepseek_api_key
-                        else "personal-key-only"
-                    )
-                ),
-                "database": "ok" if database_ok else "unavailable",
-                "worker": "ok" if worker_ok else "unavailable",
-            },
-            status_code=(
-                status.HTTP_200_OK
-                if healthy
-                else status.HTTP_503_SERVICE_UNAVAILABLE
-            ),
+    )
+    application.include_router(
+        build_import_router(
+            database=database,
+            settings=app_settings,
+            preview_store=import_preview_store,
+            template_context=_template_context,
+            render_template=render_template,
         )
-
-    @application.get("/", response_class=HTMLResponse)
-    async def index(request: Request):
-        if _current_user(request):
-            return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-
-    @application.get("/login", response_class=HTMLResponse)
-    async def login_page(request: Request, next: str = "/"):
-        if _current_user(request):
-            return RedirectResponse(
-                _safe_next(next), status_code=status.HTTP_303_SEE_OTHER
-            )
-        return render_template(
-            "login.html",
-            _template_context(
-                request,
-                next_path=_safe_next(next),
-                can_register=app_settings.allow_registration,
-            ),
+    )
+    application.include_router(
+        build_analysis_router(
+            database=database,
+            settings=app_settings,
+            repository=analysis_repository,
+            technique_service=technique_service,
+            template_context=_template_context,
+            render_template=render_template,
         )
-
-    @application.post("/login", response_class=HTMLResponse)
-    async def login(
-        request: Request,
-        username: str = Form(...),
-        password: str = Form(...),
-        csrf: str = Form(...),
-        next: str = Form("/"),
-    ):
-        verify_csrf(request, csrf)
-        client_address = _client_address(request)
-        clean_login = username.strip()
-        if not auth_limiter.allow(
-            f"login-ip:{client_address}", limit=20, window_seconds=300
-        ) or not auth_limiter.allow(
-            f"login-user:{client_address}:{clean_login.casefold()}",
-            limit=10,
-            window_seconds=300,
-        ):
-            return render_template(
-                "login.html",
-                _template_context(
-                    request,
-                    error="尝试次数过多，请稍后再试",
-                    next_path=_safe_next(next),
-                    can_register=app_settings.allow_registration,
-                ),
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
-        user = database.get_user_by_username(clean_login)
-        password_ok = False
-        if user:
-            async with request.app.state.password_slots:
-                password_ok = await asyncio.to_thread(
-                    verify_password, password, str(user["password_hash"])
-                )
-        if not user or not password_ok:
-            return render_template(
-                "login.html",
-                _template_context(
-                    request,
-                    error="用户名或密码不正确",
-                    next_path=_safe_next(next),
-                    can_register=app_settings.allow_registration,
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-        request.session.clear()
-        request.session["user_id"] = int(user["id"])
-        csrf_token(request)
-        return RedirectResponse(
-            _safe_next(next), status_code=status.HTTP_303_SEE_OTHER
+    )
+    application.include_router(
+        build_technique_router(
+            service=technique_service,
+            template_context=_template_context,
+            render_template=render_template,
         )
-
-    @application.get("/register", response_class=HTMLResponse)
-    async def register_page(request: Request):
-        if _current_user(request):
-            return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-        if not app_settings.allow_registration:
-            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-        return render_template(
-            "register.html", _template_context(request)
-        )
-
-    @application.post("/register", response_class=HTMLResponse)
-    async def register(
-        request: Request,
-        username: str = Form(...),
-        password: str = Form(...),
-        password_confirm: str = Form(...),
-        csrf: str = Form(...),
-    ):
-        verify_csrf(request, csrf)
-        if not app_settings.allow_registration:
-            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-        if not auth_limiter.allow(
-            f"register:{_client_address(request)}",
-            limit=5,
-            window_seconds=60 * 60,
-        ):
-            return render_template(
-                "register.html",
-                _template_context(
-                    request,
-                    error="注册尝试次数过多，请稍后再试",
-                    username=username,
-                ),
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
-        try:
-            clean_username = validate_username(username)
-            validate_password(password)
-            if password != password_confirm:
-                raise ValueError("两次输入的密码不一致")
-            async with request.app.state.password_slots:
-                password_hash = await asyncio.to_thread(hash_password, password)
-            user_id = database.create_user(clean_username, password_hash)
-        except ValueError as exc:
-            return render_template(
-                "register.html",
-                _template_context(request, error=str(exc), username=username),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-        except Exception as exc:
-            duplicate = "UNIQUE constraint failed" in str(exc)
-            if not duplicate:
-                logger.exception("failed to register user")
-            return render_template(
-                "register.html",
-                _template_context(
-                    request,
-                    error="该用户名已存在" if duplicate else "创建账号失败，请稍后重试",
-                    username=username,
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-        request.session.clear()
-        request.session["user_id"] = user_id
-        csrf_token(request)
-        return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-
-    @application.post("/logout")
-    async def logout(request: Request, csrf: str = Form(...)):
-        verify_csrf(request, csrf)
-        request.session.clear()
-        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    )
 
     def render_api_settings(
         request: Request,
@@ -1801,30 +829,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         safe_return_to = _safe_next(return_to, "/dashboard")
         active_settings_tab = (
             settings_tab
-            if settings_tab
-            in {"providers", "routing", "search", "prompts"}
+            if settings_tab in {"providers", "routing", "search", "prompts"}
             else "providers"
         )
         default_credential = database.get_api_credential_summary(user_id)
         current_provider = provider or (
-            str(default_credential["provider"])
-            if default_credential
-            else "deepseek"
+            str(default_credential["provider"]) if default_credential else "deepseek"
         )
         try:
             current_provider_spec = get_provider(current_provider)
         except ProviderConfigError:
             current_provider_spec = get_provider("deepseek")
             current_provider = current_provider_spec.id
-        credential = database.get_api_credential_summary(
-            user_id, current_provider
-        )
+        credential = database.get_api_credential_summary(user_id, current_provider)
         credential_summaries = []
         for item in database.list_api_credentials(user_id):
             try:
-                item_provider = get_provider(
-                    str(item["provider"])
-                ).public_payload()
+                item_provider = get_provider(str(item["provider"])).public_payload()
             except ProviderConfigError:
                 item_provider = {
                     "id": str(item["provider"]),
@@ -1835,9 +856,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 }
             summary = dict(item)
             summary["provider_spec"] = item_provider
-            summary["models"] = database.list_api_models(
-                user_id, str(item["provider"])
-            )
+            summary["models"] = database.list_api_models(user_id, str(item["provider"]))
             summary["settings_url"] = _api_settings_path(
                 provider=str(item["provider"]),
                 embedded="true" if embedded else None,
@@ -1890,9 +909,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user=user,
                 credential=credential,
                 credentials=credential_summaries,
-                providers=[
-                    item.public_payload() for item in list_providers()
-                ],
+                providers=[item.public_payload() for item in list_providers()],
                 selected_provider=current_provider,
                 selected_provider_spec=current_provider_spec.public_payload(),
                 selected_base_url=current_base_url,
@@ -1910,16 +927,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 selected_models=current_models,
                 model_adapter_prompt=current_adapter_prompt,
                 routing_model_groups=routing_configuration["groups"],
-                fast_model_choice=routing_configuration[
-                    "fast_model_choice"
-                ],
-                quality_model_choice=routing_configuration[
-                    "quality_model_choice"
-                ],
-                default_quality_mode=routing_configuration[
-                    "default_quality_mode"
-                ],
-                server_api_available=bool(app_settings.deepseek_api_key),
+                fast_model_choice=routing_configuration["fast_model_choice"],
+                quality_model_choice=routing_configuration["quality_model_choice"],
+                default_quality_mode=routing_configuration["default_quality_mode"],
+                server_api_available=bool(app_settings.model_api_key),
                 settings_back_url=safe_return_to,
                 return_to=safe_return_to,
                 embedded=embedded,
@@ -2005,22 +1016,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             clean_base_url = normalize_provider_base_url(
                 provider_spec,
                 base_url,
-                allow_private=(
-                    app_settings.permits_private_model_base_urls
-                ),
+                allow_private=(app_settings.permits_private_model_base_urls),
                 production=app_settings.app_env.lower() == "production",
             )
-            clean_models = list(
-                dict.fromkeys(validate_model(item) for item in models)
-            )
+            clean_models = list(dict.fromkeys(validate_model(item) for item in models))
             clean_model = validate_model(model)
             if clean_model not in clean_models:
                 clean_models.insert(0, clean_model)
             if len(clean_models) > 100:
                 raise CredentialError("每个服务商最多保存 100 个模型")
-            existing = database.get_api_credential(
-                int(user["id"]), provider_spec.id
-            )
+            existing = database.get_api_credential(int(user["id"]), provider_spec.id)
             if api_key:
                 clean_key = validate_api_key(api_key)
                 encrypted_key = credential_cipher.encrypt(clean_key)
@@ -2031,14 +1036,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             elif not provider_spec.capabilities.api_key_required:
                 encrypted_key = credential_cipher.encrypt("")
                 masked_key = (
-                    "无需 Key"
-                    if provider_spec.id == "ollama"
-                    else "未设置 Key"
+                    "无需 Key" if provider_spec.id == "ollama" else "未设置 Key"
                 )
             else:
-                raise CredentialError(
-                    f"请填写 {provider_spec.label} API Key"
-                )
+                raise CredentialError(f"请填写 {provider_spec.label} API Key")
             database.upsert_api_credential(
                 user_id=int(user["id"]),
                 provider=provider_spec.id,
@@ -2093,9 +1094,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "通用模型适配策略",
                 max_length=20_000,
             )
-            database.upsert_model_adapter_prompt(
-                int(user["id"]), clean_prompt
-            )
+            database.upsert_model_adapter_prompt(int(user["id"]), clean_prompt)
         except ValueError as exc:
             return render_api_settings(
                 request,
@@ -2145,13 +1144,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 fast_model_choice not in available
                 or quality_model_choice not in available
             ):
-                raise ValueError(
-                    "快速模型和高质量模型都必须来自“我的模型”"
-                )
+                raise ValueError("快速模型和高质量模型都必须来自“我的模型”")
             fast_provider, fast_model = fast_model_choice.split("|", 1)
-            quality_provider, quality_model = (
-                quality_model_choice.split("|", 1)
-            )
+            quality_provider, quality_model = quality_model_choice.split("|", 1)
             clean_mode = normalize_quality_mode(default_quality_mode)
             if clean_mode != str(default_quality_mode).strip().lower():
                 raise ValueError("不支持的默认模型强度")
@@ -2231,9 +1226,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/api/assistant/conversations/{conversation_id}/quality-mode"
-    )
+    @application.post("/api/assistant/conversations/{conversation_id}/quality-mode")
     async def set_assistant_conversation_quality_mode(
         request: Request,
         conversation_id: str,
@@ -2248,12 +1241,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         verify_csrf(request, csrf)
         try:
-            selected = (
-                assistant_chat_service.set_conversation_quality_mode(
-                    user_id=int(user["id"]),
-                    conversation_id=conversation_id,
-                    quality_mode=quality_mode,
-                )
+            selected = assistant_chat_service.conversations.set_quality_mode(
+                user_id=int(user["id"]),
+                conversation_id=conversation_id,
+                quality_mode=quality_mode,
             )
         except ValueError as exc:
             return JSONResponse(
@@ -2301,23 +1292,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         try:
             provider_spec = get_provider(provider)
-            existing = database.get_api_credential(
-                int(user["id"]), provider_spec.id
-            )
+            existing = database.get_api_credential(int(user["id"]), provider_spec.id)
             submitted_base_url = base_url
-            if (
-                not submitted_base_url.strip()
-                and existing
-            ):
-                submitted_base_url = str(
-                    existing.get("base_url") or ""
-                )
+            if not submitted_base_url.strip() and existing:
+                submitted_base_url = str(existing.get("base_url") or "")
             clean_base_url = normalize_provider_base_url(
                 provider_spec,
                 submitted_base_url,
-                allow_private=(
-                    app_settings.permits_private_model_base_urls
-                ),
+                allow_private=(app_settings.permits_private_model_base_urls),
                 production=app_settings.app_env.lower() == "production",
             )
             if api_key:
@@ -2327,22 +1309,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     clean_key = credential_cipher.decrypt(
                         str(existing["encrypted_key"])
                     )
-                elif (
-                    provider_spec.id == "deepseek"
-                    and app_settings.deepseek_api_key
-                ):
-                    clean_key = app_settings.deepseek_api_key
+                elif provider_spec.id == "deepseek" and app_settings.model_api_key:
+                    clean_key = app_settings.model_api_key
                 elif not provider_spec.capabilities.api_key_required:
                     clean_key = None
                 else:
-                    raise ModelCatalogError(
-                        f"请先输入 {provider_spec.label} API Key"
-                    )
+                    raise ModelCatalogError(f"请先输入 {provider_spec.label} API Key")
             models = await fetch_models(
                 provider_id=provider_spec.id,
                 api_key=clean_key,
                 base_url=clean_base_url,
-                timeout_seconds=app_settings.deepseek_connect_timeout_seconds,
+                timeout_seconds=app_settings.model_connect_timeout_seconds,
             )
         except (
             CredentialError,
@@ -2373,25 +1350,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         try:
             provider_spec = get_provider(provider)
-            credential = database.get_api_credential(
-                int(user["id"]), provider_spec.id
-            )
+            credential = database.get_api_credential(int(user["id"]), provider_spec.id)
             if not credential:
                 return JSONResponse(
-                    {
-                        "error": (
-                            f"尚未保存 {provider_spec.label} API Key"
-                        )
-                    },
+                    {"error": (f"尚未保存 {provider_spec.label} API Key")},
                     status_code=status.HTTP_404_NOT_FOUND,
                     headers={
                         "Cache-Control": "no-store, private",
                         "Pragma": "no-cache",
                     },
                 )
-            api_key = credential_cipher.decrypt(
-                str(credential["encrypted_key"])
-            )
+            api_key = credential_cipher.decrypt(str(credential["encrypted_key"]))
         except (CredentialError, ProviderConfigError) as exc:
             return JSONResponse(
                 {"error": str(exc)},
@@ -2472,9 +1441,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         works = database.list_works(int(user["id"]))
-        technique_count = technique_service.count_cards(
-            user_id=int(user["id"])
-        )
+        technique_count = technique_service.count_cards(user_id=int(user["id"]))
         return render_template(
             "dashboard.html",
             _template_context(
@@ -2487,169 +1454,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 imported=imported,
             ),
         )
-
-    @application.get("/import", response_class=HTMLResponse)
-    async def unified_import_page(
-        request: Request,
-        error: Optional[str] = None,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        return render_template(
-            "work_import.html",
-            _template_context(
-                request,
-                user=user,
-                error=error,
-                max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
-                max_archive_mb=(
-                    app_settings.max_work_archive_bytes // 1024 // 1024
-                ),
-            ),
-        )
-
-    @application.post("/import", response_class=HTMLResponse)
-    async def unified_import(
-        request: Request,
-        work_file: UploadFile = File(...),
-        title: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        user_id = int(user["id"])
-        filename = Path(work_file.filename or "untitled.txt").name
-        lower_filename = filename.lower()
-
-        def render_import_error(message: str, status_code: int = 400):
-            return render_template(
-                "work_import.html",
-                _template_context(
-                    request,
-                    user=user,
-                    error=message,
-                    title=title.strip()[:120],
-                    max_upload_mb=(
-                        app_settings.max_upload_bytes // 1024 // 1024
-                    ),
-                    max_archive_mb=(
-                        app_settings.max_work_archive_bytes
-                        // 1024
-                        // 1024
-                    ),
-                ),
-                status_code=status_code,
-            )
-
-        if lower_filename.endswith(".zip"):
-            temporary = tempfile.NamedTemporaryFile(
-                prefix="readraft-unified-import-",
-                suffix=".zip",
-                delete=False,
-            )
-            temporary_path = Path(temporary.name)
-            total_bytes = 0
-            imported_work_id = ""
-            try:
-                while True:
-                    chunk = await work_file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total_bytes += len(chunk)
-                    if total_bytes > app_settings.max_work_archive_bytes:
-                        raise WorkArchiveError(
-                            "作品归档文件超过允许大小"
-                        )
-                    temporary.write(chunk)
-                temporary.close()
-                if total_bytes == 0:
-                    raise WorkArchiveError("请选择非空的作品归档")
-                archive_format = detect_archive_format(temporary_path)
-                if archive_format != WORK_ARCHIVE_FORMAT:
-                    raise WorkArchiveError(
-                        "只支持当前版本导出的完整作品归档"
-                    )
-                imported_work = import_work_archive(
-                    database=database,
-                    novels_dir=app_settings.novels_dir,
-                    documents_dir=app_settings.documents_dir,
-                    user_id=user_id,
-                    archive_path=temporary_path,
-                    max_uncompressed_bytes=(
-                        app_settings.max_work_archive_bytes
-                    ),
-                    max_documents=app_settings.max_documents_per_user,
-                    max_stored_chars=(
-                        app_settings.max_stored_chars_per_user
-                    ),
-                )
-                imported_work_id = imported_work.work_id
-            except (WorkArchiveError, OSError, sqlite3.Error) as exc:
-                logger.warning("unified archive import rejected: %s", exc)
-                return render_import_error(str(exc))
-            finally:
-                temporary.close()
-                temporary_path.unlink(missing_ok=True)
-                await work_file.close()
-            return RedirectResponse(
-                f"/dashboard?imported=true&work={imported_work_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-
-        extension = Path(filename).suffix.lower()
-        if extension not in ALLOWED_EXTENSIONS:
-            await work_file.close()
-            return render_import_error(
-                "支持 TXT、Markdown 和 .readraft.zip 作品归档"
-            )
-        raw = await work_file.read(app_settings.max_upload_bytes + 1)
-        await work_file.close()
-        if len(raw) > app_settings.max_upload_bytes:
-            return render_import_error(
-                f"文件超过 {app_settings.max_upload_bytes // 1024 // 1024} MB 限制"
-            )
-        if not raw:
-            return render_import_error("文件为空")
-        try:
-            text, encoding = decode_upload(raw)
-            if not text.strip():
-                raise ValueError("文件中没有可导入的正文")
-            if len(text) > app_settings.max_text_chars:
-                raise ValueError(
-                    f"正文超过 {app_settings.max_text_chars:,} 字限制"
-                )
-            chunks = split_chapters(
-                text,
-                target_chars=app_settings.target_chapter_chars,
-                max_chars=app_settings.max_chapter_chars,
-            )
-            if not chunks:
-                raise ValueError("没有识别到可导入内容")
-            clean_title = (title.strip() or Path(filename).stem)[:120]
-            document_id = create_reading_document_from_chunks(
-                database=database,
-                documents_dir=app_settings.documents_dir,
-                user_id=user_id,
-                title=clean_title,
-                original_filename=filename,
-                source_encoding=encoding,
-                source_text=text,
-                chunks=chunks,
-                max_documents=app_settings.max_documents_per_user,
-                max_stored_chars=app_settings.max_stored_chars_per_user,
-            )
-            return RedirectResponse(
-                f"/documents/{document_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        except ValueError as exc:
-            return render_import_error(str(exc))
-        except Exception:
-            logger.exception("failed to import work")
-            return render_import_error("导入失败，请稍后重试", 500)
 
     @application.get("/works/{work_id}")
     async def open_work(request: Request, work_id: str):
@@ -2665,9 +1469,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get("/works/{work_id}/versions/{version_id}")
-    async def open_work_version(
-        request: Request, work_id: str, version_id: str
-    ):
+    async def open_work_version(request: Request, work_id: str, version_id: str):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
@@ -2675,11 +1477,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         work = database.get_work(user_id, work_id)
         target_version = (
             next(
-                (
-                    item
-                    for item in work["versions"]
-                    if str(item["id"]) == version_id
-                ),
+                (item for item in work["versions"] if str(item["id"]) == version_id),
                 None,
             )
             if work
@@ -2697,9 +1495,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/works/{work_id}/archive", response_class=HTMLResponse
-    )
+    @application.get("/works/{work_id}/archive", response_class=HTMLResponse)
     async def work_archive_page(
         request: Request,
         work_id: str,
@@ -2757,9 +1553,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 max_length=20_000,
                 required=True,
             )
-            clean_evidence = _clean_field(
-                evidence, "依据", max_length=2_000
-            )
+            clean_evidence = _clean_field(evidence, "依据", max_length=2_000)
             database.add_work_archive_entry(
                 user_id=user_id,
                 work_id=work_id,
@@ -2780,9 +1574,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/works/{work_id}/archive/entries/{entry_id}/adopt"
-    )
+    @application.post("/works/{work_id}/archive/entries/{entry_id}/adopt")
     async def adopt_work_archive_note(
         request: Request,
         work_id: str,
@@ -2805,9 +1597,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         destination = _safe_next(return_to, fallback)
         try:
             clean_title = _clean_field(title, "标题", max_length=120)
-            clean_content = _clean_field(
-                content, "创作设定", max_length=20_000
-            )
+            clean_content = _clean_field(content, "创作设定", max_length=20_000)
             database.adopt_work_archive_entry(
                 user_id=user_id,
                 work_id=work_id,
@@ -2826,9 +1616,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/works/{work_id}/archive/analyses/{analysis_id}/adopt"
-    )
+    @application.post("/works/{work_id}/archive/analyses/{analysis_id}/adopt")
     async def adopt_work_chapter_analysis(
         request: Request,
         work_id: str,
@@ -2875,9 +1663,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/works/{work_id}/archive/entries/{entry_id}/delete"
-    )
+    @application.post("/works/{work_id}/archive/entries/{entry_id}/delete")
     async def delete_work_archive_note(
         request: Request,
         work_id: str,
@@ -2930,9 +1716,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             app_settings.novels_dir / str(user_id) / project_id
             for project_id in deleted["project_ids"]
         ]
-        cleanup_paths.extend(
-            Path(path) for path in deleted["document_paths"]
-        )
+        cleanup_paths.extend(Path(path) for path in deleted["document_paths"])
         cleanup_failed = False
         for path in cleanup_paths:
             try:
@@ -2946,8 +1730,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
         if cleanup_failed:
             return RedirectResponse(
-                "/dashboard?error="
-                + quote("作品已删除，但部分本地文件清理失败"),
+                "/dashboard?error=" + quote("作品已删除，但部分本地文件清理失败"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -2986,8 +1769,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/documents/{version['document_id']}"
-                f"?error={quote(str(exc))}",
+                f"/documents/{version['document_id']}?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception:
@@ -3052,9 +1834,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/works/{work_id}/versions/{version_id}/delete"
-    )
+    @application.post("/works/{work_id}/versions/{version_id}/delete")
     async def delete_work_tag(
         request: Request,
         work_id: str,
@@ -3145,556 +1925,60 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         user_id = int(user["id"])
-        project = database.get_novel_project(user_id, project_id)
-        if not project:
+        try:
+            context = workbench_view_builder.build_novel(
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                conversation_id=conversation_id,
+                view=view,
+                archive_tab=archive_tab,
+                settings_tab=settings_tab,
+            )
+        except WorkbenchNotFound:
             return render_template(
                 "not_found.html",
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        work = database.get_work_for_project(user_id, project_id)
-        if not work:
-            database.ensure_project_work(
-                user_id=user_id, project_id=project_id
-            )
-            work = database.get_work_for_project(user_id, project_id)
-        current_version = database.get_work_version_for_project(
-            user_id, project_id
-        )
-        if (
-            not work
-            or not current_version
-            or str(current_version.get("ref_name") or "") != "main"
-            or not bool(current_version.get("is_editable"))
-        ):
+        except WorkbenchUnavailable as exc:
             return Response(
-                "只有 main 分支可以进入创作工作台",
+                str(exc),
                 status_code=status.HTTP_409_CONFLICT,
             )
-        chapters = database.list_novel_chapters(user_id, project_id)
-        effective_view = view if view in {"body", "archive"} else "body"
-        if not chapters and effective_view == "body":
-            effective_view = "archive"
-        active_archive_tab = (
-            archive_tab
-            if archive_tab in WORK_ARCHIVE_TAB_KEYS
-            else "creative"
-        )
-        active_settings_tab = (
-            settings_tab
-            if settings_tab in WORKBENCH_SETTING_TAB_KEYS
-            else "core"
-        )
-        display_title = str(project.get("title") or "").strip()
-        display_title = display_title or "未命名作品"
-        selected_chapter = None
-        if effective_view == "body" and chapter_id:
-            selected_chapter = next(
-                (
-                    item
-                    for item in chapters
-                    if str(item["id"]) == chapter_id
-                ),
-                None,
-            )
-            if not selected_chapter:
-                return render_template(
-                    "not_found.html",
-                    _template_context(request, user=user),
-                    status_code=status.HTTP_404_NOT_FOUND,
-                )
-        elif effective_view == "body" and chapters:
-            remembered_chapter_id = str(
-                current_version.get("last_chapter_id") or ""
-            )
-            selected_chapter = next(
-                (
-                    item
-                    for item in chapters
-                    if str(item["id"]) == remembered_chapter_id
-                ),
-                chapters[0],
-            )
-        database.set_work_version(
-            user_id=user_id,
-            work_id=str(work["id"]),
-            version_id=str(current_version["id"]),
-            chapter_id=(
-                str(selected_chapter["id"])
-                if selected_chapter
-                else None
-            ),
-        )
 
-        content = ""
-        selected_index = -1
-        previous_chapter = None
-        next_chapter = None
-        working_version = None
-        working_version_hash = ""
-        chapter_story_memory = None
-        project_story_memory_records: list[dict[str, Any]] = []
-        if selected_chapter:
-            selected_index = next(
-                index
-                for index, item in enumerate(chapters)
-                if str(item["id"]) == str(selected_chapter["id"])
-            )
-            previous_chapter = (
-                chapters[selected_index - 1]
-                if selected_index > 0
-                else None
-            )
-            next_chapter = (
-                chapters[selected_index + 1]
-                if selected_index + 1 < len(chapters)
-                else None
-            )
-            content = _read_optional_text(
-                Path(str(selected_chapter["content_path"]))
-            )
-            versions = database.list_chapter_versions(
-                user_id, project_id, str(selected_chapter["id"])
-            )
-            working_version = next(
-                (
-                    version
-                    for version in versions
-                    if str(version["id"])
-                    == str(
-                        selected_chapter.get("working_version_id")
-                        or ""
-                    )
-                ),
-                None,
-            )
-            if working_version:
-                version_content = _read_optional_text(
-                    Path(str(working_version["content_path"]))
-                )
-                if version_content == content:
-                    working_version_hash = hashlib.sha256(
-                        content.encode("utf-8")
-                    ).hexdigest()
-                else:
-                    working_version = None
-        if selected_chapter or (
-            effective_view == "archive"
-            and active_archive_tab == "analysis"
-        ):
-            project_story_memory_records = (
-                memory_service.list_project_chapter_memory_records(
-                    user_id=user_id,
-                    project_id=project_id,
-                )
-            )
-        if selected_chapter:
-            chapter_story_memory = next(
-                (
-                    item
-                    for item in project_story_memory_records
-                    if str(item["chapter_id"])
-                    == str(selected_chapter["id"])
-                ),
-                None,
-            )
-
-        conversations = assistant_chat_service.list_project_conversations(
-            user_id=user_id,
-            project_id=project_id,
-        )
-        active_conversation = None
-        if conversation_id:
-            active_conversation = (
-                assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                )
-            )
-            if (
-                not active_conversation
-                or str(active_conversation.get("project_id") or "")
-                != project_id
-            ):
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-        elif effective_view == "archive":
-            latest = next(
-                (
-                    item
-                    for item in conversations
-                    if str(item.get("scope_type") or "") == "project"
-                ),
-                None,
-            )
-            if latest:
-                active_conversation = (
-                    assistant_chat_service.get_conversation(
-                        user_id=user_id,
-                        conversation_id=str(latest["id"]),
-                    )
-                )
-        elif selected_chapter:
-            latest = next(
-                (
-                    item
-                    for item in conversations
-                    if str(item.get("novel_chapter_id") or "")
-                    == str(selected_chapter["id"])
-                ),
-                None,
-            )
-            if latest:
-                active_conversation = (
-                    assistant_chat_service.get_conversation(
-                        user_id=user_id,
-                        conversation_id=str(latest["id"]),
-                    )
-                )
-
-        setting_characters: list[dict[str, Any]] = []
-        setting_world_entries: list[dict[str, Any]] = []
-        setting_relationships: list[dict[str, Any]] = []
-        setting_volumes: list[dict[str, Any]] = []
-        setting_story_blueprint = None
-        setting_story_arcs: list[dict[str, Any]] = []
-        setting_voice_profile = None
-        archive_entries: list[dict[str, Any]] = []
-        archive_analyses: list[dict[str, Any]] = []
-        archive_story_memory_records: list[dict[str, Any]] = []
-        if effective_view == "archive":
-            setting_characters = database.list_novel_characters(
-                user_id, project_id
-            )
-        if effective_view == "archive" and active_archive_tab == "creative":
-            setting_world_entries = database.list_world_entries(
-                user_id, project_id
-            )
-            setting_relationships = (
-                database.list_character_relationships(user_id, project_id)
-            )
-            setting_volumes = planning_service.list_volumes(
-                user_id=user_id, project_id=project_id
-            )
-            setting_story_blueprint = story_planning_service.get_blueprint(
-                user_id=user_id, project_id=project_id
-            )
-            setting_story_arcs = story_planning_service.list_arcs(
-                user_id=user_id, project_id=project_id
-            )
-            setting_voice_profile = style_service.get_voice_profile(
-                user_id=user_id, project_id=project_id
-            )
-        if effective_view == "archive" and work:
-            archive_entries = database.list_work_archive_entries(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
-            archive_analyses = database.list_work_analyses(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
-            if active_archive_tab == "analysis":
-                archive_story_memory_records = (
-                    project_story_memory_records
-                )
+        active_conversation = context["active_conversation"]
         available_chat_models = chat_model_groups(user_id)
-
+        context.update(
+            archive_categories=WORK_ARCHIVE_CATEGORIES,
+            analysis_categories=WORK_ANALYSIS_CATEGORIES,
+            setting_tabs=WORKBENCH_SETTING_TABS,
+            model_groups=available_chat_models,
+            selected_model_choice=selected_chat_model(
+                available_chat_models,
+                active_conversation,
+            ),
+            quality_modes=quality_mode_options(user_id),
+            selected_quality_mode=selected_quality_mode(
+                user_id,
+                active_conversation,
+            ),
+            pov_options=POV_OPTIONS,
+            world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
+            story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
+            setting_field_labels=SETTING_FIELD_LABELS,
+            onboarding=onboarding,
+            archive_saved=saved,
+            archive_adopted=adopted,
+            archive_removed=removed,
+            archive_error=error,
+            error=error,
+            saved=saved,
+            sent=sent,
+        )
         return render_template(
             "novel_workbench.html",
-            _template_context(
-                request,
-                user=user,
-                work=work,
-                current_version=current_version,
-                project=project,
-                display_title=display_title,
-                chapters=chapters,
-                chapter=selected_chapter,
-                chapter_story_memory=chapter_story_memory,
-                chapter_content=content,
-                chapter_index=selected_index,
-                previous_chapter=previous_chapter,
-                next_chapter=next_chapter,
-                conversations=conversations,
-                active_conversation=active_conversation,
-                working_version=working_version,
-                working_version_hash=working_version_hash,
-                view=effective_view,
-                archive_tabs=WORK_ARCHIVE_TABS,
-                active_archive_tab=active_archive_tab,
-                archive_categories=WORK_ARCHIVE_CATEGORIES,
-                analysis_categories=WORK_ANALYSIS_CATEGORIES,
-                setting_tabs=WORKBENCH_SETTING_TABS,
-                active_settings_tab=active_settings_tab,
-                setting_characters=setting_characters,
-                setting_world_entries=setting_world_entries,
-                setting_relationships=setting_relationships,
-                setting_volumes=setting_volumes,
-                setting_story_blueprint=setting_story_blueprint,
-                setting_story_arcs=setting_story_arcs,
-                setting_voice_profile=setting_voice_profile,
-                archive_project=project,
-                archive_base_url=f"/novels/{project_id}/workbench",
-                archive_characters=setting_characters,
-                archive_entries=archive_entries,
-                archive_analyses=archive_analyses,
-                archive_story_memory_records=archive_story_memory_records,
-                archive_story_memory_enabled=True,
-                archive_return_to=_workbench_path(
-                    project_id, archive_tab=active_archive_tab
-                ),
-                archive_saved=saved,
-                archive_adopted=adopted,
-                archive_removed=removed,
-                archive_error=error,
-                archive_readonly=False,
-                creative_snapshot={},
-                model_groups=available_chat_models,
-                selected_model_choice=selected_chat_model(
-                    available_chat_models, active_conversation
-                ),
-                quality_modes=quality_mode_options(user_id),
-                selected_quality_mode=selected_quality_mode(
-                    user_id, active_conversation
-                ),
-                pov_options=POV_OPTIONS,
-                world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
-                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
-                setting_field_labels=SETTING_FIELD_LABELS,
-                onboarding=onboarding,
-                error=error,
-                saved=saved,
-                sent=sent,
-            ),
-        )
-
-    @application.get("/techniques", response_class=HTMLResponse)
-    async def technique_library(
-        request: Request,
-        error: Optional[str] = None,
-        created: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        cards = technique_service.list_cards(user_id=int(user["id"]))
-        return render_template(
-            "techniques.html",
-            _template_context(
-                request,
-                user=user,
-                cards=cards,
-                error=error,
-                created=created,
-            ),
-        )
-
-    @application.post("/techniques")
-    async def create_manual_technique(
-        request: Request,
-        name: str = Form(...),
-        dimension: str = Form(...),
-        source_location: str = Form("作者手动总结"),
-        observation: str = Form(...),
-        effect: str = Form(...),
-        suitable_for: str = Form(""),
-        unsuitable_for: str = Form(""),
-        execution_rule: str = Form(...),
-        originality_boundary: str = Form(...),
-        author_note: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            card_id = technique_service.create_manual(
-                user_id=int(user["id"]),
-                observation=_technique_observation_from_form(
-                    name=name,
-                    dimension=dimension,
-                    source_location=source_location,
-                    observation=observation,
-                    effect=effect,
-                    suitable_for=suitable_for,
-                    unsuitable_for=unsuitable_for,
-                    execution_rule=execution_rule,
-                    originality_boundary=originality_boundary,
-                ),
-                author_note=_clean_field(
-                    author_note, "作者备注", max_length=2000
-                ),
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{card_id}?created=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get(
-        "/techniques/{technique_id}", response_class=HTMLResponse
-    )
-    async def technique_card_page(
-        request: Request,
-        technique_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        created: bool = False,
-        bound: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        card = technique_service.get_card(
-            user_id=int(user["id"]), technique_id=technique_id
-        )
-        if not card:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        targets = technique_service.binding_targets(user_id=int(user["id"]))
-        return render_template(
-            "technique_card.html",
-            _template_context(
-                request,
-                user=user,
-                card=card,
-                targets=targets,
-                error=error,
-                saved=saved,
-                created=created,
-                bound=bound,
-            ),
-        )
-
-    @application.post("/techniques/{technique_id}")
-    async def update_technique_card(
-        request: Request,
-        technique_id: str,
-        name: str = Form(...),
-        dimension: str = Form(...),
-        source_location: str = Form(...),
-        observation: str = Form(...),
-        effect: str = Form(...),
-        suitable_for: str = Form(""),
-        unsuitable_for: str = Form(""),
-        execution_rule: str = Form(...),
-        originality_boundary: str = Form(...),
-        author_note: str = Form(""),
-        card_status: str = Form("active"),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            updated = technique_service.update_card(
-                user_id=int(user["id"]),
-                technique_id=technique_id,
-                observation=_technique_observation_from_form(
-                    name=name,
-                    dimension=dimension,
-                    source_location=source_location,
-                    observation=observation,
-                    effect=effect,
-                    suitable_for=suitable_for,
-                    unsuitable_for=unsuitable_for,
-                    execution_rule=execution_rule,
-                    originality_boundary=originality_boundary,
-                ),
-                author_note=_clean_field(
-                    author_note, "作者备注", max_length=2000
-                ),
-                status=card_status,
-            )
-            if not updated:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques/{technique_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/techniques/{technique_id}/bindings")
-    async def bind_technique_card(
-        request: Request,
-        technique_id: str,
-        target: str = Form(...),
-        usage_modes: list[str] = Form(...),
-        author_adaptation: str = Form(""),
-        priority: int = Form(50),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            technique_service.bind(
-                user_id=int(user["id"]),
-                technique_id=technique_id,
-                target=target,
-                usage_modes=usage_modes,
-                author_adaptation=_clean_field(
-                    author_adaptation,
-                    "针对本书的改造",
-                    max_length=1000,
-                ),
-                priority=priority,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques/{technique_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?bound=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/technique-bindings/{binding_id}/status")
-    async def set_technique_binding_status(
-        request: Request,
-        binding_id: str,
-        binding_status: str = Form(...),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            technique_id = technique_service.set_binding_status(
-                user_id=int(user["id"]),
-                binding_id=binding_id,
-                status=binding_status,
-            )
-            if not technique_id:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
+            _template_context(request, user=user, **context),
         )
 
     @application.post("/novels/new/blank")
@@ -3707,13 +1991,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         project_id = secrets.token_hex(16)
-        project_dir = (
-            app_settings.novels_dir / str(user["id"]) / project_id
-        )
+        project_dir = app_settings.novels_dir / str(user["id"]) / project_id
         try:
-            (project_dir / "chapters").mkdir(
-                parents=True, exist_ok=False, mode=0o700
-            )
+            (project_dir / "chapters").mkdir(parents=True, exist_ok=False, mode=0o700)
             os.chmod(app_settings.novels_dir / str(user["id"]), 0o700)
             os.chmod(project_dir, 0o700)
             os.chmod(project_dir / "chapters", 0o700)
@@ -3732,8 +2012,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             shutil.rmtree(project_dir, ignore_errors=True)
             logger.exception("failed to create blank novel project")
             return RedirectResponse(
-                "/dashboard?error="
-                + quote("创建空白作品失败，请稍后重试"),
+                "/dashboard?error=" + quote("创建空白作品失败，请稍后重试"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -3753,9 +2032,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
-        project_dir = (
-            app_settings.novels_dir / str(user_id) / project_id
-        )
+        project_dir = app_settings.novels_dir / str(user_id) / project_id
         try:
             deleted = database.delete_novel_project(user_id, project_id)
         except ValueError as exc:
@@ -3789,9 +2066,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        return RedirectResponse(
-            "/dashboard", status_code=status.HTTP_303_SEE_OTHER
-        )
+        return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
 
     @application.post("/novels/new")
     async def create_novel(
@@ -3816,9 +2091,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         try:
-            clean_title = _clean_field(
-                title, "书名", max_length=120, required=True
-            )
+            clean_title = _clean_field(title, "书名", max_length=120, required=True)
             clean_genre = _clean_field(
                 genre or "未分类", "题材", max_length=80, required=True
             )
@@ -3829,27 +2102,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 required=True,
                 min_length=10,
             )
-            clean_world = _clean_field(
-                world_setting, "世界设定", max_length=20_000
-            )
-            clean_style = _clean_field(
-                style_guide, "文风要求", max_length=10_000
-            )
-            clean_theme = _clean_field(
-                theme, "主题", max_length=2000
-            )
-            clean_promise = _clean_field(
-                story_promise, "作品承诺", max_length=4000
-            )
-            clean_audience = _clean_field(
-                target_audience, "目标读者", max_length=1000
-            )
-            clean_appeal = _clean_field(
-                core_appeal, "核心吸引力", max_length=4000
-            )
-            clean_ending = _clean_field(
-                ending_constraint, "结局约束", max_length=4000
-            )
+            clean_world = _clean_field(world_setting, "世界设定", max_length=20_000)
+            clean_style = _clean_field(style_guide, "文风要求", max_length=10_000)
+            clean_theme = _clean_field(theme, "主题", max_length=2000)
+            clean_promise = _clean_field(story_promise, "作品承诺", max_length=4000)
+            clean_audience = _clean_field(target_audience, "目标读者", max_length=1000)
+            clean_appeal = _clean_field(core_appeal, "核心吸引力", max_length=4000)
+            clean_ending = _clean_field(ending_constraint, "结局约束", max_length=4000)
             if point_of_view not in POV_OPTIONS:
                 raise ValueError("请选择有效的叙事视角")
             if not 2_000 <= target_chapter_chars <= 12_000:
@@ -3863,13 +2122,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
 
         project_id = secrets.token_hex(16)
-        project_dir = (
-            app_settings.novels_dir / str(user["id"]) / project_id
-        )
+        project_dir = app_settings.novels_dir / str(user["id"]) / project_id
         try:
-            (project_dir / "chapters").mkdir(
-                parents=True, exist_ok=False, mode=0o700
-            )
+            (project_dir / "chapters").mkdir(parents=True, exist_ok=False, mode=0o700)
             os.chmod(app_settings.novels_dir / str(user["id"]), 0o700)
             os.chmod(project_dir, 0o700)
             os.chmod(project_dir / "chapters", 0o700)
@@ -3895,8 +2150,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             shutil.rmtree(project_dir, ignore_errors=True)
             logger.exception("failed to create novel project")
             return RedirectResponse(
-                "/dashboard?error="
-                + quote("创建小说项目失败，请稍后重试"),
+                "/dashboard?error=" + quote("创建小说项目失败，请稍后重试"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -3936,21 +2190,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = api_profile(int(user["id"]))
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("生成全书方案前，请先配置模型服务"),
+                "/settings/api?error=" + quote("生成全书方案前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
-            suggestion_id = (
-                story_plan_suggestion_service.create_suggestion(
-                    user_id=int(user["id"]),
-                    project_id=project_id,
-                    planning_mode=planning_mode,
-                    instruction=clean_instruction,
-                    provider=profile["provider"],
-                    model=profile["model"],
-                    credential_source=profile["credential_source"],
-                )
+            suggestion_id = story_plan_suggestion_service.create_suggestion(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                planning_mode=planning_mode,
+                instruction=clean_instruction,
+                provider=profile["provider"],
+                model=profile["model"],
+                credential_source=profile["credential_source"],
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -4000,9 +2251,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get("/api/story-plan-suggestions/{suggestion_id}")
-    async def story_plan_suggestion_status(
-        request: Request, suggestion_id: str
-    ):
+    async def story_plan_suggestion_status(request: Request, suggestion_id: str):
         user = _current_user(request)
         if not user:
             return JSONResponse(
@@ -4025,9 +2274,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
         )
 
-    @application.post(
-        "/story-plan-suggestions/{suggestion_id}/apply"
-    )
+    @application.post("/story-plan-suggestions/{suggestion_id}/apply")
     async def apply_story_plan_suggestion(
         request: Request,
         suggestion_id: str,
@@ -4050,8 +2297,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/story-plan-suggestions/{suggestion_id}"
-                f"?error={quote(str(exc))}",
+                f"/story-plan-suggestions/{suggestion_id}?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -4063,9 +2309,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/story-structure-suggestions"
-    )
+    @application.post("/novels/{project_id}/story-structure-suggestions")
     async def create_story_structure_suggestion(
         request: Request,
         project_id: str,
@@ -4098,22 +2342,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not profile:
             return RedirectResponse(
                 "/settings/api?error="
-                + quote(
-                    "生成分卷与滚动章节骨架前，请先配置模型服务"
-                ),
+                + quote("生成分卷与滚动章节骨架前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
-            suggestion_id = (
-                story_structure_suggestion_service.create_suggestion(
-                    user_id=int(user["id"]),
-                    project_id=project_id,
-                    chapter_count=chapter_count,
-                    instruction=clean_instruction,
-                    provider=profile["provider"],
-                    model=profile["model"],
-                    credential_source=profile["credential_source"],
-                )
+            suggestion_id = story_structure_suggestion_service.create_suggestion(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                chapter_count=chapter_count,
+                instruction=clean_instruction,
+                provider=profile["provider"],
+                model=profile["model"],
+                credential_source=profile["credential_source"],
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -4166,23 +2406,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
         )
 
-    @application.get(
-        "/api/story-structure-suggestions/{suggestion_id}"
-    )
-    async def story_structure_suggestion_status(
-        request: Request, suggestion_id: str
-    ):
+    @application.get("/api/story-structure-suggestions/{suggestion_id}")
+    async def story_structure_suggestion_status(request: Request, suggestion_id: str):
         user = _current_user(request)
         if not user:
             return JSONResponse(
                 {"detail": "未登录"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
-        current_status = (
-            story_structure_suggestion_service.get_status(
-                user_id=int(user["id"]),
-                suggestion_id=suggestion_id,
-            )
+        current_status = story_structure_suggestion_service.get_status(
+            user_id=int(user["id"]),
+            suggestion_id=suggestion_id,
         )
         if current_status is None:
             return JSONResponse(
@@ -4196,9 +2430,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
         )
 
-    @application.post(
-        "/story-structure-suggestions/{suggestion_id}/apply"
-    )
+    @application.post("/story-structure-suggestions/{suggestion_id}/apply")
     async def apply_story_structure_suggestion(
         request: Request,
         suggestion_id: str,
@@ -4214,18 +2446,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             if confirm_changes != "yes":
                 raise ValueError("请先确认已核对本次精确变更")
-            applied_result = (
-                story_structure_suggestion_service.apply_suggestion(
-                    user_id=int(user["id"]),
-                    suggestion_id=suggestion_id,
-                    option_index=option_index,
-                    preview_fingerprint=preview_fingerprint,
-                )
+            applied_result = story_structure_suggestion_service.apply_suggestion(
+                user_id=int(user["id"]),
+                suggestion_id=suggestion_id,
+                option_index=option_index,
+                preview_fingerprint=preview_fingerprint,
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/story-structure-suggestions/{suggestion_id}"
-                f"?error={quote(str(exc))}",
+                f"/story-structure-suggestions/{suggestion_id}?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -4237,9 +2466,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/story-structure-applications/{application_id}/revert"
-    )
+    @application.post("/story-structure-applications/{application_id}/revert")
     async def revert_story_structure_application(
         request: Request,
         application_id: str,
@@ -4251,11 +2478,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         try:
-            reverted_result = (
-                story_structure_suggestion_service.revert_application(
-                    user_id=int(user["id"]),
-                    application_id=application_id,
-                )
+            reverted_result = story_structure_suggestion_service.revert_application(
+                user_id=int(user["id"]),
+                application_id=application_id,
             )
         except ValueError as exc:
             error_target = (
@@ -4273,9 +2498,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/causal-link-suggestions"
-    )
+    @application.post("/novels/{project_id}/causal-link-suggestions")
     async def create_causal_link_suggestion(
         request: Request,
         project_id: str,
@@ -4307,8 +2530,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = api_profile(int(user["id"]))
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("生成因果建议前，请先配置模型服务"),
+                "/settings/api?error=" + quote("生成因果建议前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -4373,11 +2595,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ).append(simulation)
         if suggestion.get("result"):
             for proposal in suggestion["result"].get("proposals") or []:
-                proposal["branch_simulations"] = (
-                    simulations_by_proposal.get(
-                        int(proposal["proposal_index"]),
-                        [],
-                    )
+                proposal["branch_simulations"] = simulations_by_proposal.get(
+                    int(proposal["proposal_index"]),
+                    [],
                 )
         simulation_max_horizon = min(
             30,
@@ -4406,9 +2626,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
         )
 
-    @application.get(
-        "/api/causal-link-suggestions/{suggestion_id}"
-    )
+    @application.get("/api/causal-link-suggestions/{suggestion_id}")
     async def causal_link_suggestion_status(
         request: Request,
         suggestion_id: str,
@@ -4468,8 +2686,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = api_profile(int(user["id"]))
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("生成长期因果分支前，请先配置模型服务"),
+                "/settings/api?error=" + quote("生成长期因果分支前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -4545,9 +2762,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
         )
 
-    @application.get(
-        "/api/causal-branch-simulations/{simulation_id}"
-    )
+    @application.get("/api/causal-branch-simulations/{simulation_id}")
     async def causal_branch_simulation_status(
         request: Request,
         simulation_id: str,
@@ -4575,8 +2790,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/causal-branch-simulations/{simulation_id}/branches/"
-        "{branch_key}/adoptions"
+        "/causal-branch-simulations/{simulation_id}/branches/{branch_key}/adoptions"
     )
     async def create_causal_branch_adoption(
         request: Request,
@@ -4604,8 +2818,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/causal-branch-adoptions/{adoption_id}"
-            "?adoption_created=true",
+            f"/causal-branch-adoptions/{adoption_id}?adoption_created=true",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -4623,7 +2836,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         reverted: bool = False,
         applied_items: int = 0,
         reset_task_cards: int = 0,
-        stale_scenes: int = 0,
     ):
         user = _current_user(request)
         if not user:
@@ -4651,13 +2863,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 reverted=reverted,
                 applied_items=applied_items,
                 reset_task_cards=reset_task_cards,
-                stale_scenes=stale_scenes,
             ),
         )
 
-    @application.post(
-        "/causal-branch-adoptions/{adoption_id}/items/{item_id}"
-    )
+    @application.post("/causal-branch-adoptions/{adoption_id}/items/{item_id}")
     async def review_causal_branch_adoption_item(
         request: Request,
         adoption_id: str,
@@ -4712,14 +2921,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            f"/causal-branch-adoptions/{adoption_id}"
-            f"?saved=true#item-{item_id}",
+            f"/causal-branch-adoptions/{adoption_id}?saved=true#item-{item_id}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/causal-branch-adoptions/{adoption_id}/apply"
-    )
+    @application.post("/causal-branch-adoptions/{adoption_id}/apply")
     async def apply_causal_branch_adoption(
         request: Request,
         adoption_id: str,
@@ -4745,14 +2951,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return RedirectResponse(
             f"/causal-branch-adoptions/{adoption_id}?applied=true"
             f"&applied_items={result['applied_item_count']}"
-            f"&reset_task_cards={result['reset_task_card_count']}"
-            f"&stale_scenes={result['stale_scene_count']}",
+            f"&reset_task_cards={result['reset_task_card_count']}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/causal-branch-adoptions/{adoption_id}/abandon"
-    )
+    @application.post("/causal-branch-adoptions/{adoption_id}/abandon")
     async def abandon_causal_branch_adoption(
         request: Request,
         adoption_id: str,
@@ -4784,14 +2987,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            "/causal-branch-simulations/"
-            + str(adoption["simulation_id"]),
+            "/causal-branch-simulations/" + str(adoption["simulation_id"]),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/causal-branch-adoptions/{adoption_id}/revert"
-    )
+    @application.post("/causal-branch-adoptions/{adoption_id}/revert")
     async def revert_causal_branch_adoption(
         request: Request,
         adoption_id: str,
@@ -4818,8 +3018,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/causal-link-suggestions/{suggestion_id}/proposals/"
-        "{proposal_index}/accept"
+        "/causal-link-suggestions/{suggestion_id}/proposals/{proposal_index}/accept"
     )
     async def accept_causal_link_proposal(
         request: Request,
@@ -4840,9 +3039,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         try:
             if confirm_changes != "yes":
-                raise ValueError(
-                    "请先确认已核对起因、结果和正史边界"
-                )
+                raise ValueError("请先确认已核对起因、结果和正史边界")
             result = causal_suggestion_service.accept_proposal(
                 user_id=int(user["id"]),
                 suggestion_id=suggestion_id,
@@ -4851,9 +3048,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 effect_text=effect_text,
                 author_note=author_note,
                 comparison_confirmed=confirm_comparison == "yes",
-                semantic_review_confirmed=(
-                    confirm_semantic_review == "yes"
-                ),
+                semantic_review_confirmed=(confirm_semantic_review == "yes"),
                 semantic_override_reason=semantic_override_reason,
             )
         except ValueError as exc:
@@ -4872,8 +3067,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/causal-link-suggestions/{suggestion_id}/proposals/"
-        "{proposal_index}/dismiss"
+        "/causal-link-suggestions/{suggestion_id}/proposals/{proposal_index}/dismiss"
     )
     async def dismiss_causal_link_proposal(
         request: Request,
@@ -4918,15 +3112,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             structure_link_service.create_link(
                 user_id=int(user["id"]),
                 project_id=project_id,
-                source_chapter_id=str(
-                    form.get("source_chapter_id") or ""
-                ).strip(),
-                target_chapter_id=str(
-                    form.get("target_chapter_id") or ""
-                ).strip(),
-                relation_type=str(
-                    form.get("relation_type") or ""
-                ).strip(),
+                source_chapter_id=str(form.get("source_chapter_id") or "").strip(),
+                target_chapter_id=str(form.get("target_chapter_id") or "").strip(),
+                relation_type=str(form.get("relation_type") or "").strip(),
                 cause_text=str(form.get("cause_text") or ""),
                 effect_text=str(form.get("effect_text") or ""),
                 author_note=str(form.get("author_note") or ""),
@@ -4949,9 +3137,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/structure-links/{link_id}/archive"
-    )
+    @application.post("/novels/{project_id}/structure-links/{link_id}/archive")
     async def archive_structure_link(
         request: Request,
         project_id: str,
@@ -5033,9 +3219,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/memory-identities/{identity_id}/delete"
-    )
+    @application.post("/novels/{project_id}/memory-identities/{identity_id}/delete")
     async def remove_memory_identity(
         request: Request,
         project_id: str,
@@ -5063,9 +3247,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/continuity/issues/{issue_id}"
-    )
+    @application.post("/novels/{project_id}/continuity/issues/{issue_id}")
     async def update_continuity_issue(
         request: Request,
         project_id: str,
@@ -5131,9 +3313,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         clean_settings_tab = (
-            settings_tab
-            if settings_tab in WORKBENCH_SETTING_TAB_KEYS
-            else "core"
+            settings_tab if settings_tab in WORKBENCH_SETTING_TAB_KEYS else "core"
         )
         destination = (
             _append_query(
@@ -5147,9 +3327,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         )
         try:
-            current = database.get_novel_project(
-                int(user["id"]), project_id
-            )
+            current = database.get_novel_project(int(user["id"]), project_id)
             if not current:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
             values = {
@@ -5158,26 +3336,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "premise": str(current.get("premise") or ""),
                 "theme": str(current.get("theme") or ""),
                 "story_promise": str(current.get("story_promise") or ""),
-                "target_audience": str(
-                    current.get("target_audience") or ""
-                ),
+                "target_audience": str(current.get("target_audience") or ""),
                 "core_appeal": str(current.get("core_appeal") or ""),
-                "ending_constraint": str(
-                    current.get("ending_constraint") or ""
-                ),
+                "ending_constraint": str(current.get("ending_constraint") or ""),
                 "world_setting": str(current.get("world_setting") or ""),
                 "style_guide": str(current.get("style_guide") or ""),
-                "point_of_view": str(
-                    current.get("point_of_view") or "第三人称限知"
-                ),
+                "point_of_view": str(current.get("point_of_view") or "第三人称限知"),
             }
             if clean_settings_tab == "core":
                 values.update(
                     title=_clean_field(title, "书名", max_length=120),
                     genre=_clean_field(genre, "题材", max_length=80),
-                    premise=_clean_field(
-                        premise, "一句话故事", max_length=4000
-                    ),
+                    premise=_clean_field(premise, "一句话故事", max_length=4000),
                     theme=_clean_field(theme, "主题", max_length=2000),
                     story_promise=_clean_field(
                         story_promise, "读者体验", max_length=4000
@@ -5214,16 +3384,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 world_setting=values["world_setting"],
                 style_guide=values["style_guide"],
                 point_of_view=values["point_of_view"],
-                target_chapter_chars=int(
-                    current.get("target_chapter_chars") or 3000
-                ),
+                target_chapter_chars=int(current.get("target_chapter_chars") or 3000),
                 story_promise=values["story_promise"],
                 target_audience=values["target_audience"],
                 core_appeal=values["core_appeal"],
                 ending_constraint=values["ending_constraint"],
-                planning_horizon=int(
-                    current.get("planning_horizon") or 20
-                ),
+                planning_horizon=int(current.get("planning_horizon") or 20),
                 ai_instructions="",
             )
             if not updated:
@@ -5299,8 +3465,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/novels/{project_id}/story-blueprint/versions/"
-        "{version_id}/restore"
+        "/novels/{project_id}/story-blueprint/versions/{version_id}/restore"
     )
     async def restore_story_blueprint(
         request: Request,
@@ -5463,8 +3628,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/novels/{project_id}/plot-arcs/{arc_id}/versions/"
-        "{version_id}/restore"
+        "/novels/{project_id}/plot-arcs/{arc_id}/versions/{version_id}/restore"
     )
     async def restore_planned_plot_arc(
         request: Request,
@@ -5502,9 +3666,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/plot-arcs/{arc_id}/archive"
-    )
+    @application.post("/novels/{project_id}/plot-arcs/{arc_id}/archive")
     async def archive_planned_plot_arc(
         request: Request,
         project_id: str,
@@ -5570,9 +3732,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 impact_scope=impact_scope,
                 priority=priority,
                 constraints=_split_lines(constraints, limit=30),
-                author_note=_clean_field(
-                    author_note, "作者备注", max_length=4000
-                ),
+                author_note=_clean_field(author_note, "作者备注", max_length=4000),
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -5588,9 +3748,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/reader-requests/{request_id}", response_class=HTMLResponse
-    )
+    @application.get("/reader-requests/{request_id}", response_class=HTMLResponse)
     async def reader_request_page(
         request: Request,
         request_id: str,
@@ -5646,15 +3804,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         if str(reader_request["status"]) in {"adopted", "dismissed"}:
             return RedirectResponse(
-                f"/reader-requests/{request_id}?error="
-                + quote("这条读者意见已经处理"),
+                f"/reader-requests/{request_id}?error=" + quote("这条读者意见已经处理"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         profile = api_profile(int(user["id"]))
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("生成剧情方案前，请先配置模型服务"),
+                "/settings/api?error=" + quote("生成剧情方案前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -5787,8 +3943,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = api_profile(int(user["id"]))
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("提取作品声纹前，请先配置模型服务"),
+                "/settings/api?error=" + quote("提取作品声纹前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -5817,9 +3972,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/voice-suggestions/{suggestion_id}", response_class=HTMLResponse
-    )
+    @application.get("/voice-suggestions/{suggestion_id}", response_class=HTMLResponse)
     async def voice_profile_suggestion_page(
         request: Request,
         suggestion_id: str,
@@ -5845,9 +3998,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 return value
             return str(suggestion.get(current_key) or "")
 
-        def _merge_items(
-            current: list[Any], proposed_items: Any
-        ) -> list[str]:
+        def _merge_items(current: list[Any], proposed_items: Any) -> list[str]:
             merged: list[str] = []
             for raw in [*current, *(proposed_items or [])]:
                 item = str(raw).strip()
@@ -5856,21 +4007,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return merged
 
         review_profile = {
-            "narration_rules": _prefer(
-                "narration_rules", "current_narration_rules"
-            ),
-            "sentence_rhythm": _prefer(
-                "sentence_rhythm", "current_sentence_rhythm"
-            ),
-            "dialogue_voice": _prefer(
-                "dialogue_voice", "current_dialogue_voice"
-            ),
-            "sensory_palette": _prefer(
-                "sensory_palette", "current_sensory_palette"
-            ),
-            "metaphor_policy": _prefer(
-                "metaphor_policy", "current_metaphor_policy"
-            ),
+            "narration_rules": _prefer("narration_rules", "current_narration_rules"),
+            "sentence_rhythm": _prefer("sentence_rhythm", "current_sentence_rhythm"),
+            "dialogue_voice": _prefer("dialogue_voice", "current_dialogue_voice"),
+            "sensory_palette": _prefer("sensory_palette", "current_sensory_palette"),
+            "metaphor_policy": _prefer("metaphor_policy", "current_metaphor_policy"),
             "allowed_omissions": _prefer(
                 "allowed_omissions", "current_allowed_omissions"
             ),
@@ -5882,9 +4023,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 list(suggestion.get("current_banned_expressions") or []),
                 proposed.get("banned_expressions") or [],
             ),
-            "author_notes": str(
-                suggestion.get("current_author_notes") or ""
-            ),
+            "author_notes": str(suggestion.get("current_author_notes") or ""),
         }
         return render_template(
             "voice_suggestion.html",
@@ -5898,9 +4037,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get("/api/voice-suggestions/{suggestion_id}")
-    async def voice_profile_suggestion_status(
-        request: Request, suggestion_id: str
-    ):
+    async def voice_profile_suggestion_status(request: Request, suggestion_id: str):
         user = _current_user(request)
         if not user:
             return JSONResponse(
@@ -5970,15 +4107,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "allowed_omissions": _clean_field(
                     allowed_omissions, "留白规则", max_length=4000
                 ),
-                "preferred_patterns": _split_lines(
-                    preferred_patterns, limit=50
-                ),
-                "banned_expressions": _split_lines(
-                    banned_expressions, limit=100
-                ),
-                "author_notes": _clean_field(
-                    author_notes, "作者补充", max_length=6000
-                ),
+                "preferred_patterns": _split_lines(preferred_patterns, limit=50),
+                "banned_expressions": _split_lines(banned_expressions, limit=100),
+                "author_notes": _clean_field(author_notes, "作者补充", max_length=6000),
             }
             if action == "apply_confirm" and not any(
                 (
@@ -6000,8 +4131,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 raise ValueError("这份声纹建议已经处理或不再可用")
         except ValueError as exc:
             return RedirectResponse(
-                f"/voice-suggestions/{suggestion_id}"
-                f"?error={quote(str(exc))}",
+                f"/voice-suggestions/{suggestion_id}?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
@@ -6042,16 +4172,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         user_id: int,
         project_id: str,
         chapter_id: str,
-        source_type: str,
         after_version_id: str,
-        scene_beat_id: Optional[str],
         error_path: str,
     ) -> RedirectResponse:
         profile = api_profile(user_id)
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("从手工改稿学习前，请先配置模型服务"),
+                "/settings/api?error=" + quote("从手工改稿学习前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -6059,9 +4186,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
-                source_type=source_type,
                 after_version_id=after_version_id,
-                expected_scene_beat_id=scene_beat_id,
                 provider=profile["provider"],
                 model=profile["model"],
                 credential_source=profile["credential_source"],
@@ -6098,48 +4223,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             user_id=int(user["id"]),
             project_id=project_id,
             chapter_id=chapter_id,
-            source_type="chapter",
             after_version_id=version_id,
-            scene_beat_id=None,
-            error_path=f"/novels/{project_id}/chapters/{chapter_id}",
+            error_path=_workbench_path(project_id, chapter_id=chapter_id),
         )
 
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/versions/{version_id}"
-        "/learn-edit-preferences"
-    )
-    async def learn_scene_edit_preferences(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        version_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        return _queue_edit_preference_suggestion(
-            request=request,
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-            source_type="scene",
-            after_version_id=version_id,
-            scene_beat_id=scene_beat_id,
-            error_path=(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-            ),
-        )
-
-    @application.post(
-        "/novels/{project_id}/editing-preference-aggregates"
-    )
-    async def create_editing_preference_aggregate(
-        request: Request, project_id: str
-    ):
+    @application.post("/novels/{project_id}/editing-preference-aggregates")
+    async def create_editing_preference_aggregate(request: Request, project_id: str):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
@@ -6246,9 +4335,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             ),
         )
 
-    @application.get(
-        "/api/editing-preference-suggestions/{suggestion_id}"
-    )
+    @application.get("/api/editing-preference-suggestions/{suggestion_id}")
     async def editing_preference_suggestion_status(
         request: Request, suggestion_id: str
     ):
@@ -6274,12 +4361,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
         )
 
-    @application.post(
-        "/editing-preference-suggestions/{suggestion_id}/apply"
-    )
-    async def apply_editing_preference_suggestion(
-        request: Request, suggestion_id: str
-    ):
+    @application.post("/editing-preference-suggestions/{suggestion_id}/apply")
+    async def apply_editing_preference_suggestion(request: Request, suggestion_id: str):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
@@ -6321,9 +4404,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                             min_length=8,
                         ),
                         "applicability": _clean_field(
-                            str(
-                                form.get(f"applicability_{index}") or ""
-                            ),
+                            str(form.get(f"applicability_{index}") or ""),
                             "适用范围",
                             max_length=500,
                             required=True,
@@ -6353,9 +4434,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/editing-preference-suggestions/{suggestion_id}/reject"
-    )
+    @application.post("/editing-preference-suggestions/{suggestion_id}/reject")
     async def reject_editing_preference_suggestion(
         request: Request,
         suggestion_id: str,
@@ -6399,9 +4478,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/editing-preference-aggregates/{aggregate_id}/archive"
-    )
+    @application.post("/editing-preference-aggregates/{aggregate_id}/archive")
     async def archive_editing_preference_aggregate(
         request: Request,
         aggregate_id: str,
@@ -6482,18 +4559,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "allowed_omissions": _clean_field(
                     allowed_omissions, "留白规则", max_length=4000
                 ),
-                "preferred_patterns": _split_lines(
-                    preferred_patterns, limit=50
-                ),
-                "banned_expressions": _split_lines(
-                    banned_expressions, limit=100
-                ),
-                "style_examples": _split_lines(
-                    style_examples, limit=30
-                ),
-                "author_notes": _clean_field(
-                    author_notes, "作者补充", max_length=6000
-                ),
+                "preferred_patterns": _split_lines(preferred_patterns, limit=50),
+                "banned_expressions": _split_lines(banned_expressions, limit=100),
+                "style_examples": _split_lines(style_examples, limit=30),
+                "author_notes": _clean_field(author_notes, "作者补充", max_length=6000),
             }
             if action == "confirm" and not any(
                 (
@@ -6513,9 +4582,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not updated:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
-            project = database.get_novel_project(
-                int(user["id"]), project_id
-            )
+            project = database.get_novel_project(int(user["id"]), project_id)
             if not project:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
             database.update_novel_project(
@@ -6530,20 +4597,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     style_guide, "叙事风格规范", max_length=10_000
                 ),
                 point_of_view=point_of_view,
-                target_chapter_chars=int(
-                    project.get("target_chapter_chars") or 3000
-                ),
+                target_chapter_chars=int(project.get("target_chapter_chars") or 3000),
                 story_promise=str(project.get("story_promise") or ""),
-                target_audience=str(
-                    project.get("target_audience") or ""
-                ),
+                target_audience=str(project.get("target_audience") or ""),
                 core_appeal=str(project.get("core_appeal") or ""),
-                ending_constraint=str(
-                    project.get("ending_constraint") or ""
-                ),
-                planning_horizon=int(
-                    project.get("planning_horizon") or 20
-                ),
+                ending_constraint=str(project.get("ending_constraint") or ""),
+                planning_horizon=int(project.get("planning_horizon") or 20),
                 ai_instructions="",
             )
         except ValueError as exc:
@@ -6584,22 +4643,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             planning_service.create_volume(
                 user_id=int(user["id"]),
                 project_id=project_id,
-                title=_clean_field(
-                    title, "分卷名", max_length=120, required=True
-                ),
+                title=_clean_field(title, "分卷名", max_length=120, required=True),
                 goal=_clean_field(goal, "分卷目标", max_length=4000),
-                start_state=_clean_field(
-                    start_state, "开卷状态", max_length=4000
-                ),
-                end_state=_clean_field(
-                    end_state, "收卷状态", max_length=4000
-                ),
+                start_state=_clean_field(start_state, "开卷状态", max_length=4000),
+                end_state=_clean_field(end_state, "收卷状态", max_length=4000),
                 major_conflict=_clean_field(
                     major_conflict, "主要冲突", max_length=4000
                 ),
-                payoff=_clean_field(
-                    payoff, "本卷回报", max_length=4000
-                ),
+                payoff=_clean_field(payoff, "本卷回报", max_length=4000),
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -6641,22 +4692,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=int(user["id"]),
                 project_id=project_id,
                 volume_id=volume_id,
-                title=_clean_field(
-                    title, "分卷名", max_length=120, required=True
-                ),
+                title=_clean_field(title, "分卷名", max_length=120, required=True),
                 goal=_clean_field(goal, "分卷目标", max_length=4000),
-                start_state=_clean_field(
-                    start_state, "开卷状态", max_length=4000
-                ),
-                end_state=_clean_field(
-                    end_state, "收卷状态", max_length=4000
-                ),
+                start_state=_clean_field(start_state, "开卷状态", max_length=4000),
+                end_state=_clean_field(end_state, "收卷状态", max_length=4000),
                 major_conflict=_clean_field(
                     major_conflict, "主要冲突", max_length=4000
                 ),
-                payoff=_clean_field(
-                    payoff, "本卷回报", max_length=4000
-                ),
+                payoff=_clean_field(payoff, "本卷回报", max_length=4000),
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -6695,15 +4738,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=int(user["id"]),
                 project_id=project_id,
                 entry_type=entry_type,
-                name=_clean_field(
-                    name, "资料名称", max_length=120, required=True
-                ),
-                description=_clean_field(
-                    description, "资料内容", max_length=6000
-                ),
-                constraints=_clean_field(
-                    constraints, "规则与边界", max_length=4000
-                ),
+                name=_clean_field(name, "资料名称", max_length=120, required=True),
+                description=_clean_field(description, "资料内容", max_length=6000),
+                constraints=_clean_field(constraints, "规则与边界", max_length=4000),
             )
         except Exception as exc:
             duplicate = "UNIQUE constraint failed" in str(exc)
@@ -6712,25 +4749,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             message = (
                 "同类世界资料中已经有这个名称"
                 if duplicate
-                else str(exc) if isinstance(exc, ValueError)
+                else str(exc)
+                if isinstance(exc, ValueError)
                 else "添加世界资料失败"
             )
             return RedirectResponse(
-                _workbench_path(
-                    project_id, settings_tab="world", error=message
-                ),
+                _workbench_path(project_id, settings_tab="world", error=message),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="world", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="world", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/world-entries/{entry_id}/edit"
-    )
+    @application.post("/novels/{project_id}/world-entries/{entry_id}/edit")
     async def edit_world_entry(
         request: Request,
         project_id: str,
@@ -6751,15 +4783,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 project_id=project_id,
                 entry_id=entry_id,
                 entry_type=entry_type,
-                name=_clean_field(
-                    name, "资料名称", max_length=120, required=True
-                ),
-                description=_clean_field(
-                    description, "资料内容", max_length=6000
-                ),
-                constraints=_clean_field(
-                    constraints, "规则与边界", max_length=4000
-                ),
+                name=_clean_field(name, "资料名称", max_length=120, required=True),
+                description=_clean_field(description, "资料内容", max_length=6000),
+                constraints=_clean_field(constraints, "规则与边界", max_length=4000),
             )
             if not updated:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
@@ -6768,25 +4794,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             message = (
                 "同类世界资料中已经有这个名称"
                 if duplicate
-                else str(exc) if isinstance(exc, ValueError)
+                else str(exc)
+                if isinstance(exc, ValueError)
                 else "保存世界资料失败"
             )
             return RedirectResponse(
-                _workbench_path(
-                    project_id, settings_tab="world", error=message
-                ),
+                _workbench_path(project_id, settings_tab="world", error=message),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="world", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="world", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/world-entries/{entry_id}/delete"
-    )
+    @application.post("/novels/{project_id}/world-entries/{entry_id}/delete")
     async def remove_world_entry(
         request: Request,
         project_id: str,
@@ -6797,15 +4818,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
-        removed = database.delete_world_entry(
-            int(user["id"]), project_id, entry_id
-        )
+        removed = database.delete_world_entry(int(user["id"]), project_id, entry_id)
         if not removed:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="world", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="world", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -6830,12 +4847,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 project_id=project_id,
                 character_a_id=character_a_id,
                 character_b_id=character_b_id,
-                relationship=_clean_field(
-                    relationship, "人物关系", max_length=3000
-                ),
-                tension=_clean_field(
-                    tension, "关系张力", max_length=3000
-                ),
+                relationship=_clean_field(relationship, "人物关系", max_length=3000),
+                tension=_clean_field(tension, "关系张力", max_length=3000),
                 change_direction=_clean_field(
                     change_direction, "变化方向", max_length=3000
                 ),
@@ -6845,25 +4858,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             message = (
                 "这两个人物之间已经有一张关系卡"
                 if duplicate
-                else str(exc) if isinstance(exc, ValueError)
+                else str(exc)
+                if isinstance(exc, ValueError)
                 else "添加人物关系失败"
             )
             return RedirectResponse(
-                _workbench_path(
-                    project_id, settings_tab="characters", error=message
-                ),
+                _workbench_path(project_id, settings_tab="characters", error=message),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="characters", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="characters", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/relationships/{relationship_id}/edit"
-    )
+    @application.post("/novels/{project_id}/relationships/{relationship_id}/edit")
     async def edit_character_relationship(
         request: Request,
         project_id: str,
@@ -6886,12 +4894,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 relationship_id=relationship_id,
                 character_a_id=character_a_id,
                 character_b_id=character_b_id,
-                relationship=_clean_field(
-                    relationship, "人物关系", max_length=3000
-                ),
-                tension=_clean_field(
-                    tension, "关系张力", max_length=3000
-                ),
+                relationship=_clean_field(relationship, "人物关系", max_length=3000),
+                tension=_clean_field(tension, "关系张力", max_length=3000),
                 change_direction=_clean_field(
                     change_direction, "变化方向", max_length=3000
                 ),
@@ -6903,25 +4907,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             message = (
                 "这两个人物之间已经有一张关系卡"
                 if duplicate
-                else str(exc) if isinstance(exc, ValueError)
+                else str(exc)
+                if isinstance(exc, ValueError)
                 else "保存人物关系失败"
             )
             return RedirectResponse(
-                _workbench_path(
-                    project_id, settings_tab="characters", error=message
-                ),
+                _workbench_path(project_id, settings_tab="characters", error=message),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="characters", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="characters", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/relationships/{relationship_id}/delete"
-    )
+    @application.post("/novels/{project_id}/relationships/{relationship_id}/delete")
     async def remove_character_relationship(
         request: Request,
         project_id: str,
@@ -6938,9 +4937,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not removed:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="characters", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="characters", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -6969,33 +4966,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             database.add_novel_character(
                 user_id=int(user["id"]),
                 project_id=project_id,
-                name=_clean_field(
-                    name, "人物名", max_length=60, required=True
-                ),
+                name=_clean_field(name, "人物名", max_length=60, required=True),
                 role=_clean_field(role, "人物定位", max_length=300),
                 traits=_clean_field(traits, "性格特征", max_length=1000),
                 background=_clean_field(background, "人物背景", max_length=4000),
-                character_arc=_clean_field(
-                    character_arc, "人物弧光", max_length=2000
-                ),
-                external_goal=_clean_field(
-                    external_goal, "外在目标", max_length=2000
-                ),
-                internal_need=_clean_field(
-                    internal_need, "内在需求", max_length=2000
-                ),
+                character_arc=_clean_field(character_arc, "人物弧光", max_length=2000),
+                external_goal=_clean_field(external_goal, "外在目标", max_length=2000),
+                internal_need=_clean_field(internal_need, "内在需求", max_length=2000),
                 central_conflict=_clean_field(
                     central_conflict, "人物矛盾", max_length=2000
                 ),
-                secret=_clean_field(
-                    secret, "秘密", max_length=2000
-                ),
-                speech_style=_clean_field(
-                    speech_style, "说话方式", max_length=2000
-                ),
-                initial_state=_clean_field(
-                    initial_state, "初始状态", max_length=2000
-                ),
+                secret=_clean_field(secret, "秘密", max_length=2000),
+                speech_style=_clean_field(speech_style, "说话方式", max_length=2000),
+                initial_state=_clean_field(initial_state, "初始状态", max_length=2000),
             )
         except ValueError as exc:
             message = str(exc)
@@ -7029,9 +5012,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/characters/{character_id}/edit"
-    )
+    @application.post("/novels/{project_id}/characters/{character_id}/edit")
     async def edit_novel_character(
         request: Request,
         project_id: str,
@@ -7058,33 +5039,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=int(user["id"]),
                 project_id=project_id,
                 character_id=character_id,
-                name=_clean_field(
-                    name, "人物名", max_length=60, required=True
-                ),
+                name=_clean_field(name, "人物名", max_length=60, required=True),
                 role=_clean_field(role, "人物定位", max_length=300),
                 traits=_clean_field(traits, "性格特征", max_length=1000),
-                background=_clean_field(
-                    background, "人物背景", max_length=4000
-                ),
-                external_goal=_clean_field(
-                    external_goal, "外在目标", max_length=2000
-                ),
-                internal_need=_clean_field(
-                    internal_need, "内在需求", max_length=2000
-                ),
+                background=_clean_field(background, "人物背景", max_length=4000),
+                external_goal=_clean_field(external_goal, "外在目标", max_length=2000),
+                internal_need=_clean_field(internal_need, "内在需求", max_length=2000),
                 central_conflict=_clean_field(
                     central_conflict, "人物矛盾", max_length=2000
                 ),
                 secret=_clean_field(secret, "秘密", max_length=2000),
-                speech_style=_clean_field(
-                    speech_style, "说话方式", max_length=2000
-                ),
-                initial_state=_clean_field(
-                    initial_state, "初始状态", max_length=2000
-                ),
-                character_arc=_clean_field(
-                    character_arc, "人物弧光", max_length=2000
-                ),
+                speech_style=_clean_field(speech_style, "说话方式", max_length=2000),
+                initial_state=_clean_field(initial_state, "初始状态", max_length=2000),
+                character_arc=_clean_field(character_arc, "人物弧光", max_length=2000),
             )
             if not updated:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
@@ -7095,7 +5062,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             message = (
                 "该人物名已经存在"
                 if duplicate
-                else str(exc) if isinstance(exc, ValueError)
+                else str(exc)
+                if isinstance(exc, ValueError)
                 else "保存人物失败"
             )
             return RedirectResponse(
@@ -7107,15 +5075,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return RedirectResponse(
-            _workbench_path(
-                project_id, settings_tab="characters", saved="true"
-            ),
+            _workbench_path(project_id, settings_tab="characters", saved="true"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/novels/{project_id}/characters/{character_id}/delete"
-    )
+    @application.post("/novels/{project_id}/characters/{character_id}/delete")
     async def delete_novel_character(
         request: Request,
         project_id: str,
@@ -7126,9 +5090,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
-        database.delete_novel_character(
-            int(user["id"]), project_id, character_id
-        )
+        database.delete_novel_character(int(user["id"]), project_id, character_id)
         return RedirectResponse(
             _workbench_path(
                 project_id,
@@ -7161,18 +5123,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             / chapter_id
         )
         try:
-            clean_title = _clean_field(
-                title, "章节名", max_length=120
-            )
-            clean_outline = _clean_field(
-                outline, "章节大纲", max_length=6000
-            )
-            clean_key_points = _clean_field(
-                key_points, "关键情节点", max_length=4000
-            )
-            (chapter_dir / "versions").mkdir(
-                parents=True, exist_ok=False, mode=0o700
-            )
+            clean_title = _clean_field(title, "章节名", max_length=120)
+            clean_outline = _clean_field(outline, "章节大纲", max_length=6000)
+            clean_key_points = _clean_field(key_points, "关键情节点", max_length=4000)
+            (chapter_dir / "versions").mkdir(parents=True, exist_ok=False, mode=0o700)
             os.chmod(chapter_dir, 0o700)
             os.chmod(chapter_dir / "versions", 0o700)
             content_path = chapter_dir / "content.txt"
@@ -7207,808 +5161,56 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}",
+        "/novels/{project_id}/chapters/{chapter_id}/history",
         response_class=HTMLResponse,
     )
-    async def novel_chapter_editor(
+    async def chapter_version_history(
         request: Request,
         project_id: str,
         chapter_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        canonical: bool = False,
-        assistant_rewrite: bool = False,
+        page: int = 1,
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
-        chapter = database.get_novel_chapter(
-            int(user["id"]), project_id, chapter_id
-        )
-        if not chapter:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        return RedirectResponse(
-            _workbench_path(
-                project_id,
-                chapter_id=chapter_id,
-                error=error,
-                saved=(
-                    "true"
-                    if saved or canonical or assistant_rewrite
-                    else None
-                ),
-            ),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}/scenes",
-        response_class=HTMLResponse,
-    )
-    async def scene_workbench_page(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        overridden: bool = False,
-        restored: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        chapter = database.get_novel_chapter(
-            int(user["id"]), project_id, chapter_id
-        )
-        if not chapter:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        return RedirectResponse(
-            _workbench_path(
-                project_id,
-                chapter_id=chapter_id,
-                error=error,
-                saved=(
-                    "true"
-                    if saved or overridden or restored
-                    else None
-                ),
-            ),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}/scenes/assemble"
-    )
-    async def assemble_scene_drafts(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
         user_id = int(user["id"])
-        try:
-            assembly = scene_service.build_assembly(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-            )
-            workbench = scene_service.get_workbench(
-                user_id=user_id,
-                project_id=project_id,
-                chapter_id=chapter_id,
-            )
-            if not workbench:
-                raise ValueError("章节不存在")
-            content = str(assembly["content"])
-            chapter_content_path = Path(
-                str(workbench["chapter"]["content_path"])
-            )
-            token = secrets.token_hex(16)
-            version_path = (
-                chapter_content_path.parent
-                / "versions"
-                / f"scene-assembly-{token}.txt"
-            )
-            previous_content = _read_optional_text(chapter_content_path)
-            _atomic_write_text(version_path, content, token)
-            _atomic_write_text(chapter_content_path, content, token)
-            try:
-                version_id = scene_service.record_assembly(
-                    user_id=user_id,
-                    project_id=project_id,
-                    chapter_id=chapter_id,
-                    version_path=version_path,
-                    content=content,
-                    scene_versions=assembly["scene_versions"],
-                )
-                accepted = database.accept_chapter_version(
-                    user_id=user_id,
-                    project_id=project_id,
-                    chapter_id=chapter_id,
-                    version_id=version_id,
-                )
-                if not accepted:
-                    raise ValueError("组装正文没有成为当前版本")
-                queue_background_memory(
-                    request,
-                    user_id=user_id,
-                    project_id=project_id,
-                    chapter_id=chapter_id,
-                    version_id=version_id,
-                )
-            except Exception:
-                _atomic_write_text(
-                    chapter_content_path, previous_content, token
-                )
-                raise
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        except Exception:
-            logger.exception("failed to assemble scene drafts")
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote('组装场景失败')}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}"
-            "?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/save"
-    )
-    async def save_scene_draft(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        content: str = Form(...),
-        change_summary: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            clean_content = _clean_field(
-                content,
-                "场景正文",
-                max_length=60_000,
-                required=True,
-                min_length=1,
-            )
-            clean_change_summary = _clean_field(
-                change_summary,
-                "这次主要修改了什么",
-                max_length=1000,
-            )
-            workbench = scene_service.get_workbench(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-            )
-            if not workbench:
-                raise ValueError("章节不存在")
-            if workbench["active_job"]:
-                raise ValueError("AI 任务正在运行，请完成后再保存场景")
-            if not any(
-                str(item["id"]) == scene_beat_id
-                for item in workbench["scenes"]
-            ):
-                raise ValueError("场景节拍不存在")
-            token = secrets.token_hex(16)
-            version_path = (
-                Path(str(workbench["chapter"]["content_path"])).parent
-                / "scenes"
-                / scene_beat_id
-                / "versions"
-                / f"manual-{token}.txt"
-            )
-            _atomic_write_text(version_path, clean_content, token)
-            scene_service.record_manual_version(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                scene_beat_id=scene_beat_id,
-                version_path=version_path,
-                content=clean_content,
-                change_summary=clean_change_summary,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        except Exception:
-            logger.exception("failed to save scene draft")
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote('保存场景失败')}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-            f"?saved=true#scene-{scene_beat_id}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/generate"
-    )
-    async def generate_scene_draft(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        operation: str = Form("generate_scene"),
-        instruction: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        if operation not in {"generate_scene", "rewrite_scene"}:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote('不支持的场景写作操作')}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            clean_instruction = _clean_field(
-                instruction, "额外要求", max_length=4000
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        profile = api_profile(int(user["id"]))
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("开始写作前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_generation_job(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                operation=operation,
-                instruction=clean_instruction,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-                subject_id=scene_beat_id,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/scenes/{scene_beat_id}/versions/{scene_version_id}/restore"
-    )
-    async def restore_scene_version(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        scene_beat_id: str,
-        scene_version_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            workbench = scene_service.get_workbench(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-            )
-            if not workbench:
-                raise ValueError("章节不存在")
-            if workbench["active_job"]:
-                raise ValueError(
-                    "AI 任务正在运行，请完成后再恢复场景版本"
-                )
-            scene = next(
-                (
-                    item
-                    for item in workbench["scenes"]
-                    if str(item["id"]) == scene_beat_id
-                ),
-                None,
-            )
-            if not scene:
-                raise ValueError("场景节拍不存在")
-            version = next(
-                (
-                    item
-                    for item in scene["versions"]
-                    if str(item["id"]) == scene_version_id
-                ),
-                None,
-            )
-            if not version:
-                raise ValueError("场景历史版本不存在")
-            restored_content = _read_optional_text(
-                Path(str(version["content_path"]))
-            )
-            if not restored_content.strip():
-                raise ValueError("场景历史版本内容为空")
-            token = secrets.token_hex(16)
-            restored_path = (
-                Path(str(workbench["chapter"]["content_path"])).parent
-                / "scenes"
-                / scene_beat_id
-                / "versions"
-                / f"restored-{token}.txt"
-            )
-            _atomic_write_text(restored_path, restored_content, token)
-            scene_service.record_manual_version(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                scene_beat_id=scene_beat_id,
-                version_path=restored_path,
-                content=restored_content,
-                source="restored",
-                kind="scene_restore",
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote(str(exc))}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        except Exception:
-            logger.exception("failed to restore scene version")
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-                f"?error={quote('恢复场景版本失败')}#scene-{scene_beat_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}/scenes"
-            f"?restored=true#scene-{scene_beat_id}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}/task-card",
-        response_class=HTMLResponse,
-    )
-    async def chapter_task_card_page(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        confirmed: bool = False,
-        skeleton_saved: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
         chapter = database.get_novel_chapter(
-            int(user["id"]), project_id, chapter_id
+            user_id, project_id, chapter_id
         )
         if not chapter:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        return RedirectResponse(
-            _workbench_path(
-                project_id,
-                chapter_id=chapter_id,
-                error=error,
-                saved=(
-                    "true"
-                    if saved or confirmed or skeleton_saved
-                    else None
-                ),
+            return render_template(
+                "not_found.html",
+                _template_context(request, user=user),
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        page_size = 30
+        version_count = database.count_chapter_versions(
+            user_id, project_id, chapter_id
+        )
+        page_count = max(1, (version_count + page_size - 1) // page_size)
+        current_page = min(max(1, int(page)), page_count)
+        versions = database.list_chapter_versions(
+            user_id,
+            project_id,
+            chapter_id,
+            limit=page_size,
+            offset=(current_page - 1) * page_size,
+        )
+        return render_template(
+            "chapter_version_history.html",
+            _template_context(
+                request,
+                user=user,
+                chapter=chapter,
+                versions=versions,
+                version_count=version_count,
+                current_page=current_page,
+                page_count=page_count,
             ),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}/skeleton"
-    )
-    async def save_future_chapter_skeleton(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        form = await request.form()
-        verify_csrf(request, str(form.get("csrf") or ""))
-
-        def value(name: str) -> str:
-            return str(form.get(name) or "").strip()
-
-        try:
-            arc_titles = [
-                str(item).strip()
-                for item in form.getlist("arc_titles")
-                if str(item).strip()
-            ]
-            skeleton = AuthorChapterSkeleton.model_validate(
-                {
-                    "title": value("title"),
-                    "structural_role": value("structural_role"),
-                    "purpose": value("purpose"),
-                    "key_points": _split_lines(
-                        value("key_points"), limit=5
-                    ),
-                    "arc_titles": arc_titles,
-                    "ending_hook": value("ending_hook"),
-                }
-            )
-            planning_service.update_future_chapter_skeleton(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                volume_id=value("volume_id") or None,
-                skeleton=skeleton,
-            )
-        except (TypeError, ValueError) as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                f"?error={quote(str(exc)[:1000])}#rolling-skeleton",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-            "?skeleton_saved=true#rolling-skeleton",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}/task-card"
-    )
-    async def save_chapter_task_card(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        form = await request.form()
-        verify_csrf(request, str(form.get("csrf") or ""))
-
-        def value(name: str) -> str:
-            return str(form.get(name) or "").strip()
-
-        try:
-            action = value("action") or "save_draft"
-            if action not in {"save_draft", "confirm"}:
-                raise ValueError("不支持的任务卡操作")
-            selected_plot_threads = [
-                str(item).strip()
-                for item in form.getlist("selected_plot_threads")
-                if str(item).strip()
-            ]
-            custom_plot_threads = _split_lines(
-                value("custom_plot_threads") or value("plot_threads"),
-                limit=20,
-            )
-            combined_plot_threads = list(
-                dict.fromkeys(
-                    [*selected_plot_threads, *custom_plot_threads]
-                )
-            )
-            if len(combined_plot_threads) > 20:
-                raise ValueError("推进的剧情线不能超过 20 条")
-            must_happen = _split_lines(
-                value("must_happen"), limit=30
-            )
-            must_preserve = _split_lines(
-                value("must_preserve"), limit=30
-            )
-            forbidden = _split_lines(
-                value("forbidden"), limit=30
-            )
-            foreshadow_setup = _split_lines(
-                value("foreshadow_setup"), limit=20
-            )
-            foreshadow_payoff = _split_lines(
-                value("foreshadow_payoff"), limit=20
-            )
-            ending_hook = value("ending_hook")
-            requirement_sources = {
-                "plot_thread": combined_plot_threads,
-                "must_happen": must_happen,
-                "foreshadow_setup": foreshadow_setup,
-                "foreshadow_payoff": foreshadow_payoff,
-                "ending_hook": [ending_hook] if ending_hook else [],
-            }
-            scenes = []
-            for position in range(1, 6):
-                requirement_refs = []
-                seen_requirement_tokens = set()
-                for raw_token in form.getlist(
-                    f"scene_requirement_{position}"
-                ):
-                    token = str(raw_token)
-                    if token in seen_requirement_tokens:
-                        continue
-                    seen_requirement_tokens.add(token)
-                    try:
-                        kind, raw_index = token.rsplit(":", 1)
-                        index = int(raw_index)
-                        text = requirement_sources[kind][index]
-                    except (
-                        KeyError,
-                        IndexError,
-                        TypeError,
-                        ValueError,
-                    ) as exc:
-                        raise ValueError(
-                            "场景要求映射已经失效，请重新打开任务卡"
-                        ) from exc
-                    requirement_refs.append(
-                        {"kind": kind, "text": text}
-                    )
-                scene_values = {
-                    "pov_character": value(
-                        f"scene_pov_character_{position}"
-                    ),
-                    "goal": value(f"scene_goal_{position}"),
-                    "obstacle": value(f"scene_obstacle_{position}"),
-                    "action": value(f"scene_action_{position}"),
-                    "reveal": value(f"scene_reveal_{position}"),
-                    "conceal": value(f"scene_conceal_{position}"),
-                    "subtext": value(f"scene_subtext_{position}"),
-                    "location": value(f"scene_location_{position}"),
-                    "key_items": _split_lines(
-                        value(f"scene_key_items_{position}"), limit=20
-                    ),
-                    "end_state": value(f"scene_end_state_{position}"),
-                    "transition": value(f"scene_transition_{position}"),
-                    "requirement_refs": requirement_refs,
-                }
-                if any(
-                    item
-                    for key, item in scene_values.items()
-                    if key not in {"key_items", "requirement_refs"}
-                ) or scene_values["key_items"] or requirement_refs:
-                    scenes.append(SceneBeat.model_validate(scene_values))
-            card = ChapterTaskCard.model_validate(
-                {
-                    "purpose": value("purpose"),
-                    "start_state": value("start_state"),
-                    "end_state": value("end_state"),
-                    "central_conflict": value("central_conflict"),
-                    "emotional_value": value("emotional_value"),
-                    "plot_threads": combined_plot_threads,
-                    "must_happen": must_happen,
-                    "must_preserve": must_preserve,
-                    "forbidden": forbidden,
-                    "foreshadow_setup": foreshadow_setup,
-                    "foreshadow_payoff": foreshadow_payoff,
-                    "ending_hook": ending_hook,
-                    "target_chars": int(value("target_chars") or "3000"),
-                    "scenes": scenes,
-                }
-            )
-            planning_service.upsert_task_card(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                volume_id=value("volume_id") or None,
-                card=card,
-                confirm=action == "confirm",
-            )
-        except (TypeError, ValueError) as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                f"?error={quote(str(exc)[:1000])}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        query = "confirmed=true" if action == "confirm" else "saved=true"
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}/task-card?{query}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}/task-card/generate"
-    )
-    async def generate_chapter_task_card(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        instruction: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        task_card = planning_service.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        if not task_card:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        try:
-            clean_instruction = _clean_field(
-                instruction, "Planner 额外要求", max_length=4000
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        profile = api_profile(int(user["id"]))
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("使用 Planner 前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_chapter_planning_job(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                instruction=clean_instruction,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}/task-card/"
-        "generate-scenes"
-    )
-    async def generate_chapter_scene_beats(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        instruction: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        task_card = planning_service.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        if not task_card:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if not task_card.get("plan_id"):
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                "?error="
-                + quote("请先保存章节任务卡，再让 Planner 只拆分场景"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            clean_instruction = _clean_field(
-                instruction, "场景拆解额外要求", max_length=4000
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        profile = api_profile(int(user["id"]))
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("使用 Scene Planner 前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_chapter_planning_job(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                instruction=clean_instruction,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-                operation="plan_scene_beats",
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post("/novels/{project_id}/chapters/{chapter_id}/plan")
-    async def update_novel_chapter_plan(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        title: str = Form(...),
-        outline: str = Form(""),
-        key_points: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            updated = database.update_novel_chapter_plan(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                title=_clean_field(
-                    title, "章节名", max_length=120, required=True
-                ),
-                outline=_clean_field(
-                    outline, "章节大纲", max_length=6000
-                ),
-                key_points=_clean_field(
-                    key_points, "关键情节点", max_length=4000
-                ),
-            )
-            if not updated:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/compare",
+        "/novels/{project_id}/chapters/{chapter_id}/versions/{version_id}/compare",
         response_class=HTMLResponse,
     )
     async def compare_chapter_versions(
@@ -8022,9 +5224,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         user_id = int(user["id"])
-        chapter = database.get_novel_chapter(
-            user_id, project_id, chapter_id
-        )
+        chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
         target_version = database.get_chapter_version(
             user_id, project_id, chapter_id, version_id
         )
@@ -8036,11 +5236,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
 
         versions = database.list_chapter_versions(
-            user_id, project_id, chapter_id
+            user_id, project_id, chapter_id, limit=30
         )
-        versions_by_id = {
-            str(item["id"]): item for item in versions
-        }
+        versions_by_id = {str(item["id"]): item for item in versions}
         requested_base_id = str(base_id or "").strip()
         if requested_base_id:
             base_version = database.get_chapter_version(
@@ -8057,9 +5255,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             preferred_ids = [
                 str(target_version.get("parent_version_id") or ""),
                 (
-                    str(chapter.get("canonical_version_id") or "")
-                    if str(chapter.get("canonical_version_id") or "")
-                    != version_id
+                    str(chapter.get("head_version_id") or "")
+                    if str(chapter.get("head_version_id") or "") != version_id
                     else ""
                 ),
             ]
@@ -8078,6 +5275,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     if str(item["id"]) != version_id:
                         base_version = item
                         break
+
+        for required_version in (target_version, base_version):
+            if not required_version:
+                continue
+            required_id = str(required_version["id"])
+            if required_id not in versions_by_id:
+                versions.append(required_version)
+                versions_by_id[required_id] = required_version
 
         comparison = None
         comparison_error = ""
@@ -8107,8 +5312,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/style",
+        "/novels/{project_id}/chapters/{chapter_id}/versions/{version_id}/style",
         response_class=HTMLResponse,
     )
     async def chapter_version_style_page(
@@ -8122,9 +5326,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         user_id = int(user["id"])
-        chapter = database.get_novel_chapter(
-            user_id, project_id, chapter_id
-        )
+        chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
         version = database.get_chapter_version(
             user_id, project_id, chapter_id, version_id
         )
@@ -8158,8 +5360,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/style"
+        "/novels/{project_id}/chapters/{chapter_id}/versions/{version_id}/style"
     )
     async def run_chapter_version_style_audit(
         request: Request,
@@ -8190,8 +5391,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         api = api_profile(user_id)
         if not api:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("执行 AI 味审校前，请先配置模型服务"),
+                "/settings/api?error=" + quote("执行 AI 味审校前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -8244,8 +5444,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         api = api_profile(user_id)
         if not api:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote("生成定点改写前，请先配置模型服务"),
+                "/settings/api?error=" + quote("生成定点改写前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -8272,9 +5471,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/style-issues/{issue_id}", response_class=HTMLResponse
-    )
+    @application.get("/style-issues/{issue_id}", response_class=HTMLResponse)
     async def style_issue_review(
         request: Request,
         issue_id: str,
@@ -8295,7 +5492,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         candidates = []
         for candidate in issue["candidates"]:
             candidate = dict(candidate)
-            candidate["diff"] = _diff_segments(
+            candidate["diff"] = build_version_diff(
                 str(issue["quote"]), str(candidate["replacement_text"])
             )
             candidates.append(candidate)
@@ -8320,9 +5517,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
-        result = style_service.ignore_issue(
-            user_id=int(user["id"]), issue_id=issue_id
-        )
+        result = style_service.ignore_issue(user_id=int(user["id"]), issue_id=issue_id)
         if not result:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         return RedirectResponse(
@@ -8331,9 +5526,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/style-rewrite-candidates/{candidate_id}/accept"
-    )
+    @application.post("/style-rewrite-candidates/{candidate_id}/accept")
     async def accept_style_rewrite_candidate(
         request: Request,
         candidate_id: str,
@@ -8361,9 +5554,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         source_path = Path(str(candidate["source_content_path"]))
         working_path = Path(str(candidate["working_content_path"]))
         try:
-            source_content, actual_hash = _read_utf8_with_file_hash(
-                source_path
-            )
+            source_content, actual_hash = _read_utf8_with_file_hash(source_path)
         except (OSError, UnicodeError):
             return RedirectResponse(
                 f"/style-issues/{candidate['issue_id']}?error="
@@ -8387,24 +5578,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         replacement = str(candidate["replacement_text"])
         revised_content = (
-            source_content[:start_offset]
-            + replacement
-            + source_content[end_offset:]
+            source_content[:start_offset] + replacement + source_content[end_offset:]
         )
-        if len(revised_content) > 200_000:
-            return RedirectResponse(
-                f"/style-issues/{candidate['issue_id']}?error="
-                + quote("定点改写后的单章正文超过 200000 字"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        previous_working = _read_optional_text(working_path)
         token = secrets.token_hex(16)
-        version_path = (
-            source_path.parent / f"style-{token}.txt"
-        )
+        version_path = source_path.parent / f"style-{token}.txt"
         try:
             _atomic_write_text(version_path, revised_content, token)
-            _atomic_write_text(working_path, revised_content, token)
             result = style_service.accept_rewrite_candidate(
                 user_id=user_id,
                 candidate_id=candidate_id,
@@ -8417,14 +5596,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not result:
                 raise ValueError("改写候选已处理或失效")
-            accepted = database.accept_chapter_version(
-                user_id=user_id,
-                project_id=str(result["project_id"]),
-                chapter_id=str(result["chapter_id"]),
-                version_id=str(result["version_id"]),
-            )
-            if not accepted:
-                raise ValueError("改写结果没有成为当前版本")
+            try:
+                _atomic_write_text(
+                    working_path,
+                    revised_content,
+                    secrets.token_hex(16),
+                )
+            except Exception:
+                logger.warning(
+                    "failed to refresh non-authoritative chapter cache",
+                    exc_info=True,
+                )
             queue_background_memory(
                 request,
                 user_id=user_id,
@@ -8433,28 +5615,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 version_id=str(result["version_id"]),
             )
         except ValueError as exc:
-            try:
-                _atomic_write_text(
-                    working_path, previous_working, secrets.token_hex(16)
-                )
-            except Exception:
-                logger.exception(
-                    "failed to restore working chapter after rewrite rejection"
-                )
+            version_path.unlink(missing_ok=True)
             return RedirectResponse(
-                f"/style-issues/{candidate['issue_id']}?error="
-                + quote(str(exc)),
+                f"/style-issues/{candidate['issue_id']}?error=" + quote(str(exc)),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception:
-            try:
-                _atomic_write_text(
-                    working_path, previous_working, secrets.token_hex(16)
-                )
-            except Exception:
-                logger.exception(
-                    "failed to restore working chapter after rewrite failure"
-                )
+            version_path.unlink(missing_ok=True)
             logger.exception("failed to accept targeted style rewrite")
             return RedirectResponse(
                 f"/style-issues/{candidate['issue_id']}?error="
@@ -8467,326 +5634,115 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.get(
-        "/canon-impact-reports/{report_id}",
-        response_class=HTMLResponse,
-    )
-    async def canon_impact_report_page(
-        request: Request,
-        report_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        report = impact_service.get_report(
-            user_id=int(user["id"]), report_id=report_id
-        )
-        if not report:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        return render_template(
-            "canon_impact_report.html",
-            _template_context(
-                request,
-                user=user,
-                report=report,
-                error=error,
-                saved=saved,
-            ),
-        )
-
-    @application.post("/canon-impact-reports/{report_id}")
-    async def decide_canon_impact_report(
-        request: Request,
-        report_id: str,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        form = await request.form()
-        verify_csrf(request, str(form.get("csrf") or ""))
-        report = impact_service.get_report(
-            user_id=int(user["id"]), report_id=report_id
-        )
-        if not report:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if str(report["status"]) != "pending":
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error="
-                + quote("这份影响报告已经处理"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        decisions = {
-            str(item["id"]): {
-                "decision": str(
-                    form.get(f"decision_{item['id']}") or "recheck"
-                ),
-                "note": str(form.get(f"note_{item['id']}") or ""),
-            }
-            for item in report["items"]
-        }
-        try:
-            updated = impact_service.update_decisions(
-                user_id=int(user["id"]),
-                report_id=report_id,
-                decisions=decisions,
-            )
-            if not updated:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        if str(form.get("action") or "save") != "confirm":
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?saved=true",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-
-        report = impact_service.get_report(
-            user_id=int(user["id"]), report_id=report_id
-        )
-        if not report:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if (
-            str(report["current_canonical_version_id"] or "")
-            != str(report["old_version_id"])
-        ):
-            impact_service.mark_stale(
-                user_id=int(user["id"]), report_id=report_id
-            )
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error="
-                + quote("正史版本已经变化，这份报告已失效"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        version_path = Path(str(report["proposed_content_path"]))
-        content_path = Path(str(report["working_content_path"]))
-        try:
-            candidate_content, actual_hash = _read_utf8_with_file_hash(
-                version_path
-            )
-        except (OSError, UnicodeError):
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error="
-                + quote("候选版本正文文件无法读取"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        expected_hash = str(report["proposed_content_hash"] or "")
-        if expected_hash and expected_hash != actual_hash:
-            impact_service.mark_stale(
-                user_id=int(user["id"]), report_id=report_id
-            )
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error="
-                + quote("候选版本文件校验失败，未切换正史"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        previous_content = _read_optional_text(content_path)
-        try:
-            _atomic_write_text(
-                content_path, candidate_content, secrets.token_hex(16)
-            )
-            accepted = database.accept_chapter_version(
-                user_id=int(user["id"]),
-                project_id=str(report["project_id"]),
-                chapter_id=str(report["chapter_id"]),
-                version_id=str(report["proposed_version_id"]),
-                override_reason=str(report["override_reason"] or ""),
-                expected_old_canonical_version_id=str(
-                    report["old_version_id"]
-                ),
-            )
-            if not accepted:
-                raise ValueError("章节版本不存在")
-        except ValueError as exc:
-            try:
-                _atomic_write_text(
-                    content_path,
-                    previous_content,
-                    secrets.token_hex(16),
-                )
-            except Exception:
-                logger.exception(
-                    "failed to restore content after impact confirmation"
-                )
-            impact_service.mark_stale(
-                user_id=int(user["id"]), report_id=report_id
-            )
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        except Exception:
-            try:
-                _atomic_write_text(
-                    content_path,
-                    previous_content,
-                    secrets.token_hex(16),
-                )
-            except Exception:
-                logger.exception(
-                    "failed to restore content after impact failure"
-                )
-            logger.exception("failed to confirm canon impact report")
-            return RedirectResponse(
-                f"/canon-impact-reports/{report_id}?error="
-                + quote("切换正史版本失败"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        if not impact_service.mark_applied(
-            user_id=int(user["id"]), report_id=report_id
-        ):
-            logger.error(
-                "canon changed but impact report was not marked applied id=%s",
-                report_id,
-            )
-        queue_background_memory(
-            request,
-            user_id=int(user["id"]),
-            project_id=str(report["project_id"]),
-            chapter_id=str(report["chapter_id"]),
-            version_id=str(report["proposed_version_id"]),
-        )
-        return RedirectResponse(
-            f"/novels/{report['project_id']}/chapters/"
-            f"{report['chapter_id']}?canonical=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/canon-impact-reports/{report_id}/cancel")
-    async def cancel_canon_impact_report(
-        request: Request,
-        report_id: str,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        result = impact_service.cancel_report(
-            user_id=int(user["id"]), report_id=report_id
-        )
-        if not result:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        return RedirectResponse(
-            f"/novels/{result['project_id']}/chapters/"
-            f"{result['chapter_id']}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
     @application.post(
-        "/novels/{project_id}/chapters/{chapter_id}"
-        "/versions/{version_id}/accept"
+        "/novels/{project_id}/chapters/{chapter_id}/versions/{version_id}/restore"
     )
-    async def accept_novel_chapter_version(
+    async def restore_novel_chapter_version(
         request: Request,
         project_id: str,
         chapter_id: str,
         version_id: str,
         csrf: str = Form(...),
-        override_reason: str = Form(""),
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
-        chapter = database.get_novel_chapter(
-            user_id, project_id, chapter_id
-        )
+        chapter = database.get_novel_chapter(user_id, project_id, chapter_id)
         version = database.get_chapter_version(
             user_id, project_id, chapter_id, version_id
         )
         if not chapter or not version:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        current_canonical = str(
-            chapter.get("canonical_version_id") or ""
-        )
-        if current_canonical and current_canonical != version_id:
-            try:
-                report_id = impact_service.prepare_report(
-                    user_id=user_id,
-                    project_id=project_id,
-                    chapter_id=chapter_id,
-                    proposed_version_id=version_id,
-                    override_reason=override_reason,
-                )
-            except ValueError as exc:
-                return RedirectResponse(
-                    f"/novels/{project_id}/chapters/{chapter_id}"
-                    f"?error={quote(str(exc))}",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
+        if str(chapter.get("head_version_id") or "") == version_id:
             return RedirectResponse(
-                f"/canon-impact-reports/{report_id}",
+                _workbench_path(
+                    project_id,
+                    chapter_id=chapter_id,
+                    error="这个版本已经是 main HEAD",
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         version_path = Path(str(version["content_path"]))
         content_path = Path(str(chapter["content_path"]))
         try:
-            candidate_content, actual_hash = _read_utf8_with_file_hash(
-                version_path
-            )
+            candidate_content, actual_hash = _read_utf8_with_file_hash(version_path)
         except (OSError, UnicodeError):
             return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote('这个版本的正文文件无法读取')}",
+                _workbench_path(
+                    project_id,
+                    chapter_id=chapter_id,
+                    error="这个版本的正文文件无法读取",
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         expected_hash = str(version["content_hash"] or "")
         if expected_hash and expected_hash != actual_hash:
             return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote('版本文件校验失败，未切换正史')}",
+                _workbench_path(
+                    project_id,
+                    chapter_id=chapter_id,
+                    error="历史版本文件校验失败，未恢复",
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        previous_content = _read_optional_text(content_path)
         write_token = secrets.token_hex(16)
+        restored_path = (
+            content_path.parent / "versions" / f"restore-{write_token}.txt"
+        )
         try:
-            _atomic_write_text(content_path, candidate_content, write_token)
-            accepted = database.accept_chapter_version(
+            _atomic_write_text(restored_path, candidate_content, write_token)
+            restored_version_id = database.record_manual_chapter_version(
                 user_id=user_id,
                 project_id=project_id,
                 chapter_id=chapter_id,
-                version_id=version_id,
-                override_reason=override_reason,
+                version_path=restored_path,
+                char_count=len(candidate_content),
+                effective_char_count=effective_char_count(candidate_content),
+                content_hash=hashlib.sha256(
+                    candidate_content.encode("utf-8")
+                ).hexdigest(),
+                change_summary=(
+                    f"从历史版本 {version_id} 恢复为新的 main HEAD"
+                ),
+                kind="history_restore",
+                expected_old_head_version_id=str(
+                    chapter.get("head_version_id") or ""
+                ),
             )
-            if not accepted:
+            if not restored_version_id:
                 raise ValueError("章节版本不存在")
-        except ValueError as exc:
             try:
                 _atomic_write_text(
-                    content_path, previous_content, secrets.token_hex(16)
+                    content_path,
+                    candidate_content,
+                    secrets.token_hex(16),
                 )
             except Exception:
-                logger.exception(
-                    "failed to restore chapter content after canon rejection"
+                logger.warning(
+                    "failed to refresh non-authoritative chapter cache",
+                    exc_info=True,
                 )
+        except ValueError as exc:
+            restored_path.unlink(missing_ok=True)
             return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote(str(exc))}",
+                _workbench_path(
+                    project_id,
+                    chapter_id=chapter_id,
+                    error=str(exc),
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         except Exception:
-            try:
-                _atomic_write_text(
-                    content_path, previous_content, secrets.token_hex(16)
-                )
-            except Exception:
-                logger.exception(
-                    "failed to restore chapter content after canon failure"
-                )
-            logger.exception("failed to accept canonical chapter version")
+            restored_path.unlink(missing_ok=True)
+            logger.exception("failed to restore historical chapter version")
             return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote('确认正史版本失败')}",
+                _workbench_path(
+                    project_id,
+                    chapter_id=chapter_id,
+                    error="恢复历史版本失败",
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
 
@@ -8795,10 +5751,112 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             user_id=user_id,
             project_id=project_id,
             chapter_id=chapter_id,
-            version_id=version_id,
+            version_id=str(restored_version_id),
         )
         return RedirectResponse(
-            f"/novels/{project_id}/chapters/{chapter_id}?canonical=true",
+            _workbench_path(
+                project_id,
+                chapter_id=chapter_id,
+                restored="true",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post("/novels/{project_id}/chapters/{chapter_id}/buffer")
+    async def buffer_novel_chapter(
+        request: Request,
+        project_id: str,
+        chapter_id: str,
+        content: str = Form(""),
+        expected_head_version_id: str = Form(""),
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "登录状态已失效"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        verify_csrf(request, csrf)
+        if len(content) > app_settings.chapter_edit_buffer_max_chars:
+            return JSONResponse(
+                {
+                    "error": "单章暂存稿不能超过 "
+                    f"{app_settings.chapter_edit_buffer_max_chars:,} 字"
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            result = database.save_chapter_edit_buffer(
+                user_id=int(user["id"]),
+                project_id=project_id,
+                chapter_id=chapter_id,
+                base_version_id=expected_head_version_id,
+                content=content,
+                content_hash=hashlib.sha256(
+                    content.encode("utf-8")
+                ).hexdigest(),
+                max_chapter_chars=app_settings.chapter_edit_buffer_max_chars,
+                max_user_chars=app_settings.max_edit_buffer_chars_per_user,
+                retention_days=app_settings.edit_buffer_retention_days,
+            )
+        except ChapterHeadConflict as exc:
+            return JSONResponse(
+                {"error": str(exc), "conflict": True},
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @application.post(
+        "/novels/{project_id}/chapters/{chapter_id}/buffer/rebase"
+    )
+    async def rebase_novel_chapter_buffer(
+        request: Request,
+        project_id: str,
+        chapter_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        if not database.rebase_chapter_edit_buffer(
+            user_id=int(user["id"]),
+            project_id=project_id,
+            chapter_id=chapter_id,
+        ):
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(project_id, chapter_id=chapter_id),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post(
+        "/novels/{project_id}/chapters/{chapter_id}/buffer/discard"
+    )
+    async def discard_novel_chapter_buffer(
+        request: Request,
+        project_id: str,
+        chapter_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return _login_redirect(request)
+        verify_csrf(request, csrf)
+        if not database.delete_chapter_edit_buffer(
+            user_id=int(user["id"]),
+            project_id=project_id,
+            chapter_id=chapter_id,
+        ):
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(
+            _workbench_path(project_id, chapter_id=chapter_id),
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -8809,36 +5867,45 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapter_id: str,
         content: str = Form(""),
         change_summary: str = Form(""),
-        return_to_workbench: str = Form(""),
+        expected_head_version_id: Optional[str] = Form(None),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
         verify_csrf(request, csrf)
-        chapter = database.get_novel_chapter(
-            int(user["id"]), project_id, chapter_id
-        )
+        chapter = database.get_novel_chapter(int(user["id"]), project_id, chapter_id)
         if not chapter:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
 
-        def save_error_redirect(message: str) -> RedirectResponse:
-            destination = (
-                f"/novels/{project_id}/workbench"
-                f"?chapter_id={chapter_id}&error={quote(message)}"
-                if return_to_workbench
-                else (
-                    f"/novels/{project_id}/chapters/{chapter_id}"
-                    f"?error={quote(message)}"
+        wants_json = (
+            request.headers.get("X-Requested-With", "").lower()
+            == "xmlhttprequest"
+        )
+
+        def save_error_response(
+            message: str,
+            *,
+            conflict: bool = False,
+        ) -> Response:
+            if wants_json:
+                return JSONResponse(
+                    {"error": message, "conflict": conflict},
+                    status_code=(
+                        status.HTTP_409_CONFLICT
+                        if conflict
+                        else status.HTTP_400_BAD_REQUEST
+                    ),
                 )
-            )
             return RedirectResponse(
-                destination,
+                _workbench_path(
+                    project_id,
+                    chapter_id=chapter_id,
+                    error=message,
+                ),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
 
-        if len(content) > 200_000:
-            return save_error_redirect("单章正文不能超过 200000 字")
         try:
             clean_change_summary = _clean_field(
                 change_summary,
@@ -8846,19 +5913,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 max_length=1000,
             )
         except ValueError as exc:
-            return save_error_redirect(str(exc))
+            return save_error_response(str(exc))
         if database.chapter_has_active_generation(
             int(user["id"]), project_id, chapter_id
         ):
-            return save_error_redirect("AI 正在生成本章，请完成后再保存")
+            return save_error_response("AI 正在生成本章，请完成后再保存")
         content_path = Path(str(chapter["content_path"]))
-        version_token = secrets.token_hex(16)
-        version_path = (
-            content_path.parent / "versions" / f"manual-{version_token}.txt"
+        expected_head = (
+            str(chapter.get("head_version_id") or "")
+            if expected_head_version_id is None
+            else str(expected_head_version_id)
         )
+        version_token = secrets.token_hex(16)
+        version_path = content_path.parent / "versions" / f"manual-{version_token}.txt"
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        version_id = ""
+        created_new_version = False
         try:
             _atomic_write_text(version_path, content, version_token)
-            _atomic_write_text(content_path, content, version_token)
             version_id = database.record_manual_chapter_version(
                 user_id=int(user["id"]),
                 project_id=project_id,
@@ -8866,22 +5938,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 version_path=version_path,
                 char_count=len(content),
                 effective_char_count=effective_char_count(content),
-                content_hash=hashlib.sha256(
-                    content.encode("utf-8")
-                ).hexdigest(),
+                content_hash=content_hash,
                 change_summary=clean_change_summary,
+                expected_old_head_version_id=expected_head,
             )
             if not version_id:
                 raise ValueError("章节不存在")
-            accepted = database.accept_chapter_version(
-                user_id=int(user["id"]),
-                project_id=project_id,
-                chapter_id=chapter_id,
-                version_id=version_id,
-            )
-            if not accepted:
-                raise ValueError("正文版本没有成为当前版本")
-            if content.strip():
+            created_new_version = version_id != expected_head
+            if not created_new_version:
+                version_path.unlink(missing_ok=True)
+            try:
+                _atomic_write_text(content_path, content, secrets.token_hex(16))
+            except Exception:
+                logger.warning(
+                    "failed to refresh non-authoritative chapter cache",
+                    exc_info=True,
+                )
+            if created_new_version and content.strip():
                 queue_background_memory(
                     request,
                     user_id=int(user["id"]),
@@ -8889,104 +5962,33 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     chapter_id=chapter_id,
                     version_id=version_id,
                 )
+        except ChapterHeadConflict as exc:
+            version_path.unlink(missing_ok=True)
+            return save_error_response(str(exc), conflict=True)
         except ValueError as exc:
-            return save_error_redirect(str(exc))
+            version_path.unlink(missing_ok=True)
+            return save_error_response(str(exc))
         except Exception:
+            version_path.unlink(missing_ok=True)
             logger.exception("failed to save novel chapter")
-            return save_error_redirect("保存正文失败")
-        destination = (
-            f"/novels/{project_id}/workbench"
-            f"?chapter_id={chapter_id}&saved=true"
-            if return_to_workbench
-            else (
-                f"/novels/{project_id}/chapters/"
-                f"{chapter_id}?saved=true"
+            return save_error_response("保存正文失败")
+        if wants_json:
+            return JSONResponse(
+                {
+                    "saved": True,
+                    "version_id": version_id,
+                    "content_hash": content_hash,
+                    "created_new_version": created_new_version,
+                },
+                headers={"Cache-Control": "no-store"},
             )
-        )
         return RedirectResponse(
-            destination, status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.post("/novels/{project_id}/chapters/{chapter_id}/generate")
-    async def generate_novel_chapter(
-        request: Request,
-        project_id: str,
-        chapter_id: str,
-        operation: str = Form("draft"),
-        instruction: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        chapter = database.get_novel_chapter(
-            int(user["id"]), project_id, chapter_id
-        )
-        if not chapter:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        task_card = planning_service.get_task_card(
-            user_id=int(user["id"]),
-            project_id=project_id,
-            chapter_id=chapter_id,
-        )
-        if not task_card or task_card["status"] != "confirmed":
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}/task-card"
-                "?error="
-                + quote("先确认章节任务卡和至少两个场景节拍，再生成正文"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        current_content = _read_optional_text(Path(str(chapter["content_path"])))
-        if operation in {"continue", "rewrite", "polish"} and not current_content.strip():
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote('本章还没有正文，请先生成初稿')}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        if operation == "draft" and current_content.strip():
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote('本章已有正文，请选择重写或继续写')}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            clean_instruction = _clean_field(
-                instruction, "额外要求", max_length=4000
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        profile = api_profile(int(user["id"]))
-        if not profile:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("开始写作前，请先配置模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_generation_job(
-                user_id=int(user["id"]),
-                project_id=project_id,
+            _workbench_path(
+                project_id,
                 chapter_id=chapter_id,
-                operation=operation,
-                instruction=clean_instruction,
-                provider=profile["provider"],
-                model=profile["model"],
-                credential_source=profile["credential_source"],
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/novels/{project_id}/chapters/{chapter_id}"
-                f"?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/writing-jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
+                saved="true",
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.get("/writing-jobs/{job_id}", response_class=HTMLResponse)
@@ -9005,9 +6007,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if job.get("context_snapshot_json"):
             try:
                 snapshot = json.loads(str(job["context_snapshot_json"]))
-                canonical_memory = dict(
-                    snapshot.get("canonical_memory") or {}
-                )
+                canonical_memory = dict(snapshot.get("canonical_memory") or {})
                 retrieval = dict(canonical_memory.get("retrieval") or {})
                 if retrieval.get("engine") not in {None, "", "not_available"}:
                     memory_retrieval = {
@@ -9021,19 +6021,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                                 or []
                             )[:24]
                         ],
-                        "expanded_term_count": len(
-                            retrieval.get("query_terms") or []
-                        ),
-                        "matched_count": int(
-                            retrieval.get("matched_count") or 0
-                        ),
+                        "expanded_term_count": len(retrieval.get("query_terms") or []),
+                        "matched_count": int(retrieval.get("matched_count") or 0),
                         "items": [
                             dict(item)
                             for item in (
-                                canonical_memory.get(
-                                    "retrieved_memory"
-                                )
-                                or []
+                                canonical_memory.get("retrieved_memory") or []
                             )[:8]
                         ],
                     }
@@ -9066,22 +6059,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         redirect_url = None
         if job["status"] == "completed":
-            if (
-                str(job["operation"]) == "propose_reader_branches"
-                and job.get("subject_id")
+            if str(job["operation"]) == "propose_reader_branches" and job.get(
+                "subject_id"
             ):
                 redirect_url = f"/reader-requests/{job['subject_id']}"
-            elif (
-                str(job["operation"]) == "audit_ai_style"
-                and job.get("version_id")
-            ):
+            elif str(job["operation"]) == "audit_ai_style" and job.get("version_id"):
                 redirect_url = (
                     f"/novels/{job['project_id']}/chapters/"
                     f"{job['chapter_id']}/versions/{job['version_id']}/style"
                 )
-            elif (
-                str(job["operation"]) == "rewrite_style_issue"
-                and job.get("subject_id")
+            elif str(job["operation"]) == "rewrite_style_issue" and job.get(
+                "subject_id"
             ):
                 redirect_url = f"/style-issues/{job['subject_id']}"
             if not redirect_url:
@@ -9098,9 +6086,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         }
 
     @application.get("/works/{work_id}/export.readraft.zip")
-    async def export_complete_work_archive(
-        request: Request, work_id: str
-    ):
+    async def export_complete_work_archive(request: Request, work_id: str):
         user = _current_user(request)
         if not user:
             return _login_redirect(request)
@@ -9121,9 +6107,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=int(user["id"]),
                 work_id=work_id,
                 destination=archive_path,
-                max_uncompressed_bytes=(
-                    app_settings.max_work_archive_bytes
-                ),
+                max_uncompressed_bytes=(app_settings.max_work_archive_bytes),
             )
         except (WorkArchiveError, OSError, sqlite3.Error) as exc:
             archive_path.unlink(missing_ok=True)
@@ -9136,9 +6120,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             media_type="application/zip",
             filename=f"work-{work_id[:8]}.readraft.zip",
             headers={"Cache-Control": "no-store"},
-            background=BackgroundTask(
-                archive_path.unlink, missing_ok=True
-            ),
+            background=BackgroundTask(archive_path.unlink, missing_ok=True),
         )
 
     @application.get("/novels/{project_id}/export.txt")
@@ -9152,7 +6134,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         chapters = database.list_novel_chapters(int(user["id"]), project_id)
         parts = [str(project["title"])]
         for chapter in chapters:
-            content = _read_optional_text(Path(str(chapter["content_path"])))
+            head_path = str(chapter.get("head_content_path") or "")
+            content = (
+                _read_optional_text(Path(head_path)) if head_path else ""
+            )
             parts.extend(["", str(chapter["title"]), "", content])
         payload = "\n".join(parts).strip() + "\n"
         return Response(
@@ -9163,51 +6148,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     f'attachment; filename="novel-{project_id[:8]}.txt"'
                 )
             },
-        )
-
-    @application.get("/novels/{project_id}/assistant")
-    async def novel_assistant_page(
-        request: Request,
-        project_id: str,
-        conversation_id: Optional[str] = None,
-        chapter_id: Optional[str] = None,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        user_id = int(user["id"])
-        project = database.get_novel_project(user_id, project_id)
-        if not project:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if conversation_id:
-            conversation = assistant_chat_service.get_conversation(
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            if (
-                not conversation
-                or str(conversation.get("project_id") or "")
-                != project_id
-            ):
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-            if conversation.get("novel_chapter_id"):
-                chapter_id = str(
-                    conversation["novel_chapter_id"]
-                )
-        query = []
-        if conversation_id:
-            query.append(
-                "conversation_id=" + quote(conversation_id)
-            )
-        if chapter_id:
-            query.append("chapter_id=" + quote(chapter_id))
-        else:
-            query.extend(["view=archive", "archive_tab=creative"])
-        destination = f"/novels/{project_id}/workbench"
-        if query:
-            destination += "?" + "&".join(query)
-        return RedirectResponse(
-            destination, status_code=status.HTTP_303_SEE_OTHER
         )
 
     @application.post("/novels/{project_id}/assistant/new")
@@ -9229,7 +6169,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         clean_chapter_id = chapter_id.strip()
         try:
-            conversation_id = assistant_chat_service.create_conversation(
+            conversation_id = assistant_chat_service.conversations.create(
                 user_id=user_id,
                 scope_type="chapter" if clean_chapter_id else "project",
                 title="新对话",
@@ -9238,8 +6178,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         except ValueError as exc:
             return RedirectResponse(
-                f"/novels/{project_id}/workbench"
-                f"?error={quote(str(exc))}",
+                f"/novels/{project_id}/workbench?error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         query = f"?conversation_id={quote(conversation_id)}"
@@ -9247,16 +6186,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             query += f"&chapter_id={quote(clean_chapter_id)}"
         else:
             clean_settings_tab = (
-                settings_tab
-                if settings_tab in WORKBENCH_SETTING_TAB_KEYS
-                else "core"
+                settings_tab if settings_tab in WORKBENCH_SETTING_TAB_KEYS else "core"
             )
             query += (
                 "&view=archive&archive_tab="
                 + quote(
-                    archive_tab
-                    if archive_tab in WORK_ARCHIVE_TAB_KEYS
-                    else "creative"
+                    archive_tab if archive_tab in WORK_ARCHIVE_TAB_KEYS else "creative"
                 )
                 + f"&settings_tab={clean_settings_tab}"
             )
@@ -9266,8 +6201,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.post(
-        "/novels/{project_id}/assistant/conversations/"
-        "{conversation_id}/delete"
+        "/novels/{project_id}/assistant/conversations/{conversation_id}/delete"
     )
     async def delete_novel_assistant_conversation(
         request: Request,
@@ -9285,19 +6219,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
-        target = assistant_chat_service.get_conversation(
+        target = assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=conversation_id,
         )
-        if (
-            not target
-            or str(target.get("project_id") or "") != project_id
-        ):
+        if not target or str(target.get("project_id") or "") != project_id:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         clean_settings_tab = (
-            settings_tab
-            if settings_tab in WORKBENCH_SETTING_TAB_KEYS
-            else "core"
+            settings_tab if settings_tab in WORKBENCH_SETTING_TAB_KEYS else "core"
         )
         clean_archive_tab = (
             return_archive_tab
@@ -9306,7 +6235,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         destination = f"/novels/{project_id}/workbench"
         try:
-            deleted = assistant_chat_service.delete_conversation(
+            deleted = assistant_chat_service.conversations.delete(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -9323,31 +6252,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
 
         return_conversation = None
-        if (
-            current_conversation_id
-            and current_conversation_id != conversation_id
-        ):
-            candidate = assistant_chat_service.get_conversation(
+        if current_conversation_id and current_conversation_id != conversation_id:
+            candidate = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=current_conversation_id,
             )
-            if (
-                candidate
-                and str(candidate.get("project_id") or "") == project_id
-            ):
+            if candidate and str(candidate.get("project_id") or "") == project_id:
                 return_conversation = candidate
         query: list[str] = []
         if return_conversation:
-            query.append(
-                "conversation_id="
-                + quote(str(return_conversation["id"]))
-            )
+            query.append("conversation_id=" + quote(str(return_conversation["id"])))
             if return_conversation.get("novel_chapter_id"):
                 query.append(
-                    "chapter_id="
-                    + quote(
-                        str(return_conversation["novel_chapter_id"])
-                    )
+                    "chapter_id=" + quote(str(return_conversation["novel_chapter_id"]))
                 )
             else:
                 query.extend(
@@ -9420,30 +6337,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         try:
             if conversation_id:
-                conversation = assistant_chat_service.get_conversation(
+                conversation = assistant_chat_service.conversations.get(
                     user_id=user_id,
                     conversation_id=conversation_id,
                 )
                 if (
                     not conversation
-                    or str(conversation.get("project_id") or "")
-                    != project_id
+                    or str(conversation.get("project_id") or "") != project_id
                 ):
                     raise ValueError("对话不存在")
             else:
-                scope_type = (
-                    "chapter" if novel_chapter_id else "project"
-                )
-                conversation_id = (
-                    assistant_chat_service.create_conversation(
-                        user_id=user_id,
-                        scope_type=scope_type,
-                        title=question,
-                        project_id=project_id,
-                        novel_chapter_id=(
-                            novel_chapter_id or None
-                        ),
-                    )
+                scope_type = "chapter" if novel_chapter_id else "project"
+                conversation_id = assistant_chat_service.conversations.create(
+                    user_id=user_id,
+                    scope_type=scope_type,
+                    title=question,
+                    project_id=project_id,
+                    novel_chapter_id=(novel_chapter_id or None),
                 )
             profile = routed_api_profile(
                 user_id,
@@ -9458,10 +6368,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         status_code=status.HTTP_400_BAD_REQUEST,
                     )
                 return RedirectResponse(
-                    "/settings/api?error="
-                    + quote(
-                        "开始创作对话前，请先配置模型服务"
-                    ),
+                    "/settings/api?error=" + quote("开始创作对话前，请先配置模型服务"),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
             quote_payload = None
@@ -9489,26 +6396,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     "settings"
                     if return_view == "archive"
                     and clean_return_archive_tab == "creative"
-                    else (
-                        "chapter"
-                        if novel_chapter_id
-                        else "project"
-                    )
+                    else ("chapter" if novel_chapter_id else "project")
                 ),
                 auto_commit=True,
                 quality_mode=quality_mode,
             )
-            prepared_conversation = (
-                assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                )
+            prepared_conversation = assistant_chat_service.conversations.get(
+                user_id=user_id,
+                conversation_id=conversation_id,
             )
             prepared_chapter_id = str(
-                (prepared_conversation or {}).get(
-                    "novel_chapter_id"
-                )
-                or ""
+                (prepared_conversation or {}).get("novel_chapter_id") or ""
             )
             if not novel_chapter_id and prepared_chapter_id:
                 novel_chapter_id = prepared_chapter_id
@@ -9520,15 +6418,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
             suffix = (
-                f"?conversation_id={quote(conversation_id)}"
-                if conversation_id
-                else ""
+                f"?conversation_id={quote(conversation_id)}" if conversation_id else ""
             )
             if novel_chapter_id:
                 suffix += (
-                    ("&" if suffix else "?")
-                    + f"chapter_id={quote(novel_chapter_id)}"
-                )
+                    "&" if suffix else "?"
+                ) + f"chapter_id={quote(novel_chapter_id)}"
             if return_view == "archive":
                 suffix += (
                     ("&" if suffix else "?")
@@ -9538,17 +6433,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 )
             separator = "&" if suffix else "?"
             return RedirectResponse(
-                return_path
-                + suffix
-                + separator
-                + "error="
-                + quote(str(exc)),
+                return_path + suffix + separator + "error=" + quote(str(exc)),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         request.app.state.worker.wake()
-        query = (
-            f"?conversation_id={quote(conversation_id)}&sent=true"
-        )
+        query = f"?conversation_id={quote(conversation_id)}&sent=true"
         if novel_chapter_id:
             query += f"&chapter_id={quote(novel_chapter_id)}"
         if return_view == "archive":
@@ -9563,9 +6452,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 {
                     "message_id": message_id,
                     "conversation_id": conversation_id,
-                    "stream_url": (
-                        f"/api/assistant/messages/{message_id}/stream"
-                    ),
+                    "stream_url": (f"/api/assistant/messages/{message_id}/stream"),
                     "redirect_url": destination,
                 },
                 status_code=status.HTTP_202_ACCEPTED,
@@ -9588,19 +6475,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if sent:
             destination += "&sent=true"
         if branch.get("novel_chapter_id"):
-            destination += (
-                "&chapter_id="
-                + quote(str(branch["novel_chapter_id"]))
-            )
+            destination += "&chapter_id=" + quote(str(branch["novel_chapter_id"]))
         else:
             clean_settings_tab = (
-                settings_tab
-                if settings_tab in WORKBENCH_SETTING_TAB_KEYS
-                else "core"
+                settings_tab if settings_tab in WORKBENCH_SETTING_TAB_KEYS else "core"
             )
             destination += (
-                "&view=archive&archive_tab=creative"
-                f"&settings_tab={clean_settings_tab}"
+                f"&view=archive&archive_tab=creative&settings_tab={clean_settings_tab}"
             )
         return destination
 
@@ -9613,13 +6494,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         branch = {
             "project_id": conversation["project_id"],
             "conversation_id": conversation["id"],
-            "novel_chapter_id": conversation.get(
-                "novel_chapter_id"
-            ),
+            "novel_chapter_id": conversation.get("novel_chapter_id"),
         }
-        destination = _novel_branch_destination(
-            branch, settings_tab=settings_tab
-        )
+        destination = _novel_branch_destination(branch, settings_tab=settings_tab)
         if error:
             destination += "&error=" + quote(error)
         return destination
@@ -9634,12 +6511,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ) -> Dict[str, Any]:
         branch = None
         try:
-            branch = (
-                assistant_chat_service.branch_conversation_from_message(
-                    user_id=user_id,
-                    message_id=message_id,
-                    replacement_question=replacement_question,
-                )
+            branch = assistant_chat_service.branch_conversation_from_message(
+                user_id=user_id,
+                message_id=message_id,
+                replacement_question=replacement_question,
             )
             if not branch.get("project_id"):
                 raise ValueError("这条消息不属于小说创作对话")
@@ -9649,31 +6524,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 question=str(branch["question"]),
                 provider=str(profile["provider"]),
                 model=str(profile["model"]),
-                credential_source=str(
-                    profile["credential_source"]
-                ),
+                credential_source=str(profile["credential_source"]),
                 quote=branch.get("quote"),
                 agent_role="auto",
                 ui_surface=(
-                    "chapter"
-                    if branch.get("novel_chapter_id")
-                    else "settings"
+                    "chapter" if branch.get("novel_chapter_id") else "settings"
                 ),
                 auto_commit=True,
             )
         except Exception:
             if branch and branch.get("conversation_id"):
                 try:
-                    assistant_chat_service.delete_conversation(
+                    assistant_chat_service.conversations.delete(
                         user_id=user_id,
-                        conversation_id=str(
-                            branch["conversation_id"]
-                        ),
+                        conversation_id=str(branch["conversation_id"]),
                     )
                 except (TypeError, ValueError):
-                    logger.exception(
-                        "failed to clean up assistant branch"
-                    )
+                    logger.exception("failed to clean up assistant branch")
             raise
         branch["destination"] = _novel_branch_destination(
             branch, settings_tab=settings_tab, sent=True
@@ -9698,7 +6565,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         if not source or str(source.get("role") or "") != "user":
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        conversation = assistant_chat_service.get_conversation(
+        conversation = assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=str(source["conversation_id"]),
         )
@@ -9707,10 +6574,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = api_profile(user_id)
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote(
-                    "重新发送消息前，请先配置模型服务"
-                ),
+                "/settings/api?error=" + quote("重新发送消息前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -9751,12 +6615,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         source = assistant_chat_service.get_message(
             user_id=user_id, message_id=message_id
         )
-        if (
-            not source
-            or str(source.get("role") or "") != "assistant"
-        ):
+        if not source or str(source.get("role") or "") != "assistant":
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        conversation = assistant_chat_service.get_conversation(
+        conversation = assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=str(source["conversation_id"]),
         )
@@ -9765,10 +6626,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         profile = api_profile(user_id)
         if not profile:
             return RedirectResponse(
-                "/settings/api?error="
-                + quote(
-                    "重新生成回复前，请先配置模型服务"
-                ),
+                "/settings/api?error=" + quote("重新生成回复前，请先配置模型服务"),
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         try:
@@ -9819,13 +6677,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         return_archive = return_view == "archive" and not clean_chapter_id
         try:
-            conversation_id = assistant_chat_service.create_conversation(
+            conversation_id = assistant_chat_service.conversations.create(
                 user_id=user_id,
-                scope_type=(
-                    "reference_chapter"
-                    if clean_chapter_id
-                    else "document"
-                ),
+                scope_type=("reference_chapter" if clean_chapter_id else "document"),
                 title="新对话",
                 document_id=document_id,
                 reference_chapter_id=clean_chapter_id or None,
@@ -9888,37 +6742,26 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if return_archive_tab in WORK_ARCHIVE_TAB_KEYS
             else "analysis"
         )
-        return_archive = (
-            return_view == "archive" and not reference_chapter_id
-        )
+        return_archive = return_view == "archive" and not reference_chapter_id
         try:
             if conversation_id:
-                conversation = assistant_chat_service.get_conversation(
+                conversation = assistant_chat_service.conversations.get(
                     user_id=user_id,
                     conversation_id=conversation_id,
                 )
                 if (
                     not conversation
-                    or str(conversation.get("document_id") or "")
-                    != document_id
+                    or str(conversation.get("document_id") or "") != document_id
                 ):
                     raise ValueError("对话不存在")
             else:
-                scope_type = (
-                    "reference_chapter"
-                    if reference_chapter_id
-                    else "document"
-                )
-                conversation_id = (
-                    assistant_chat_service.create_conversation(
-                        user_id=user_id,
-                        scope_type=scope_type,
-                        title=question,
-                        document_id=document_id,
-                        reference_chapter_id=(
-                            reference_chapter_id or None
-                        ),
-                    )
+                scope_type = "reference_chapter" if reference_chapter_id else "document"
+                conversation_id = assistant_chat_service.conversations.create(
+                    user_id=user_id,
+                    scope_type=scope_type,
+                    title=question,
+                    document_id=document_id,
+                    reference_chapter_id=(reference_chapter_id or None),
                 )
             profile = routed_api_profile(
                 user_id,
@@ -9933,10 +6776,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         status_code=status.HTTP_400_BAD_REQUEST,
                     )
                 return RedirectResponse(
-                    "/settings/api?error="
-                    + quote(
-                        "开始拆书对话前，请先配置模型服务"
-                    ),
+                    "/settings/api?error=" + quote("开始拆书对话前，请先配置模型服务"),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
             quote_payload = None
@@ -9992,9 +6832,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 {
                     "message_id": message_id,
                     "conversation_id": conversation_id,
-                    "stream_url": (
-                        f"/api/assistant/messages/{message_id}/stream"
-                    ),
+                    "stream_url": (f"/api/assistant/messages/{message_id}/stream"),
                     "redirect_url": destination,
                 },
                 status_code=status.HTTP_202_ACCEPTED,
@@ -10002,6 +6840,43 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return RedirectResponse(
             destination,
             status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @application.post("/api/assistant/messages/{message_id}/cancel")
+    async def cancel_assistant_message(
+        request: Request,
+        message_id: str,
+        csrf: str = Form(...),
+    ):
+        user = _current_user(request)
+        if not user:
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        verify_csrf(request, csrf)
+        try:
+            result = assistant_chat_service.request_message_cancellation(
+                user_id=int(user["id"]),
+                message_id=message_id,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        worker = getattr(request.app.state, "worker", None)
+        interrupted = bool(
+            worker
+            and result.get("status") == "running"
+            and worker.cancel_assistant_message(message_id)
+        )
+        if worker:
+            worker.wake()
+        return JSONResponse(
+            {**result, "interrupted": interrupted},
+            status_code=status.HTTP_202_ACCEPTED,
+            headers={"Cache-Control": "no-store"},
         )
 
     @application.get("/api/assistant/messages/{message_id}/stream")
@@ -10029,6 +6904,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         async def events():
             previous_sequence = -1
             previous_status = ""
+            previous_event_sequence = 0
             last_keepalive = time.monotonic()
             for _attempt in range(7_200):
                 if await request.is_disconnected():
@@ -10037,19 +6913,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     assistant_chat_service.get_message_stream_state,
                     user_id=user_id,
                     message_id=message_id,
+                    after_event_sequence=previous_event_sequence,
                 )
                 if not state:
-                    yield (
-                        "event: failed\n"
-                        'data: {"error":"消息不存在"}\n\n'
-                    )
+                    yield ('event: failed\ndata: {"error":"消息不存在"}\n\n')
                     return
                 sequence = int(state.get("stream_sequence") or 0)
                 message_status = str(state.get("status") or "")
-                if (
-                    sequence != previous_sequence
-                    or message_status != previous_status
-                ):
+                for agent_event in state.get("events") or []:
+                    yield (
+                        "event: agent\n"
+                        "data: " + json.dumps(agent_event, ensure_ascii=False) + "\n\n"
+                    )
+                    previous_event_sequence = max(
+                        previous_event_sequence,
+                        int(agent_event.get("sequence") or 0),
+                    )
+                if sequence != previous_sequence or message_status != previous_status:
                     payload = {
                         "id": state["id"],
                         "conversation_id": state["conversation_id"],
@@ -10058,13 +6938,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         "sequence": sequence,
                         "model": state.get("model") or "",
                         "error": state.get("error"),
+                        "run_state": state.get("run_state") or "",
+                        "run_state_label": (state.get("run_state_label") or ""),
+                        "run_sequence": int(state.get("run_sequence") or 0),
+                        "cancel_requested": bool(state.get("cancel_requested")),
+                        "cancelled": bool(state.get("cancelled")),
                         "terminal": bool(state.get("terminal")),
                     }
                     yield (
                         "event: snapshot\n"
-                        "data: "
-                        + json.dumps(payload, ensure_ascii=False)
-                        + "\n\n"
+                        "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
                     )
                     previous_sequence = sequence
                     previous_status = message_status
@@ -10097,6 +6980,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                             {
                                 "status": message_status,
                                 "error": state.get("error"),
+                                "run_state": (state.get("run_state") or ""),
+                                "cancelled": bool(state.get("cancelled")),
                                 "redirect_url": redirect_url,
                             },
                             ensure_ascii=False,
@@ -10119,9 +7004,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get("/api/assistant/messages/{message_id}")
-    async def assistant_message_status(
-        request: Request, message_id: str
-    ):
+    async def assistant_message_status(request: Request, message_id: str):
         user = _current_user(request)
         if not user:
             return JSONResponse(
@@ -10138,16 +7021,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         message_status = str(message["status"])
         auto_commit_status = str(
-            (
-                (message.get("response") or {}).get("auto_commit")
-                or {}
-            ).get("status", "")
+            ((message.get("response") or {}).get("auto_commit") or {}).get("status", "")
         )
         return JSONResponse(
             {
                 "id": message["id"],
                 "conversation_id": message["conversation_id"],
                 "status": message_status,
+                "run_state": message.get("run_state") or "",
+                "run_state_label": message.get("run_state_label") or "",
+                "cancelled": message.get("run_state") == "cancelled",
                 "terminal": (
                     message_status == "failed"
                     or (
@@ -10164,92 +7047,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
-    @application.post(
-        "/assistant/messages/{message_id}/save-rewrite"
-    )
-    async def save_assistant_rewrite(
-        request: Request,
-        message_id: str,
-        return_to_workbench: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            result = assistant_chat_service.save_rewrite_candidate(
-                user_id=int(user["id"]),
-                assistant_message_id=message_id,
-            )
-            accepted = database.accept_chapter_version(
-                user_id=int(user["id"]),
-                project_id=str(result["project_id"]),
-                chapter_id=str(result["chapter_id"]),
-                version_id=str(result["version_id"]),
-            )
-            if not accepted:
-                raise ValueError("改写结果没有成为当前版本")
-            queue_background_memory(
-                request,
-                user_id=int(user["id"]),
-                project_id=str(result["project_id"]),
-                chapter_id=str(result["chapter_id"]),
-                version_id=str(result["version_id"]),
-            )
-        except ValueError as exc:
-            message = assistant_chat_service.get_message(
-                user_id=int(user["id"]), message_id=message_id
-            )
-            if not message:
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-            conversation = assistant_chat_service.get_conversation(
-                user_id=int(user["id"]),
-                conversation_id=str(message["conversation_id"]),
-            )
-            if conversation and conversation.get("project_id"):
-                if (
-                    return_to_workbench
-                    and conversation.get("novel_chapter_id")
-                ):
-                    return RedirectResponse(
-                        f"/novels/{conversation['project_id']}/workbench"
-                        f"?chapter_id={conversation['novel_chapter_id']}"
-                        f"&conversation_id={conversation['id']}"
-                        f"&error={quote(str(exc))}",
-                        status_code=status.HTTP_303_SEE_OTHER,
-                    )
-                return RedirectResponse(
-                    f"/novels/{conversation['project_id']}/assistant"
-                    f"?conversation_id={conversation['id']}"
-                    f"&error={quote(str(exc))}",
-                    status_code=status.HTTP_303_SEE_OTHER,
-                )
-            return Response(
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-        if return_to_workbench:
-            return RedirectResponse(
-                f"/novels/{result['project_id']}/workbench"
-                f"?chapter_id={result['chapter_id']}"
-                f"&conversation_id={result['conversation_id']}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/novels/{result['project_id']}/chapters/"
-            f"{result['chapter_id']}?assistant_rewrite=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post(
-        "/assistant/messages/{message_id}/apply-settings"
-    )
+    @application.post("/assistant/messages/{message_id}/apply-settings")
     async def apply_assistant_settings(
         request: Request,
         message_id: str,
-        return_to_workbench: str = Form(""),
+        selection_present: str = Form(""),
+        selected_path: list[str] = Form(default=[]),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -10261,23 +7064,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             result = assistant_chat_service.apply_settings_candidate(
                 user_id=user_id,
                 assistant_message_id=message_id,
+                selected_paths=(
+                    {str(value) for value in selected_path}
+                    if selection_present
+                    else None
+                ),
             )
         except ValueError as exc:
             message = assistant_chat_service.get_message(
                 user_id=user_id, message_id=message_id
             )
             if not message:
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-            conversation = assistant_chat_service.get_conversation(
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
             if not conversation or not conversation.get("project_id"):
-                return Response(
-                    status_code=status.HTTP_400_BAD_REQUEST
-                )
+                return Response(status_code=status.HTTP_400_BAD_REQUEST)
             return RedirectResponse(
                 f"/novels/{conversation['project_id']}/workbench"
                 "?view=archive&archive_tab=creative"
@@ -10285,23 +7089,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"&error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        destination = (
-            f"/novels/{result['project_id']}/workbench"
-            "?view=archive&archive_tab=creative"
-            f"&conversation_id={result['conversation_id']}"
-        )
-        if not return_to_workbench:
-            destination = (
-                f"/novels/{result['project_id']}/assistant"
-                f"?conversation_id={result['conversation_id']}"
-            )
         return RedirectResponse(
-            destination, status_code=status.HTTP_303_SEE_OTHER
+            _workbench_path(
+                str(result["project_id"]),
+                archive_tab="creative",
+                conversation_id=str(result["conversation_id"]),
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/assistant/messages/{message_id}/apply-story-plan"
-    )
+    @application.post("/assistant/messages/{message_id}/apply-story-plan")
     async def apply_assistant_story_plan(
         request: Request,
         message_id: str,
@@ -10322,17 +7119,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=user_id, message_id=message_id
             )
             if not message:
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-            conversation = assistant_chat_service.get_conversation(
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
             if not conversation or not conversation.get("project_id"):
-                return Response(
-                    status_code=status.HTTP_400_BAD_REQUEST
-                )
+                return Response(status_code=status.HTTP_400_BAD_REQUEST)
             return RedirectResponse(
                 f"/novels/{conversation['project_id']}/workbench"
                 "?view=archive&archive_tab=creative&settings_tab=structure"
@@ -10347,13 +7140,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/assistant/messages/{message_id}/save-draft"
-    )
-    async def save_assistant_draft(
+    @application.post("/assistant/messages/{message_id}/commit")
+    async def commit_assistant_draft(
         request: Request,
         message_id: str,
-        return_to_workbench: str = Form(""),
         csrf: str = Form(...),
     ):
         user = _current_user(request)
@@ -10362,7 +7152,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         verify_csrf(request, csrf)
         user_id = int(user["id"])
         try:
-            result = assistant_chat_service.save_draft_candidate(
+            result = assistant_chat_service.commit_draft_to_head(
                 user_id=user_id,
                 assistant_message_id=message_id,
             )
@@ -10371,17 +7161,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=user_id, message_id=message_id
             )
             if not message:
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-            conversation = assistant_chat_service.get_conversation(
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
             if not conversation or not conversation.get("project_id"):
-                return Response(
-                    status_code=status.HTTP_400_BAD_REQUEST
-                )
+                return Response(status_code=status.HTTP_400_BAD_REQUEST)
             return RedirectResponse(
                 f"/novels/{conversation['project_id']}/workbench"
                 f"?chapter_id={conversation['novel_chapter_id']}"
@@ -10389,23 +7175,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 f"&error={quote(str(exc))}",
                 status_code=status.HTTP_303_SEE_OTHER,
             )
-        destination = (
-            f"/novels/{result['project_id']}/workbench"
-            f"?chapter_id={result['chapter_id']}"
-            f"&conversation_id={result['conversation_id']}"
-        )
-        if not return_to_workbench:
-            destination = (
-                f"/novels/{result['project_id']}/assistant"
-                f"?conversation_id={result['conversation_id']}"
-            )
         return RedirectResponse(
-            destination, status_code=status.HTTP_303_SEE_OTHER
+            _workbench_path(
+                str(result["project_id"]),
+                chapter_id=str(result["chapter_id"]),
+                conversation_id=str(result["conversation_id"]),
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    @application.post(
-        "/assistant/messages/{message_id}/revert-auto-commit"
-    )
+    @application.post("/assistant/messages/{message_id}/revert-auto-commit")
     async def revert_assistant_auto_commit(
         request: Request,
         message_id: str,
@@ -10426,17 +7205,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 user_id=user_id, message_id=message_id
             )
             if not message:
-                return Response(
-                    status_code=status.HTTP_404_NOT_FOUND
-                )
-            conversation = assistant_chat_service.get_conversation(
+                return Response(status_code=status.HTTP_404_NOT_FOUND)
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
             if not conversation or not conversation.get("project_id"):
-                return Response(
-                    status_code=status.HTTP_400_BAD_REQUEST
-                )
+                return Response(status_code=status.HTTP_400_BAD_REQUEST)
             return RedirectResponse(
                 f"/novels/{conversation['project_id']}/workbench"
                 f"?chapter_id={conversation['novel_chapter_id']}"
@@ -10459,8 +7234,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
 
     @application.get(
-        "/novels/{project_id}/chapters/{chapter_id}/versions/"
-        "{version_id}/source",
+        "/novels/{project_id}/chapters/{chapter_id}/versions/{version_id}/source",
         response_class=HTMLResponse,
     )
     async def novel_version_source_page(
@@ -10500,18 +7274,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     + (
                         "正史"
                         if str(source["id"])
-                        == str(
-                            source.get("canonical_version_id") or ""
-                        )
+                        == str(source.get("head_version_id") or "")
                         else "候选 / 历史版本"
                     )
                 ),
                 before=content[:safe_start],
                 selection=content[safe_start:safe_end],
                 after=content[safe_end:],
-                back_url=(
-                    f"/novels/{project_id}/chapters/{chapter_id}"
-                ),
+                back_url=_workbench_path(project_id, chapter_id=chapter_id),
             ),
         )
 
@@ -10545,13 +7315,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 request,
                 user=user,
                 source=source,
-                source_title=(
-                    f"参考书第 {source['position']} 章"
-                    f"《{source['title']}》"
-                ),
-                source_meta=(
-                    f"拆书原文 · {source['document_title']}"
-                ),
+                source_title=(f"参考书第 {source['position']} 章《{source['title']}》"),
+                source_meta=(f"拆书原文 · {source['document_title']}"),
                 before=content[:safe_start],
                 selection=content[safe_start:safe_end],
                 after=content[safe_end:],
@@ -10578,477 +7343,57 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not user:
             return _login_redirect(request)
         user_id = int(user["id"])
-        document = database.get_document(user_id, document_id)
-        if not document:
+        try:
+            context = workbench_view_builder.build_document(
+                user_id=user_id,
+                document_id=document_id,
+                chapter_id=chapter_id,
+                conversation_id=conversation_id,
+                view=view,
+                archive_tab=archive_tab,
+                settings_tab=settings_tab,
+            )
+        except WorkbenchNotFound:
             return render_template(
                 "not_found.html",
                 _template_context(request, user=user),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
-        work = database.get_work_for_document(
-            user_id, document_id
-        )
-        current_version = database.get_work_version_for_document(
-            user_id, document_id
-        )
-        if not work or not current_version:
+        except WorkbenchUnavailable as exc:
             return Response(
-                "固定版本不属于作品版本库",
+                str(exc),
                 status_code=status.HTTP_409_CONFLICT,
             )
-        chapters = database.list_chapters(
-            user_id, document_id, document.get("latest_job_id")
-        )
-        version_story_memory_records = (
-            database.list_work_version_story_memory_records(
-                user_id, str(current_version["id"])
-            )
-        )
-        story_memory_by_chapter = {
-            str(item["chapter_id"]): item
-            for item in version_story_memory_records
-        }
-        has_story_memory_snapshots = any(
-            item["memory_status"] == "ready"
-            for item in version_story_memory_records
-        )
-        effective_view = "archive" if view == "archive" else "body"
-        active_archive_tab = (
-            archive_tab
-            if archive_tab in WORK_ARCHIVE_TAB_KEYS
-            else "analysis"
-        )
-        active_settings_tab = (
-            settings_tab
-            if settings_tab in WORKBENCH_SETTING_TAB_KEYS
-            else "core"
-        )
-        selected_chapter = None
-        chapter_story_memory = None
-        if effective_view == "body" and chapter_id:
-            selected_chapter = next(
-                (
-                    item
-                    for item in chapters
-                    if str(item["id"]) == chapter_id
-                ),
-                None,
-            )
-            if not selected_chapter:
-                return render_template(
-                    "not_found.html",
-                    _template_context(request, user=user),
-                    status_code=status.HTTP_404_NOT_FOUND,
-                )
-        elif effective_view == "body" and chapters:
-            remembered_chapter_id = str(
-                current_version.get("last_chapter_id") or ""
-            )
-            selected_chapter = next(
-                (
-                    item
-                    for item in chapters
-                    if str(item["id"]) == remembered_chapter_id
-                ),
-                chapters[0],
-            )
-        database.set_work_version(
-            user_id=user_id,
-            work_id=str(work["id"]),
-            version_id=str(current_version["id"]),
-            chapter_id=(
-                str(selected_chapter["id"])
-                if selected_chapter
-                else None
-            ),
-        )
-        if selected_chapter:
-            chapter_story_memory = story_memory_by_chapter.get(
-                str(selected_chapter["id"])
-            )
 
-        chapter_content = ""
-        chapter_content_hash = ""
-        selected_index = -1
-        previous_chapter = None
-        next_chapter = None
-        if selected_chapter:
-            selected_index = next(
-                index
-                for index, item in enumerate(chapters)
-                if str(item["id"]) == str(selected_chapter["id"])
-            )
-            previous_chapter = (
-                chapters[selected_index - 1]
-                if selected_index > 0
-                else None
-            )
-            next_chapter = (
-                chapters[selected_index + 1]
-                if selected_index + 1 < len(chapters)
-                else None
-            )
-            chapter_content = _read_optional_text(
-                Path(str(selected_chapter["content_path"]))
-            )
-            chapter_content_hash = hashlib.sha256(
-                chapter_content.encode("utf-8")
-            ).hexdigest()
-
-        conversations = (
-            assistant_chat_service.list_document_conversations(
-                user_id=user_id, document_id=document_id
-            )
-        )
-        active_conversation = None
-        if conversation_id:
-            active_conversation = (
-                assistant_chat_service.get_conversation(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                )
-            )
-            if (
-                not active_conversation
-                or str(active_conversation.get("document_id") or "")
-                != document_id
-            ):
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        else:
-            latest = None
-            if effective_view == "body" and selected_chapter:
-                latest = next(
-                    (
-                        item
-                        for item in conversations
-                        if str(
-                            item.get("reference_chapter_id") or ""
-                        )
-                        == str(selected_chapter["id"])
-                    ),
-                    None,
-                )
-            elif effective_view == "archive":
-                latest = next(
-                    (
-                        item
-                        for item in conversations
-                        if not item.get("reference_chapter_id")
-                    ),
-                    None,
-                )
-            if latest:
-                active_conversation = (
-                    assistant_chat_service.get_conversation(
-                        user_id=user_id,
-                        conversation_id=str(latest["id"]),
-                    )
-                )
-
-        archive_project = None
-        archive_characters: list[dict[str, Any]] = []
-        setting_story_blueprint = None
-        setting_story_arcs: list[dict[str, Any]] = []
-        setting_voice_profile = None
-        archive_entries: list[dict[str, Any]] = []
-        archive_analyses: list[dict[str, Any]] = []
-        if effective_view == "archive" and work:
-            archive_entries = database.list_work_archive_entries(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
-            archive_analyses = database.list_work_analyses(
-                user_id,
-                str(work["id"]),
-                str(current_version["id"]),
-            )
+        active_conversation = context["active_conversation"]
         available_chat_models = chat_model_groups(user_id)
+        context.update(
+            archive_categories=WORK_ARCHIVE_CATEGORIES,
+            analysis_categories=WORK_ANALYSIS_CATEGORIES,
+            setting_tabs=WORKBENCH_SETTING_TABS,
+            model_groups=available_chat_models,
+            selected_model_choice=selected_chat_model(
+                available_chat_models,
+                active_conversation,
+            ),
+            quality_modes=quality_mode_options(user_id),
+            selected_quality_mode=selected_quality_mode(
+                user_id,
+                active_conversation,
+            ),
+            pov_options=POV_OPTIONS,
+            world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
+            story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
+            archive_saved=saved,
+            archive_adopted=adopted,
+            archive_removed=removed,
+            archive_error=error,
+            error=error,
+            sent=sent,
+        )
         return render_template(
             "document.html",
-            _template_context(
-                request,
-                user=user,
-                work=work,
-                current_version=current_version,
-                document=document,
-                chapters=chapters,
-                chapter=selected_chapter,
-                chapter_story_memory=chapter_story_memory,
-                chapter_content=chapter_content,
-                chapter_content_hash=chapter_content_hash,
-                chapter_index=selected_index,
-                previous_chapter=previous_chapter,
-                next_chapter=next_chapter,
-                conversations=conversations,
-                active_conversation=active_conversation,
-                view=effective_view,
-                archive_tabs=WORK_ARCHIVE_TABS,
-                active_archive_tab=active_archive_tab,
-                archive_categories=WORK_ARCHIVE_CATEGORIES,
-                analysis_categories=WORK_ANALYSIS_CATEGORIES,
-                setting_tabs=WORKBENCH_SETTING_TABS,
-                active_settings_tab=active_settings_tab,
-                archive_project=archive_project,
-                archive_base_url=f"/documents/{document_id}",
-                archive_characters=archive_characters,
-                setting_characters=archive_characters,
-                setting_story_blueprint=setting_story_blueprint,
-                setting_story_arcs=setting_story_arcs,
-                setting_voice_profile=setting_voice_profile,
-                archive_entries=archive_entries,
-                archive_analyses=archive_analyses,
-                archive_story_memory_records=(
-                    version_story_memory_records
-                    if active_archive_tab == "analysis"
-                    else []
-                ),
-                archive_story_memory_enabled=(
-                    has_story_memory_snapshots
-                    or str(current_version.get("intent") or "")
-                    == "snapshot"
-                ),
-                has_story_memory_snapshots=(
-                    has_story_memory_snapshots
-                ),
-                archive_return_to=_document_workbench_path(
-                    document_id,
-                    view="archive",
-                    archive_tab=active_archive_tab,
-                ),
-                archive_saved=saved,
-                archive_adopted=adopted,
-                archive_removed=removed,
-                archive_error=error,
-                archive_readonly=True,
-                creative_snapshot=current_version.get(
-                    "creative_snapshot", {}
-                ),
-                model_groups=available_chat_models,
-                selected_model_choice=selected_chat_model(
-                    available_chat_models, active_conversation
-                ),
-                quality_modes=quality_mode_options(user_id),
-                selected_quality_mode=selected_quality_mode(
-                    user_id, active_conversation
-                ),
-                pov_options=POV_OPTIONS,
-                world_entry_type_options=WORLD_ENTRY_TYPE_OPTIONS,
-                story_arc_type_options=STORY_ARC_TYPE_OPTIONS,
-                error=error,
-                sent=sent,
-            ),
-        )
-
-    @application.post("/documents/{document_id}/analyze")
-    async def analyze_document(
-        request: Request, document_id: str, csrf: str = Form(...)
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        document = database.get_document(int(user["id"]), document_id)
-        if not document:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        credential = database.get_api_credential_summary(int(user["id"]))
-        analyzer = request.app.state.analyzer
-        if credential:
-            provider = str(credential["provider"])
-            model = str(credential["model"])
-            credential_source = "personal"
-        elif app_settings.deepseek_api_key:
-            provider = analyzer.provider
-            model = analyzer.model
-            credential_source = "default"
-        elif app_settings.uses_test_models:
-            provider = analyzer.provider
-            model = analyzer.model
-            credential_source = "default"
-        else:
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("开始分析前，请先配置你的模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_job(
-                user_id=int(user["id"]),
-                document_id=document_id,
-                provider=provider,
-                model=model,
-                credential_source=credential_source,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/documents/{document_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.get("/jobs/{job_id}", response_class=HTMLResponse)
-    async def job_page(
-        request: Request, job_id: str, error: Optional[str] = None
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        job = database.get_job(int(user["id"]), job_id)
-        if not job:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        chapters = database.list_chapters(
-            int(user["id"]), str(job["document_id"]), job_id
-        )
-        return render_template(
-            "job.html",
-            _template_context(
-                request, user=user, job=job, chapters=chapters, error=error
-            ),
-        )
-
-    @application.get("/api/jobs/{job_id}")
-    async def job_status(request: Request, job_id: str):
-        user = _current_user(request)
-        if not user:
-            return JSONResponse(
-                {"detail": "未登录"}, status_code=status.HTTP_401_UNAUTHORIZED
-            )
-        job = database.get_job(int(user["id"]), job_id)
-        if not job:
-            return JSONResponse(
-                {"detail": "任务不存在"}, status_code=status.HTTP_404_NOT_FOUND
-            )
-        completed = int(job["completed_chapters"])
-        failed = int(job["failed_chapters"])
-        total = int(job["total_chapters"])
-        return {
-            "id": job_id,
-            "status": job["status"],
-            "completed": completed,
-            "failed": failed,
-            "total": total,
-            "processed": completed + failed,
-            "percent": round((completed + failed) / total * 100, 1) if total else 0,
-            "terminal": job["status"] in {"completed", "partial", "failed"},
-        }
-
-    @application.post("/jobs/{job_id}/retry")
-    async def retry_job(request: Request, job_id: str, csrf: str = Form(...)):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        job = database.get_job(int(user["id"]), job_id)
-        if not job:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if (
-            job.get("credential_source") == "personal"
-            and not database.has_api_credential(int(user["id"]))
-        ):
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("重试这个任务前，请先重新配置个人模型凭据"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        retried = database.retry_failed(int(user["id"]), job_id)
-        if not retried:
-            return RedirectResponse(
-                f"/jobs/{job_id}?error={quote('当前无法重试；请确认任务已结束且没有其他任务正在运行')}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.get("/analyses/{analysis_id}", response_class=HTMLResponse)
-    async def analysis_page(
-        request: Request,
-        analysis_id: str,
-        error: Optional[str] = None,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        analysis = database.get_analysis(int(user["id"]), analysis_id)
-        if not analysis:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        result = (
-            json.loads(analysis["result_json"])
-            if analysis.get("result_json")
-            else None
-        )
-        saved_technique_names = technique_service.list_saved_names_for_analysis(
-            user_id=int(user["id"]), analysis_id=analysis_id
-        )
-        source_text = Path(str(analysis["content_path"])).read_text(encoding="utf-8")
-        return render_template(
-            "analysis.html",
-            _template_context(
-                request,
-                user=user,
-                analysis=analysis,
-                result=result,
-                saved_technique_names=saved_technique_names,
-                source_text=source_text,
-                error=error,
-            ),
-        )
-
-    @application.post(
-        "/analyses/{analysis_id}/techniques/{technique_index}"
-    )
-    async def save_analysis_technique(
-        request: Request,
-        analysis_id: str,
-        technique_index: int,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            technique_id, created = technique_service.create_from_analysis(
-                user_id=int(user["id"]),
-                analysis_id=analysis_id,
-                technique_index=technique_index,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/analyses/{analysis_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?"
-            + ("created=true" if created else "saved=true"),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get("/jobs/{job_id}/export.json")
-    async def export_job(request: Request, job_id: str):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        payload = database.export_job(int(user["id"]), job_id)
-        if not payload:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        filename = f"story-analysis-{job_id[:8]}.json"
-        return Response(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            _template_context(request, user=user, **context),
         )
 
     return application

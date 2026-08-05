@@ -6,17 +6,18 @@ from pathlib import Path
 
 from app.analysis_schema import ANALYSIS_JSON_EXAMPLE
 from app.chapter_splitter import split_chapters
+from app.analysis_repository import AnalysisRepository
 from app.config import Settings
 from app.context_compiler import compile_active_techniques
 from app.db import Database
-from app.planning_ai import DeepSeekChapterPlanner
+from app.planning_ai import ProviderChapterPlanner
 from app.planning_schema import (
     ChapterTaskCard,
     allocate_scene_requirement_refs,
 )
 from app.planning_service import PlanningService
 from app.security import hash_password
-from app.style_editor import DeepSeekStyleEditor
+from app.style_editor import ProviderStyleEditor
 from app.technique_schema import TechniqueObservation
 from app.technique_service import TechniqueService
 from app.writing import build_writing_messages
@@ -51,15 +52,15 @@ def _settings(tmp_path: Path) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        deepseek_api_key="test-key",
-        deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
-        deepseek_thinking=False,
-        deepseek_reasoning_effort="high",
-        deepseek_max_tokens=5_000,
-        deepseek_connect_timeout_seconds=1,
-        deepseek_read_timeout_seconds=1,
-        deepseek_max_retries=0,
+        model_api_key="test-key",
+        model_base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        model_thinking=False,
+        model_reasoning_effort="high",
+        model_max_tokens=5_000,
+        model_connect_timeout_seconds=1,
+        model_read_timeout_seconds=1,
+        model_max_retries=0,
         worker_poll_seconds=0.01,
     )
 
@@ -264,21 +265,19 @@ def test_analysis_observation_can_be_saved_once_with_source_trace(
         chunks=chunks,
         chapter_paths=paths,
     )
-    job_id = database.create_job(
+    analyses = AnalysisRepository(database)
+    job_id = analyses.create_job(
         user_id=user_id,
         document_id=document_id,
         provider="mock",
         model="mock",
     )
-    claimed = database.claim_next_analysis()
+    claimed = analyses.claim_next()
     payload = dict(ANALYSIS_JSON_EXAMPLE)
-    assert database.complete_analysis(
+    assert analyses.complete(
         analysis_id=str(claimed["analysis_id"]),
         job_id=job_id,
         result=payload,
-        raw_response="{}",
-        input_tokens=0,
-        output_tokens=0,
         claim_token=str(claimed["claim_token"]),
     )
     service = TechniqueService(database)
@@ -372,7 +371,7 @@ def test_planner_and_style_auditor_receive_safe_abstract_techniques(
     captured: dict[str, dict] = {}
 
     async def scenario():
-        planner = DeepSeekChapterPlanner(_settings(tmp_path))
+        planner = ProviderChapterPlanner(_settings(tmp_path))
 
         async def planner_post(payload):
             captured["planner"] = dict(payload)
@@ -389,7 +388,7 @@ def test_planner_and_style_auditor_receive_safe_abstract_techniques(
             }
 
         planner._analyzer._post = planner_post
-        style = DeepSeekStyleEditor(_settings(tmp_path))
+        style = ProviderStyleEditor(_settings(tmp_path))
 
         async def style_post(payload):
             captured["style"] = dict(payload)

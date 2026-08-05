@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -20,6 +18,11 @@ from .causal_branch_service import (
     CausalBranchSimulationService,
 )
 from .db import Database, utc_now
+from .json_support import (
+    dump_canonical_json as _json,
+    json_fingerprint as _fingerprint,
+    load_json as _load_json,
+)
 
 
 ADOPTION_STATUS_LABELS = {
@@ -46,8 +49,7 @@ CHAPTER_STATE_FIELDS = (
     "skeleton_arc_titles_json",
     "skeleton_ending_hook",
     "skeleton_application_id",
-    "canonical_version_id",
-    "working_version_id",
+    "head_version_id",
     "char_count",
     "needs_recheck",
     "target_chapter_chars",
@@ -81,37 +83,6 @@ PLAN_RESTORE_FIELDS = tuple(
     for field in PLAN_STATE_FIELDS
     if field not in {"id", "project_id", "chapter_id"}
 )
-SCENE_STATE_FIELDS = (
-    "id",
-    "plan_id",
-    "position",
-    "beat_status",
-    "draft_status",
-    "current_version_id",
-    "updated_at",
-)
-
-
-def _json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
-
-
 def _unique(values: Iterable[str]) -> List[str]:
     result: List[str] = []
     seen: set[str] = set()
@@ -187,22 +158,6 @@ class CausalBranchAdoptionService:
                 """,
                 (chapter_id,),
             ).fetchone()
-            scenes = []
-            if plan:
-                scenes = [
-                    {
-                        field: scene[field]
-                        for field in SCENE_STATE_FIELDS
-                    }
-                    for scene in connection.execute(
-                        """
-                        SELECT * FROM novel_scene_beats
-                        WHERE plan_id=?
-                        ORDER BY position, id
-                        """,
-                        (plan["id"],),
-                    ).fetchall()
-                ]
             chapters[chapter_id] = {
                 "chapter": {
                     field: row[field] for field in CHAPTER_STATE_FIELDS
@@ -215,7 +170,6 @@ class CausalBranchAdoptionService:
                     if plan
                     else None
                 ),
-                "scenes": scenes,
             }
         if set(chapters) != set(unique_ids):
             raise ValueError("落地清单引用的未来章节已经不存在")
@@ -234,13 +188,13 @@ class CausalBranchAdoptionService:
             """
             SELECT COALESCE(MAX(position), 0) AS position
             FROM novel_chapters
-            WHERE project_id=? AND canonical_version_id IS NOT NULL
+            WHERE project_id=? AND head_version_id IS NOT NULL
             """,
             (project_id,),
         ).fetchone()
         rows = connection.execute(
             f"""
-            SELECT id, position, canonical_version_id
+            SELECT id, position, head_version_id
             FROM novel_chapters
             WHERE project_id=? AND id IN ({placeholders})
             """,
@@ -252,7 +206,7 @@ class CausalBranchAdoptionService:
         invalid = [
             int(row["position"])
             for row in rows
-            if row["canonical_version_id"]
+            if row["head_version_id"]
             or int(row["position"]) <= current_position
         ]
         if invalid:
@@ -944,28 +898,13 @@ class CausalBranchAdoptionService:
                     now,
                 ),
             )
-        stale = connection.execute(
-            """
-            UPDATE novel_scene_beats
-            SET draft_status='stale', updated_at=?
-            WHERE plan_id=? AND beat_status='active'
-              AND current_version_id IS NOT NULL
-            """,
-            (now, plan_id),
-        )
         connection.execute(
             """
             UPDATE novel_chapters
             SET key_points=?, skeleton_arc_titles_json=?,
                 skeleton_application_id=NULL,
                 needs_recheck=CASE
-                    WHEN working_version_id IS NOT NULL
-                      OR char_count>0
-                      OR EXISTS(
-                          SELECT 1 FROM novel_scene_beats scene
-                          WHERE scene.plan_id=?
-                            AND scene.current_version_id IS NOT NULL
-                      )
+                    WHEN head_version_id IS NOT NULL OR char_count>0
                     THEN 1
                     ELSE needs_recheck
                 END,
@@ -975,14 +914,12 @@ class CausalBranchAdoptionService:
             (
                 "\n".join(skeleton_key_points),
                 _json(skeleton_threads),
-                plan_id,
                 now,
                 item["chapter_id"],
             ),
         )
         return {
             "reset_task_card_count": reset_count,
-            "stale_scene_count": int(stale.rowcount),
         }
 
     def apply_adoption(
@@ -1070,7 +1007,6 @@ class CausalBranchAdoptionService:
                     )
                 before_state = current_state
                 reset_count = 0
-                stale_count = 0
                 for item in accepted:
                     result = self._apply_item(
                         connection,
@@ -1079,7 +1015,6 @@ class CausalBranchAdoptionService:
                         now=now,
                     )
                     reset_count += result["reset_task_card_count"]
-                    stale_count += result["stale_scene_count"]
                     connection.execute(
                         """
                         UPDATE novel_causal_branch_adoption_items
@@ -1126,7 +1061,6 @@ class CausalBranchAdoptionService:
             "project_id": str(adoption["project_id"]),
             "applied_item_count": len(accepted),
             "reset_task_card_count": reset_count,
-            "stale_scene_count": stale_count,
         }
 
     def abandon_adoption(
@@ -1232,24 +1166,6 @@ class CausalBranchAdoptionService:
                                 chapter_id,
                             ),
                         )
-                        scenes = {
-                            str(scene["id"]): scene
-                            for scene in before.get("scenes") or []
-                        }
-                        for scene_id, scene in scenes.items():
-                            connection.execute(
-                                """
-                                UPDATE novel_scene_beats
-                                SET draft_status=?, updated_at=?
-                                WHERE id=? AND plan_id=?
-                                """,
-                                (
-                                    scene["draft_status"],
-                                    scene["updated_at"],
-                                    scene_id,
-                                    before_plan["id"],
-                                ),
-                            )
                     chapter = before["chapter"]
                     connection.execute(
                         """

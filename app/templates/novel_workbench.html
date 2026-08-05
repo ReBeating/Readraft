@@ -2,7 +2,7 @@
 {% block title %}{{ display_title }} · {{ app_name }}{% endblock %}
 {% block body_class %}studio-surface studio-workbench-page{% endblock %}
 {% block head %}
-  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260728-2">
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260804-2">
 {% endblock %}
 {% block site_header %}{% endblock %}
 {% block status_banner %}{% endblock %}
@@ -122,6 +122,21 @@
           {% include "_work_archive_content.html" %}
         {% elif chapter %}
           <section class="studio-manuscript-view">
+            {% if stale_edit_buffer %}
+              <div class="studio-alert error">
+                <span>发现一份基于旧 HEAD 的自动暂存稿，它没有覆盖当前正文。</span>
+                <form method="post" action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/buffer/rebase">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="studio-text-button" type="submit">打开暂存稿</button>
+                </form>
+                <form method="post" action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/buffer/discard">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="studio-text-button" type="submit">丢弃暂存稿</button>
+                </form>
+              </div>
+            {% elif has_edit_buffer %}
+              <div class="studio-alert success">已恢复上次未正式提交的暂存内容。</div>
+            {% endif %}
             <div class="studio-chapter-heading">
               <small>第{{ chapter.position }}章</small>
               <h1>{{ chapter.title or '未命名章节' }}</h1>
@@ -130,14 +145,15 @@
               method="post"
               action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/save"
               data-autosave-form
+              data-buffer-action="/novels/{{ project.id }}/chapters/{{ chapter.id }}/buffer"
+              data-has-edit-buffer="{{ 'true' if has_edit_buffer else 'false' }}"
             >
               <input type="hidden" name="csrf" value="{{ csrf_token }}">
-              <input type="hidden" name="return_to_workbench" value="1">
-              <input type="hidden" name="change_summary" value="工作台自动保存">
+              <input type="hidden" name="expected_head_version_id" value="{{ chapter.head_version_id or '' }}">
+              <input type="hidden" name="change_summary" value="工作台正文保存">
               <textarea
                 class="studio-manuscript"
                 name="content"
-                maxlength="200000"
                 aria-label="章节正文编辑器"
                 data-manuscript
                 data-previous-url="{% if previous_chapter %}/novels/{{ project.id }}/workbench?chapter_id={{ previous_chapter.id }}{% endif %}"
@@ -164,7 +180,7 @@
                 </a>
                 <span data-save-status aria-live="polite" hidden></span>
               </span>
-              <span data-actual-char-count>{{ chapter.char_count }} 字</span>
+              <span data-actual-char-count>{{ chapter_content|length }} 字</span>
             </footer>
             <span class="studio-edge-cue" data-edge-cue hidden></span>
           </section>
@@ -269,25 +285,53 @@
                   <blockquote>{{ message.quote.quote_text }}</blockquote>
                 {% endif %}
                 {% if message.role == 'assistant' and message.status in ['queued', 'running'] %}
-                  <p data-stream-content>正在读取当前创作设定与章节……</p>
+                  <div class="studio-agent-runtime">
+                    <span data-agent-run-status>{{ message.run_state_label or '正在理解请求' }}</span>
+                    <button type="button" data-cancel-assistant aria-label="停止本轮生成">停止</button>
+                  </div>
+                  <p data-stream-content>{{ message.stream_content or '正在理解请求……' }}</p>
+                {% elif message.role == 'assistant' and message.run_state == 'cancelled' %}
+                  <div class="studio-agent-runtime"><span>已停止</span></div>
+                  <p>{{ message.stream_content or '本轮生成已停止。' }}</p>
                 {% elif message.status == 'failed' %}
                   <p class="studio-error-text">{{ message.error or '回复失败，请重试。' }}</p>
                 {% else %}
                   <p>{{ message.content }}</p>
                   {% set auto_commit = message.response.get('auto_commit') or {} %}
                   {% if message.response.settings_patch %}
+                    {% set settings_status = message.response.settings_patch_status or 'candidate' %}
+                    {% set settings_can_apply = settings_status in ['candidate', 'failed'] %}
                     <section class="studio-settings-candidate">
                       <header>
-                        <strong>候选创作设定</strong>
-                        <span>{% if message.response.settings_patch_status == 'applied' %}已应用{% else %}尚未写入{% endif %}</span>
+                        <strong>{% if settings_status == 'applied' %}已更新作品资料{% else %}作品资料修改{% endif %}</strong>
+                        <span>
+                          {% if settings_status == 'applied' %}已直接写入
+                          {% elif settings_status == 'pending' %}正在写入
+                          {% elif settings_status == 'failed' %}写入失败
+                          {% else %}等待应用{% endif %}
+                        </span>
                       </header>
+                      {% set displayed_patch = message.response.settings_patch %}
+                      {% if settings_status == 'applied' %}
+                        {% set displayed_patch = message.response.settings_patch_applied_values or {} %}
+                      {% endif %}
+                      {% if settings_can_apply %}
+                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings" data-save-before-submit>
+                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                          <input type="hidden" name="selection_present" value="1">
+                      {% endif %}
                       <dl>
-                        {% for key, value in message.response.settings_patch.items() %}
-                          <div>
-                            <dt>{{ setting_field_labels.get(key, key) }}</dt>
-                            {% if key == 'archive_rules' %}
-                              <dd>
-                                {% for rule in value %}
+                        {% for key, value in displayed_patch.items() %}
+                          {% if key == 'archive_rules' %}
+                            {% for rule in value %}
+                              <div>
+                                <dt>
+                                  {% if settings_can_apply %}
+                                    <input type="checkbox" name="selected_path" value="archive-rule:{{ loop.index0 }}" checked aria-label="应用这条补充规则">
+                                  {% endif %}
+                                  补充规则
+                                </dt>
+                                <dd>
                                   <p>
                                     <strong>
                                       {% for category_key, category_label in archive_categories %}
@@ -297,29 +341,94 @@
                                     </strong>
                                     <br>{{ rule.content }}
                                   </p>
-                                {% endfor %}
-                              </dd>
-                            {% else %}
+                                </dd>
+                              </div>
+                            {% endfor %}
+                          {% elif key != 'structured_edits' %}
+                            <div>
+                              <dt>
+                                {% if settings_can_apply %}
+                                  <input type="checkbox" name="selected_path" value="project:{{ key }}" checked aria-label="应用{{ setting_field_labels.get(key, key) }}">
+                                {% endif %}
+                                {{ setting_field_labels.get(key, key) }}
+                              </dt>
                               <dd>{{ value }}</dd>
-                            {% endif %}
-                          </div>
+                            </div>
+                          {% endif %}
                         {% endfor %}
                       </dl>
-                      {% if message.response.settings_patch_status != 'applied' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/apply-settings" data-save-before-submit>
-                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                          <input type="hidden" name="return_to_workbench" value="1">
-                          <button class="studio-button primary" type="submit">应用到创作设定</button>
+
+                      {% set structured_preview = (message.response.settings_patch_preview or {}).get('items') or [] %}
+                      {% if settings_status == 'applied' %}
+                        {% set structured_preview = displayed_patch.get('structured_edits') or [] %}
+                      {% endif %}
+                      {% if structured_preview %}
+                        <div class="studio-structured-edit-list">
+                          {% for edit in structured_preview %}
+                            <article class="studio-structured-edit">
+                              <header>
+                                <div>
+                                  {% if settings_can_apply and edit.action in ['create', 'delete'] %}
+                                    <input type="checkbox" name="selected_path" value="structured:{{ edit.index }}:__action__" checked aria-label="应用{{ edit.target_label }}的{{ edit.action_label }}">
+                                  {% endif %}
+                                  <strong>{{ edit.action_label }}{{ edit.entity_label }} · {{ edit.target_label }}</strong>
+                                </div>
+                                {% if edit.reason %}<span>{{ edit.reason }}</span>{% endif %}
+                              </header>
+                              {% if edit.action == 'delete' %}
+                                <p class="studio-structured-delete-note">
+                                  {% if edit.entity_type == 'plot_arc' %}应用后这条剧情线会被停用并保留历史。{% else %}应用后会删除这份资料。{% endif %}
+                                </p>
+                              {% else %}
+                                <dl>
+                                  {% for field in edit.fields %}
+                                    <div>
+                                      <dt>
+                                        {% if settings_can_apply and edit.action == 'update' %}
+                                          <input type="checkbox" name="selected_path" value="structured:{{ edit.index }}:{{ field.field }}" checked aria-label="应用{{ field.label }}修改">
+                                        {% endif %}
+                                        {{ field.label }}
+                                      </dt>
+                                      <dd>
+                                        {% if edit.action == 'update' %}
+                                          <del>{{ field.before if field.before not in [none, '', []] else '未填写' }}</del>
+                                          <span aria-hidden="true">→</span>
+                                        {% endif %}
+                                        <ins>{{ field.after if field.after not in [none, '', []] else '清空' }}</ins>
+                                      </dd>
+                                    </div>
+                                  {% endfor %}
+                                </dl>
+                              {% endif %}
+                            </article>
+                          {% endfor %}
+                        </div>
+                      {% elif (message.response.settings_patch_preview or {}).get('error') %}
+                        <p class="studio-error-text">{{ message.response.settings_patch_preview.error }}</p>
+                      {% endif %}
+
+                      {% if settings_status == 'failed' and message.response.settings_patch_error %}
+                        <p class="studio-error-text">{{ message.response.settings_patch_error }}</p>
+                      {% endif %}
+                      {% if settings_can_apply %}
+                          <button class="studio-button primary" type="submit">{% if settings_status == 'failed' %}重试写入{% else %}应用修改{% endif %}</button>
                         </form>
                       {% endif %}
                     </section>
                   {% endif %}
                   {% if message.response.story_plan %}
                     {% set blueprint = message.response.story_plan.blueprint %}
+                    {% set story_plan_status = message.response.story_plan_status or 'candidate' %}
+                    {% set story_plan_can_apply = story_plan_status in ['candidate', 'failed'] %}
                     <section class="studio-settings-candidate">
                       <header>
-                        <strong>故事规划候选</strong>
-                        <span>{% if message.response.story_plan_status == 'applied' %}已采用{% else %}尚未写入{% endif %}</span>
+                        <strong>{% if story_plan_status == 'applied' %}已更新故事规划{% else %}故事规划修改{% endif %}</strong>
+                        <span>
+                          {% if story_plan_status == 'applied' %}已直接写入
+                          {% elif story_plan_status == 'pending' %}正在写入
+                          {% elif story_plan_status == 'failed' %}写入失败
+                          {% else %}等待应用{% endif %}
+                        </span>
                       </header>
                       <dl>
                         <div>
@@ -344,10 +453,13 @@
                         </div>
                       </dl>
                       <p>{{ message.response.story_plan.rationale }}</p>
-                      {% if message.response.story_plan_status != 'applied' %}
+                      {% if story_plan_status == 'failed' and message.response.story_plan_error %}
+                        <p class="studio-error-text">{{ message.response.story_plan_error }}</p>
+                      {% endif %}
+                      {% if story_plan_can_apply %}
                         <form method="post" action="/assistant/messages/{{ message.id }}/apply-story-plan" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                          <button class="studio-button primary" type="submit">采用为故事规划</button>
+                          <button class="studio-button primary" type="submit">{% if story_plan_status == 'failed' %}重试写入{% else %}应用修改{% endif %}</button>
                         </form>
                       {% endif %}
                     </section>
@@ -374,7 +486,7 @@
                   {% if message.response.draft %}
                     <section class="studio-draft-candidate">
                       <header>
-                        <strong>{% if message.response.draft.mode == 'append' %}续写提交{% else %}章节提交{% endif %}</strong>
+                        <strong>章节提交</strong>
                         <span>
                           {% if auto_commit.get('status') == 'reverted' %}
                             已撤回
@@ -399,46 +511,8 @@
                           <button class="studio-button" type="submit">撤回这次提交</button>
                         </form>
                       {% elif not message.applied_version_id and auto_commit.get('status') != 'reverted' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/save-draft" data-save-before-submit>
+                        <form method="post" action="/assistant/messages/{{ message.id }}/commit" data-save-before-submit>
                           <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                          <input type="hidden" name="return_to_workbench" value="1">
-                          <button class="studio-button primary" type="submit">保存为当前版本</button>
-                        </form>
-                      {% endif %}
-                    </section>
-                  {% endif %}
-                  {% if message.response.rewrite %}
-                    <section class="studio-rewrite-candidate">
-                      <header>
-                        <strong>局部修订提交</strong>
-                        <span>
-                          {% if auto_commit.get('status') == 'reverted' %}
-                            已撤回
-                          {% elif auto_commit.get('status') == 'applied' and message.applied_version_id %}
-                            已自动保存为当前版本
-                          {% elif message.applied_version_id %}
-                            已保存为当前版本
-                          {% elif auto_commit.get('status') == 'failed' %}
-                            自动提交失败
-                          {% else %}
-                            等待提交
-                          {% endif %}
-                        </span>
-                      </header>
-                      <div class="studio-rewrite-preview">{{ message.response.rewrite.replacement_text }}</div>
-                      <p>{{ message.response.rewrite.rationale }}</p>
-                      {% if auto_commit.get('status') == 'failed' %}
-                        <p class="studio-commit-error">{{ auto_commit.get('error') }}</p>
-                      {% endif %}
-                      {% if auto_commit.get('status') == 'applied' and message.applied_version_id %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/revert-auto-commit" data-save-before-submit>
-                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                          <button class="studio-button" type="submit">撤回这次提交</button>
-                        </form>
-                      {% elif not message.applied_version_id and auto_commit.get('status') != 'reverted' %}
-                        <form method="post" action="/assistant/messages/{{ message.id }}/save-rewrite" data-save-before-submit>
-                          <input type="hidden" name="csrf" value="{{ csrf_token }}">
-                          <input type="hidden" name="return_to_workbench" value="1">
                           <button class="studio-button primary" type="submit">保存为当前版本</button>
                         </form>
                       {% endif %}
@@ -453,14 +527,13 @@
                         <li class="{{ step.outcome_status }}">
                           <span>
                             {% if step.action == 'finish' %}整理最终回答
-                            {% elif step.action == 'fallback' %}自动收束
                             {% else %}{{ step.tool_label or step.tool_name or '工具调用' }}{% endif %}
                           </span>
                           <small>
                             {% if step.outcome_status == 'completed' %}完成
                             {% elif step.outcome_status == 'failed' %}失败
                             {% elif step.outcome_status == 'denied' %}已拦截
-                            {% else %}已收束{% endif %}
+                            {% else %}未知{% endif %}
                             {% if step.latency_ms %} · {{ step.latency_ms }}ms{% endif %}
                             {% if step.input_tokens or step.output_tokens %}
                               · {{ step.input_tokens + step.output_tokens }} tokens
@@ -539,8 +612,8 @@
           <input type="hidden" name="conversation_id" value="{% if active_conversation %}{{ active_conversation.id }}{% endif %}">
           <input type="hidden" name="novel_chapter_id" value="{% if chapter %}{{ chapter.id }}{% endif %}">
           <input type="hidden" name="source_type" value="novel_version">
-          <input type="hidden" name="source_version_id" value="{% if working_version %}{{ working_version.id }}{% endif %}">
-          <input type="hidden" name="source_hash" value="{{ working_version_hash }}">
+          <input type="hidden" name="source_version_id" value="{% if head_version %}{{ head_version.id }}{% endif %}">
+          <input type="hidden" name="source_hash" value="{{ head_version_hash }}">
           <input type="hidden" name="quote_start" data-quote-start value="">
           <input type="hidden" name="quote_end" data-quote-end value="">
           <input type="hidden" name="quote_text" data-quote-text value="">
@@ -583,5 +656,5 @@
   </div>
 {% endblock %}
 {% block scripts %}
-  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260728-3" defer></script>
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260804-1" defer></script>
 {% endblock %}

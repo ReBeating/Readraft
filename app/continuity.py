@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
+import re
 import sqlite3
 import uuid
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -13,23 +13,11 @@ from .memory_identity import (
     normalize_identity_text,
     resolve_identity,
 )
+from .json_support import dump_json as _json, load_json as _load_json
 from .memory_schema import StoryDelta
 
 
-STATE_SCHEMA_VERSION = 3
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def _load_json(value: Any, fallback: Any) -> Any:
-    if value is None:
-        return fallback
-    try:
-        return json.loads(str(value))
-    except (TypeError, ValueError):
-        return fallback
+STATE_SCHEMA_VERSION = 4
 
 
 def _clean(value: Any) -> str:
@@ -38,6 +26,26 @@ def _clean(value: Any) -> str:
 
 def _same(left: Any, right: Any) -> bool:
     return _clean(left).casefold() == _clean(right).casefold()
+
+
+def _is_unknown_state(value: Any) -> bool:
+    normalized = (
+        _clean(value)
+        .casefold()
+        .replace(" ", "")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+    return normalized in {
+        "未知",
+        "不明",
+        "不确定",
+        "无",
+        "none",
+        "unknown",
+        "此前未知",
+        "下落不明",
+    }
 
 
 def _empty_state() -> Dict[str, Any]:
@@ -113,6 +121,21 @@ def _canonical(
         _resolved(identity_index, identity_type, text).get(
             "canonical_text"
         )
+    )
+
+
+def _canonical_character_reference(
+    identity_index: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    text: Any,
+) -> str:
+    cleaned = _clean(text)
+    if not cleaned:
+        return ""
+    without_qualifier = re.sub(r"[（(][^）)]{0,40}[）)]", "", cleaned).strip()
+    return _canonical(
+        identity_index,
+        "character",
+        without_qualifier or cleaned,
     )
 
 
@@ -212,7 +235,7 @@ def _check_declared_before(
     evidence: str,
 ) -> None:
     declared_value = _clean(declared)
-    if not declared_value:
+    if not declared_value or _is_unknown_state(declared_value):
         return
     current_value = _value(current)
     start_value = _value(chapter_start)
@@ -241,25 +264,9 @@ def _check_declared_before(
             evidence=evidence,
         )
         return
-    if has_prior_chapter:
-        _add_issue(
-            issues,
-            row=row,
-            project_id=project_id,
-            branch_id=branch_id,
-            issue_type="missing_baseline",
-            severity="warning",
-            entity_type=entity_type,
-            entity_name=entity_name,
-            field_name=field_name,
-            expected_value="此前正史中可核对的状态",
-            actual_value=declared_value,
-            message=(
-                f"{entity_name} 在本章声明了变化前状态“{declared_value}”，"
-                "但此前已确认记忆中没有可核对的基线。"
-            ),
-            evidence=evidence,
-        )
+    # A first observed value establishes a baseline.  Absence of a prior
+    # record is not itself a continuity conflict.
+    del has_prior_chapter
 
 
 def _character_attribute(
@@ -708,6 +715,11 @@ def _apply_delta(
     identity_index: Mapping[str, Mapping[str, Mapping[str, Any]]],
 ) -> None:
     start = copy.deepcopy(state)
+    explicit_location_subjects = {
+        _canonical(identity_index, "character", change.subject_name)
+        for change in delta.location_changes
+        if _clean(change.subject_name)
+    }
 
     for change in delta.character_changes:
         identity = _resolved(
@@ -715,6 +727,10 @@ def _apply_delta(
         )
         name = _clean(identity["canonical_text"])
         aspect = _clean(change.aspect)
+        if aspect == "location" and name in explicit_location_subjects:
+            continue
+        if _same(change.before, change.after):
+            continue
         current = _character_attribute(state, name, aspect)
         at_start = _character_attribute(start, name, aspect)
         declared_before = (
@@ -762,6 +778,8 @@ def _apply_delta(
             state["locations"][name] = entry
 
     for change in delta.relationship_changes:
+        if _same(change.before, change.after):
+            continue
         character_a = _canonical(
             identity_index, "character", change.character_a
         )
@@ -781,7 +799,7 @@ def _apply_delta(
             chapter_start=at_start,
             has_prior_chapter=has_prior_chapter,
             mismatch_type="relationship_before_mismatch",
-            severity="hard",
+            severity="warning",
             entity_type="relationship",
             entity_name=f"{character_a} ↔ {character_b}",
             field_name="relationship",
@@ -794,6 +812,8 @@ def _apply_delta(
         }
 
     for change in delta.location_changes:
+        if _same(change.from_location, change.to_location):
+            continue
         subject_identity = _resolved(
             identity_index, "character", change.subject_name
         )
@@ -849,8 +869,8 @@ def _apply_delta(
         current = state["items"].get(name) or {}
         at_start = start["items"].get(name) or {}
         declared_holder = (
-            _canonical(
-                identity_index, "character", change.from_holder
+            _canonical_character_reference(
+                identity_index, change.from_holder
             )
             if change.from_holder
             else ""
@@ -895,8 +915,8 @@ def _apply_delta(
         status = _clean(current.get("status")) or "active"
         if change.action in {"created", "acquired", "transferred"}:
             holder = (
-                _canonical(
-                    identity_index, "character", change.to_holder
+                _canonical_character_reference(
+                    identity_index, change.to_holder
                 )
                 if change.to_holder
                 else holder
@@ -909,8 +929,8 @@ def _apply_delta(
             holder = None
             status = "destroyed"
         elif change.to_holder:
-            holder = _canonical(
-                identity_index, "character", change.to_holder
+            holder = _canonical_character_reference(
+                identity_index, change.to_holder
             )
         state["items"][name] = {
             "identity_id": item_identity.get("id"),
@@ -1056,7 +1076,7 @@ def replay_canonical_state(
         FROM story_deltas d
         JOIN novel_chapters ch ON ch.id=d.chapter_id
         WHERE d.project_id=? AND d.branch_id=? AND d.status='projected'
-          AND ch.canonical_version_id=d.version_id
+          AND ch.head_version_id=d.version_id
         ORDER BY ch.position, d.reviewed_at, d.created_at, d.id
         """,
         (project_id, branch_id),
@@ -1188,16 +1208,21 @@ def replay_canonical_state(
             ),
         )
 
-    if issues:
+    hard_issues = [
+        issue
+        for issue in issues.values()
+        if str(issue.get("severity") or "") == "hard"
+    ]
+    if hard_issues:
         earliest_issue = min(
-            int(issue["chapter_position"]) for issue in issues.values()
+            int(issue["chapter_position"]) for issue in hard_issues
         )
         connection.execute(
             """
             UPDATE novel_chapters
             SET needs_recheck=1, updated_at=?
             WHERE project_id=? AND position>=?
-              AND canonical_version_id IS NOT NULL
+              AND head_version_id IS NOT NULL
             """,
             (created_at, project_id, earliest_issue),
         )

@@ -10,7 +10,8 @@ from pydantic import ValidationError
 from .causal_branch_schema import CausalBranchSimulationSet
 from .causal_suggestion_planner import compile_causal_review_context
 from .config import Settings
-from .deepseek import AnalyzerError, DeepSeekAnalyzer
+from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 
 
 DEFAULT_CAUSAL_BRANCH_CONTEXT_BUDGET = 110_000
@@ -642,14 +643,12 @@ def _first_evidence(
     raise ValueError("长期因果推演缺少冻结证据目录")
 
 
-class DeepSeekCausalBranchPlanner(BaseCausalBranchPlanner):
-    provider = "deepseek"
-
+class ProviderCausalBranchPlanner(BaseCausalBranchPlanner):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.provider = settings.model_provider
-        self.model = settings.deepseek_model
-        self._analyzer = DeepSeekAnalyzer(settings)
+        self.model = settings.model_name
+        self._analyzer = ProviderAnalyzer(settings)
 
     async def simulate(
         self,
@@ -682,10 +681,10 @@ class DeepSeekCausalBranchPlanner(BaseCausalBranchPlanner):
                 ),
             },
         ]
-        max_tokens = max(self.settings.deepseek_max_tokens, 10_000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
-        last_error = "DeepSeek 长期因果推演返回结构不正确"
+        last_error = "模型 长期因果推演返回结构不正确"
         for attempt in range(2):
             body = await self._analyzer._post(
                 self._analyzer._payload(
@@ -700,24 +699,26 @@ class DeepSeekCausalBranchPlanner(BaseCausalBranchPlanner):
             total_input += input_tokens
             total_output += output_tokens
             if reason == "length":
-                last_error = "DeepSeek 长期因果推演输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                last_error = "模型 长期因果推演输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if attempt == 0:
                     await asyncio.sleep(1)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了长期因果推演输出",
+                    "模型 内容安全策略拒绝了长期因果推演输出",
                     input_tokens=total_input,
                     output_tokens=total_output,
                 )
             elif reason != "stop":
                 last_error = (
-                    "DeepSeek 返回了未支持的结束原因："
+                    "模型 返回了未支持的结束原因："
                     + str(reason or "empty")
                 )
             else:
@@ -771,7 +772,7 @@ def build_causal_branch_planner(
 ) -> BaseCausalBranchPlanner:
     if settings.uses_test_models:
         return MockCausalBranchPlanner()
-    return DeepSeekCausalBranchPlanner(settings)
+    return ProviderCausalBranchPlanner(settings)
 
 
 def compile_causal_branch_context(

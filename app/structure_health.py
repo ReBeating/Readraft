@@ -151,7 +151,7 @@ class StructureHealthService:
                 """
                 SELECT ch.id, ch.position, ch.title, ch.outline,
                        ch.key_points, ch.status, ch.volume_id,
-                       ch.canonical_version_id, ch.needs_recheck,
+                       ch.head_version_id, ch.needs_recheck,
                        ch.skeleton_role,
                        ch.skeleton_arc_titles_json,
                        ch.skeleton_ending_hook,
@@ -223,15 +223,15 @@ class StructureHealthService:
                        source.skeleton_role AS source_role,
                        source.skeleton_arc_titles_json
                            AS source_arcs_json,
-                       source.canonical_version_id
-                           AS source_canonical_version_id,
+                       source.head_version_id
+                           AS source_head_version_id,
                        target.position AS target_position,
                        target.title AS target_title,
                        target.skeleton_role AS target_role,
                        target.skeleton_arc_titles_json
                            AS target_arcs_json,
-                       target.canonical_version_id
-                           AS target_canonical_version_id
+                       target.head_version_id
+                           AS target_head_version_id
                 FROM novel_chapter_causal_links link
                 JOIN novel_chapters source
                   ON source.id=link.source_chapter_id
@@ -571,7 +571,7 @@ class StructureHealthService:
                 item.get("skeleton_application_id") or ""
             )
             item["is_canonical"] = bool(
-                item.get("canonical_version_id")
+                item.get("head_version_id")
             )
             item["finding_ids"] = []
             item["health_severity"] = ""
@@ -638,10 +638,10 @@ class StructureHealthService:
                 str(item.get("relation_type") or ""),
             )
             item["source_is_canonical"] = bool(
-                item.pop("source_canonical_version_id", None)
+                item.pop("source_head_version_id", None)
             )
             item["target_is_canonical"] = bool(
-                item.pop("target_canonical_version_id", None)
+                item.pop("target_head_version_id", None)
             )
             result.append(item)
         return result

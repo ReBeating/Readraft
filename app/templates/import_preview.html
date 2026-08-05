@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}检查分章 · {{ app_name }}{% endblock %}
+{% block body_class %}studio-surface studio-settings-page{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="{{ url_for('static', path='/workbench.css') }}?v=20260805-1">
+{% endblock %}
+{% block site_header %}{% endblock %}
+{% block status_banner %}{% endblock %}
+{% block site_footer %}{% endblock %}
+{% block main_class %}studio-settings-page{% endblock %}
+{% block content %}
+  <div class="studio-settings-shell" data-studio-theme>
+    <header class="studio-settings-header">
+      <a class="studio-icon-button" href="/import" aria-label="返回导入">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+      </a>
+      <h1>检查分章</h1>
+      <button class="studio-icon-button" type="button" data-theme-toggle aria-label="切换显示模式">
+        <svg data-theme-icon="night" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.2A8 8 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"></path></svg>
+        <svg data-theme-icon="day" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+      </button>
+    </header>
+
+    <main class="studio-import-preview-main">
+      <section class="studio-import-preview-summary">
+        <div>
+          <span class="studio-eyebrow">{{ preview.original_filename }}</span>
+          <h2>{{ preview.title }}</h2>
+          <p>{{ preview.char_count|human_size }} · {{ items|length }} 个章节候选 · 原文校验 {{ preview.source_hash[:10] }}</p>
+        </div>
+        <div class="studio-api-actions">
+          <form method="post" action="/import/previews/{{ preview.id }}/cancel">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="studio-button" type="submit">取消</button>
+          </form>
+          <form method="post" action="/import/previews/{{ preview.id }}/commit">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <button class="studio-button primary" type="submit">确认导入</button>
+          </form>
+        </div>
+      </section>
+
+      {% if error %}<div class="studio-alert error" role="alert">{{ error }}</div>{% endif %}
+
+      <p class="studio-import-preview-help">标题、顺序和正文范围会按这里确认的结果保存。低置信度边界建议检查；所有操作只改边界，不会改动上传原文。</p>
+
+      <div class="studio-import-boundaries">
+        {% for item in items %}
+          <article class="studio-import-boundary{% if item.low_confidence %} low-confidence{% endif %}">
+            <div class="studio-import-boundary-number">{{ "%02d"|format(item.number) }}</div>
+            <div class="studio-import-boundary-body">
+              <form class="studio-import-rename" method="post" action="/import/previews/{{ preview.id }}/chapters/{{ item.index }}/rename">
+                <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                <input name="title" value="{{ item.title }}" maxlength="120" aria-label="第 {{ item.number }} 章标题">
+                <button class="studio-text-button" type="submit">保存标题</button>
+              </form>
+              <div class="studio-import-boundary-meta">
+                <span>{{ item.char_count|human_size }}</span>
+                <span>原文 {{ item.start }}–{{ item.end }}</span>
+                <span class="studio-confidence{% if item.low_confidence %} warning{% endif %}">{{ item.confidence }}%</span>
+                <span>{{ item.reason }}</span>
+              </div>
+              <p>{{ item.excerpt }}</p>
+            </div>
+            <div class="studio-import-boundary-actions">
+              <a class="studio-text-button" href="/import/previews/{{ preview.id }}?split={{ item.index }}#split-editor">拆分</a>
+              {% if item.can_merge %}
+                <form method="post" action="/import/previews/{{ preview.id }}/chapters/{{ item.index }}/merge">
+                  <input type="hidden" name="csrf" value="{{ csrf_token }}">
+                  <button class="studio-text-button" type="submit">与下一章合并</button>
+                </form>
+              {% endif %}
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+
+      {% if split_item %}
+        <section class="studio-import-split-editor" id="split-editor">
+          <div>
+            <span class="studio-eyebrow">按光标拆分</span>
+            <h2>{{ split_item.title }}</h2>
+            <p>在正文中点击新的章节起点，再提交拆分。</p>
+          </div>
+          <form method="post" action="/import/previews/{{ preview.id }}/chapters/{{ split_item.index }}/split" data-import-split-form data-source-start="{{ split_item.start }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="source_offset" value="{{ split_item.start + 1 }}" data-import-source-offset>
+            <textarea rows="18" data-import-split-text spellcheck="false">{{ split_item.text }}</textarea>
+            <div class="studio-api-actions">
+              <a class="studio-button" href="/import/previews/{{ preview.id }}">关闭</a>
+              <button class="studio-button primary" type="submit">在光标处拆分</button>
+            </div>
+          </form>
+        </section>
+      {% endif %}
+    </main>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/workbench.js') }}?v=20260805-1" defer></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const form = document.querySelector("[data-import-split-form]");
+      if (!form) return;
+      const text = form.querySelector("[data-import-split-text]");
+      const offset = form.querySelector("[data-import-source-offset]");
+      const sync = () => {
+        offset.value = Number(form.dataset.sourceStart) + Number(text.selectionStart || 0);
+      };
+      text.addEventListener("click", sync);
+      text.addEventListener("keyup", sync);
+      form.addEventListener("submit", sync);
+      text.focus();
+    });
+  </script>
+{% endblock %}

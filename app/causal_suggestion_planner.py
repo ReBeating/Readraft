@@ -13,7 +13,8 @@ from .causal_suggestion_schema import (
     ProposedCausalLink,
 )
 from .config import Settings
-from .deepseek import AnalyzerError, DeepSeekAnalyzer
+from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 
 
 DEFAULT_CAUSAL_REVIEW_CONTEXT_BUDGET = 90_000
@@ -590,14 +591,12 @@ def _mock_arc_impacts(
     return impacts
 
 
-class DeepSeekCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
-    provider = "deepseek"
-
+class ProviderCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.provider = settings.model_provider
-        self.model = settings.deepseek_model
-        self._analyzer = DeepSeekAnalyzer(settings)
+        self.model = settings.model_name
+        self._analyzer = ProviderAnalyzer(settings)
 
     async def propose(
         self,
@@ -631,10 +630,10 @@ class DeepSeekCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
                 ),
             },
         ]
-        max_tokens = max(self.settings.deepseek_max_tokens, 7000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
-        last_error = "DeepSeek 因果建议返回结构不正确"
+        last_error = "模型 因果建议返回结构不正确"
         for attempt in range(2):
             body = await self._analyzer._post(
                 self._analyzer._payload(
@@ -649,24 +648,26 @@ class DeepSeekCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
             total_input += input_tokens
             total_output += output_tokens
             if reason == "length":
-                last_error = "DeepSeek 因果建议输出被截断"
-                max_tokens = min(max_tokens * 2, 14_000)
+                last_error = "模型 因果建议输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
-                last_error = "DeepSeek 当前系统资源不足"
+                last_error = "模型 当前系统资源不足"
                 if attempt == 0:
                     await asyncio.sleep(1)
                     continue
             elif reason == "content_filter":
                 raise AnalyzerError(
-                    "DeepSeek 内容安全策略拒绝了因果建议输出",
+                    "模型 内容安全策略拒绝了因果建议输出",
                     input_tokens=total_input,
                     output_tokens=total_output,
                 )
             elif reason != "stop":
                 last_error = (
-                    "DeepSeek 返回了未支持的结束原因："
+                    "模型 返回了未支持的结束原因："
                     + str(reason or "empty")
                 )
             else:
@@ -718,7 +719,7 @@ def build_causal_suggestion_planner(
 ) -> BaseCausalSuggestionPlanner:
     if settings.uses_test_models:
         return MockCausalSuggestionPlanner()
-    return DeepSeekCausalSuggestionPlanner(settings)
+    return ProviderCausalSuggestionPlanner(settings)
 
 
 def compile_causal_review_context(
