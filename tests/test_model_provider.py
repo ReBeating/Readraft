@@ -129,6 +129,22 @@ def test_openai_payload_uses_compatible_fields(tmp_path):
     assert "max_tokens" not in payload
 
 
+def test_automatic_output_mode_omits_provider_token_field(tmp_path):
+    settings = replace(make_settings(tmp_path), model_max_tokens=0)
+
+    payload = build_chat_payload(
+        settings=settings,
+        messages=[{"role": "user", "content": "hello"}],
+        provider_user_id="u-safe",
+        max_tokens=None,
+        json_object=False,
+        temperature=0.2,
+    )
+
+    assert "max_tokens" not in payload
+    assert "max_completion_tokens" not in payload
+
+
 def test_openai_compatible_payload_uses_portable_fields(tmp_path):
     settings = replace(
         make_settings(tmp_path),

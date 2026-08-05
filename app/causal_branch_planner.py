@@ -11,6 +11,7 @@ from .causal_branch_schema import CausalBranchSimulationSet
 from .causal_suggestion_planner import compile_causal_review_context
 from .config import Settings
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 
 
 DEFAULT_CAUSAL_BRANCH_CONTEXT_BUDGET = 110_000
@@ -680,7 +681,7 @@ class ProviderCausalBranchPlanner(BaseCausalBranchPlanner):
                 ),
             },
         ]
-        max_tokens = max(self.settings.model_max_tokens, 10_000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "模型 长期因果推演返回结构不正确"
@@ -699,7 +700,9 @@ class ProviderCausalBranchPlanner(BaseCausalBranchPlanner):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 长期因果推演输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

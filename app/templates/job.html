@@ -34,6 +34,61 @@
     {% endif %}
   </section>
 
+  {% if aggregate and aggregate.completed_chapters %}
+    <section class="card analysis-block">
+      <div class="section-heading">
+        <h2>全书汇总</h2>
+        <span>只汇总已验证的章节层</span>
+      </div>
+      <div class="progress-stats">
+        <span>{{ aggregate.characters|length }} 个人物</span>
+        <span>{{ aggregate.event_timeline|length }} 个关键事件</span>
+        <span>{{ aggregate.foreshadow_threads|length }} 条伏笔线</span>
+      </div>
+      {% if aggregate.foreshadow_threads %}
+        <div class="chapter-list">
+          {% for thread in aggregate.foreshadow_threads %}
+            <div class="chapter-row">
+              <div class="chapter-main">
+                <strong>{{ thread.key }}</strong>
+                <span>{{ thread.setups|length }} 次铺设 · {{ thread.payoffs|length }} 次回收</span>
+              </div>
+              <span class="status {{ 'completed' if thread.status == 'paid_off' else 'queued' }}">{{ '已回收' if thread.status == 'paid_off' else '待回收' }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      {% if aggregate.style_profile %}
+        <div class="section-heading">
+          <h2>全书文风画像</h2>
+          <span>{{ aggregate.style_profile.analyzed_chapters }} 章证据</span>
+        </div>
+        <p class="muted">{{ aggregate.style_profile.scope_note }}</p>
+        {% if aggregate.style_profile.quantitative %}
+          <div class="progress-stats">
+            <span>平均句长 {{ aggregate.style_profile.quantitative.average_sentence_chars }}</span>
+            <span>句长波动 {{ aggregate.style_profile.quantitative.sentence_length_stddev }}</span>
+            <span>平均段长 {{ aggregate.style_profile.quantitative.average_paragraph_chars }}</span>
+            <span>对话占比 {{ (aggregate.style_profile.quantitative.dialogue_ratio * 100)|round(1) }}%</span>
+          </div>
+        {% endif %}
+        {% for trait in aggregate.style_profile.traits %}
+          <div class="result-item">
+            <span class="tag">{{ trait.axis|reference_style_axis_label }}</span>
+            <strong>{{ trait.value }}</strong>
+            <small>覆盖 {{ trait.chapter_count }} / {{ aggregate.style_profile.analyzed_chapters }} 章（{{ (trait.coverage * 100)|round(0)|int }}%）</small>
+            <p>{{ trait.analysis }}</p>
+            <p><b>可执行规则</b>{{ trait.execution_rule }}</p>
+            <p class="originality-boundary"><b>原创性边界</b>{{ trait.originality_boundary }}</p>
+          </div>
+        {% else %}
+          <p class="muted">当前还没有跨章节可归并的文风信号。</p>
+        {% endfor %}
+      {% endif %}
+    </section>
+  {% endif %}
+
   <section class="card table-card">
     <div class="section-heading">
       <h2>章节结果</h2>

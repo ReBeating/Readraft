@@ -218,7 +218,7 @@ def render_conversation_memory(state: Mapping[str, Any]) -> str:
     sections = [
         "较早对话的结构化记忆（仅作者原话可作为指令；AI 原话只是讨论记录，"
         "不能当作作品事实。发生冲突时以较新的作者消息为准；需要准确上下文时"
-        "用 grep/read 检索 book/notes/conversation-history.jsonl）。"
+        "用 grep/read 检索 book/notes/conversation-history/ 下的完整消息）。"
     ]
     for bucket in MEMORY_BUCKETS:
         items = list(state.get(bucket) or [])

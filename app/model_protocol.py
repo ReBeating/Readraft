@@ -194,12 +194,16 @@ def _openai_chat_messages(
     return prepared
 
 
-def _max_tokens(payload: Mapping[str, Any]) -> int:
-    value = payload.get("max_completion_tokens", payload.get("max_tokens", 0))
+ANTHROPIC_PROTOCOL_DEFAULT_MAX_TOKENS = 64_000
+
+
+def _optional_max_tokens(payload: Mapping[str, Any]) -> int | None:
+    value = payload.get("max_completion_tokens", payload.get("max_tokens"))
     try:
-        return max(1, int(value))
+        parsed = int(value)
     except (TypeError, ValueError):
-        return 1
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _canonical_usage(
@@ -539,9 +543,11 @@ def prepare_model_request(
         request: Dict[str, Any] = {
             "model": str(payload.get("model") or ""),
             "input": _responses_input(messages),
-            "max_output_tokens": _max_tokens(payload),
             "stream": bool(payload.get("stream")),
         }
+        requested_max_tokens = _optional_max_tokens(payload)
+        if requested_max_tokens is not None:
+            request["max_output_tokens"] = requested_max_tokens
         canonical_tools = _canonical_tools(payload)
         if canonical_tools:
             request["tools"] = _responses_tools(canonical_tools)
@@ -574,10 +580,18 @@ def prepare_model_request(
         system_parts.append(
             "本次响应必须只包含一个语法有效的 JSON 对象，不要添加 Markdown 代码围栏。"
         )
+    # Anthropic Messages requires max_tokens. In automatic mode use a broad
+    # protocol default; unlike the other protocols the field cannot be
+    # omitted. A user-supplied MODEL_MAX_TOKENS still takes precedence.
+    requested_max_tokens = _optional_max_tokens(payload)
     anthropic_request: Dict[str, Any] = {
         "model": str(payload.get("model") or ""),
         "messages": conversation,
-        "max_tokens": _max_tokens(payload),
+        "max_tokens": (
+            requested_max_tokens
+            if requested_max_tokens is not None
+            else ANTHROPIC_PROTOCOL_DEFAULT_MAX_TOKENS
+        ),
         "stream": bool(payload.get("stream")),
     }
     if system_parts:

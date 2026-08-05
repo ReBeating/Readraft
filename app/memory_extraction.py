@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .model_client import AnalyzerError
+from .model_budget import expanded_output_token_limit
 from .memory_schema import StoryDelta
 from .model_provider import (
     ProviderConfigError,
@@ -366,7 +367,9 @@ class ProviderMemoryExtractor(BaseMemoryExtractor):
 
             if reason == "length":
                 last_error = "模型 故事记忆输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if format_attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

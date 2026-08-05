@@ -65,19 +65,45 @@ Provider 原生工具调用探索 `book/` 虚拟工作区；它不能访问服�
 
 | 区域 | 主要模块 | 职责 |
 | --- | --- | --- |
-| Web 组合 | `main.py`、`workbench_view.py`、`web_auth.py`、`web_system.py`、`web_paths.py`、`web_security.py` | 应用装配、领域路由、工作台视图模型、认证、健康检查与 Web 安全边界 |
-| 对话应用层 | `assistant_chat_service.py`、`assistant_context.py`、`conversation_memory.py`、`assistant_result.py` | 对话仓储、冻结上下文、记忆编译、结果规范化与任务持久化 |
-| 后台执行 | `worker.py` | 队列领取、凭据选择、模型路由和任务生命周期 |
+| Web 组合 | `main.py`、`import_routes.py`、`analysis_routes.py`、`technique_routes.py`、`workbench_view.py`、`web_auth.py`、`web_system.py`、`web_paths.py`、`web_security.py` | 应用装配、分域路由、工作台视图模型、认证、健康检查与 Web 安全边界 |
+| 对话应用层 | `assistant_chat_service.py`、`assistant_conversation_repository.py`、`assistant_chapter_workflow.py`、`assistant_application.py`、`assistant_context.py`、`conversation_memory.py`、`assistant_result.py` | 对话调度、对话仓储、连续章节工作流、候选应用事务、冻结上下文、记忆编译与结果规范化 |
+| 后台执行 | `worker.py`、`reference_analysis_pipeline.py` | 队列领取、凭据选择、模型路由；参考章节的分层状态机由独立 pipeline 执行 |
 | Agent | `agent_orchestrator.py`、`agent_runtime.py`、`agent_intent.py`、`agent_actions.py`、`agent_tasks.py` | 意图边界、`create/compose/series/task` 高级动作、受限专项分析、原生调用回合、进度和熔断 |
 | 虚拟作品空间 | `agent_workspace.py` | 资源发现、读取、检索、比较、受控修改、历史恢复、外部只读工具与领域写入适配 |
 | 正文写作 | `prose_craft.py`、`prose_pipeline.py` | 统一写作契约、技法选择和纯文本输出 |
 | 模型接入 | `agent_model.py`、`model_client.py`、`model_protocol.py`、`model_provider.py`、`model_routing.py` | 中性模型接口、协议转换、供应商能力和任务路由 |
-| 数据层 | `db.py`、`writing_context_repository.py`、`migrations.py`、各 `*_service.py` | SQLite、写作上下文查询、历史迁移和领域事务 |
-| 连续性 | `continuity.py`、`memory_service.py`、`memory_identity.py` | 正史重放、故事记忆和实体身份 |
+| 数据层 | `db.py`、`document_repository.py`、`analysis_repository.py`、`writing_context_repository.py`、`migrations.py`、各 `*_service.py` | SQLite、导入文档、分层分析与写作上下文仓储、历史迁移和领域事务 |
+| 连续性与检索 | `continuity.py`、`memory_service.py`、`memory_identity.py`、`memory_search.py`、`retrieval_benchmark.py` | 正史重放、故事记忆、实体身份、可解释稀疏融合检索与召回回归基准 |
+| 参考分析 | `reference_analysis_schema.py`、`reference_analysis_metrics.py`、`reference_analysis_prompts.py`、`reference_analysis_aggregation.py`、`reference_analysis_pipeline.py`、`analysis_repository.py`、`technique_service.py` | 结构、事实、叙事、文风、技法五层分析，精确证据区间、内容哈希缓存、全书画像与技法回流 |
+| 导入 | `chapter_splitter.py`、`import_preview.py`、`import_routes.py` | 原文冻结、边界置信度、人工改名/合并/拆分和确认后入库 |
 | 浏览器 UI | `templates/novel_workbench.html`、`templates/document.html`、`static/workbench.*` | 两种工作台及其流式交互 |
 
 数据库 JSON 字段统一通过 `json_support.py` 读写。普通存储使用 `dump_json`，签名、
 指纹和基线比较使用 `dump_canonical_json`；领域模块不复制序列化回退逻辑。
+
+## 参考分析数据流
+
+```text
+冻结章节 + content_hash
+  -> ReferenceAnalysisPipeline
+  -> structure（本地确定性度量）
+  -> facts -> narrative -> style -> techniques（模型层，逐层校验）
+  -> evidence.start/end/quote 逐字回查冻结正文
+  -> 章节结果与分层缓存
+  -> ReferenceAnalysisAggregation（只读取已验证章节）
+  -> 全书人物/事件/伏笔/节奏 + 文风画像
+  -> Agent 虚拟资源 book/analysis/reference/*.json
+```
+
+`style` 与 `techniques` 不重复：`style` 描述跨全文反复出现的叙述机制，例如叙事距离、
+句段节奏、对话组织、信息流和情绪传达；`techniques` 提炼某个局部手法在何时有效。
+全书聚合不会保存证据引文，而是保存文风维度、主导标签、章节覆盖率、可执行规则与
+原创性边界。章节详情仍保留精确证据，便于作者回到原文核对。
+
+参考书对话和与来源版本相连的创作项目会看到
+`book/analysis/reference/style-profile.json`。Agent 只有在作者明确要求参考文风时才读取
+它；正文写作只能使用其中的抽象规则。跨不相关作品长期复用时，作者应把选中的局部
+机制保存为技法卡并绑定范围，不能把整本参考正文设为隐式写作提示词。
 
 ## Agent 工具契约
 
@@ -104,10 +130,16 @@ Provider 原生工具调用探索 `book/` 虚拟工作区；它不能访问服�
   结果创建不可变版本并推进 main HEAD。
 - `create`：在 main 末尾创建一个新章节并切换本轮范围；单章创作随后使用
   `compose`。
-- `series`：仅响应作者明确提出的连续多章创作；最多十二章，逐章创建并独立保存
+- `series`：仅响应作者明确提出的连续多章创作；逐章创建并独立保存
   HEAD。失败会暂停，恢复时从未完成项继续，不重写已完成章节。
-- `task`：把明确列出的最多十二个资源交给无工具、无写权限、不能递归委托的专项
-  模型，适合连续性、结构、人物、文风和研究核对。
+- `task`：把明确列出的资源交给无工具、无写权限、不能递归委托的专项
+模型，适合连续性、结构、人物、文风和研究核对。
+
+这些工具和动作不设置作品字符数、章节数、资源数、模型总回合或工具总调用预算。
+`read`、`glob`、`grep`、`search`、`diff` 与 `history` 的数量参数都是游标/分页大小；
+返回值会同时给出总量或 `has_more`，Agent 可以继续读取。上传和归档大小、浏览器 edit
+buffer、请求超时、revision 冲突与重复无进展熔断仍属于服务器运行边界，不得用来静默
+截断或丢弃作品数据。
 
 领域写入仍由同一工具表面完成：章节元数据通过 `.meta.json` 管理；作者要求长期
 保存的信息写入 `notes/author/`；参考作品的证据化观察写入技法卡；故事规划和结构化
@@ -144,13 +176,14 @@ Agent 发起，并把结果写回同一作品数据模型。领域服务不是�
 
 ## 当前结构债务
 
-- `main.py` 的认证、系统入口和两类工作台视图构建已经拆出，领域路由仍然过于集中。
-  后续应按 `settings / works / assistant / reviews` 继续注册 Router，并保持 URL 与
-  事务语义不变。
-- `assistant_chat_service.py` 的来源读取和冻结上下文已经提取到 mixin，但对话仓储、
-  工作流与结果应用事务仍在同一类中。后续按“仓储 / 工作流 / 应用事务”提取协作者，
-  不建立备用 Service 或第二条执行链。
-- `db.py` 的大型写作上下文查询已经提取为 repository，其他查询面仍大。只在事务边界
-  清楚后继续提取，避免把一笔原子操作拆成跨模块隐式事务。
+- `main.py` 已拆出认证、系统入口、导入、分析和两类工作台视图构建，但作品管理、
+  设定建议、审核页和 Assistant HTTP 边界仍然集中。后续按 `settings / works /
+  assistant / reviews` 继续注册 Router，并保持 URL 与事务语义不变。
+- `assistant_chat_service.py` 已拆出对话仓储、冻结上下文、章节工作流和候选应用事务；
+  当前仍集中消息租约、流状态与自动提交协调。下一步按“消息运行生命周期”提取一个
+  协作者，不建立备用 Service 或第二条执行链。
+- `db.py` 已拆出分析生命周期、大型写作上下文查询和导入文档仓储，其他作品、章节与
+  生成队列查询面仍大。下一步优先按工作版本和生成队列提取 repository；一笔 HEAD
+  推进事务必须留在同一连接中，不能为了缩短文件而破坏原子性。
 
 任何新增能力若不能明确归入上述职责，应先修改本文，再开始编码。

@@ -12,6 +12,8 @@ from .agent_model import (
     ProviderAgentModel,
 )
 from .agent_orchestrator import AssistantAgentOrchestrator
+from .analysis_repository import AnalysisRepository
+from .reference_analysis_pipeline import ReferenceAnalysisPipeline
 from .assistant_chat_service import AssistantChatService
 from .causal_branch_planner import (
     BaseCausalBranchPlanner,
@@ -123,10 +125,16 @@ class AnalysisWorker:
         poll_seconds: float = 1.0,
     ):
         self.database = database
+        self.analysis_repository = AnalysisRepository(database)
         self.analyzer = analyzer
         self.provider_user_secret = provider_user_secret
         self.settings = settings
         self.credential_cipher = credential_cipher
+        self.reference_analysis_pipeline = ReferenceAnalysisPipeline(
+            self.analysis_repository,
+            analyzer_factory=self._analysis_model_for_item,
+            provider_user_secret=provider_user_secret,
+        )
         self.memory_extractor = memory_extractor
         self.memory_service = MemoryService(database)
         self.chapter_planner = chapter_planner
@@ -402,7 +410,7 @@ class AnalysisWorker:
                             chat_message_id, None
                         )
                     continue
-                item = await asyncio.to_thread(self.database.claim_next_analysis)
+                item = await asyncio.to_thread(self.analysis_repository.claim_next)
                 self.consecutive_loop_failures = 0
                 self.last_error = None
                 if item:
@@ -544,7 +552,7 @@ class AnalysisWorker:
                 elif item and item.get("claim_token"):
                     try:
                         await asyncio.to_thread(
-                            self.database.release_claim,
+                            self.analysis_repository.release_claim,
                             str(item["analysis_id"]),
                             str(item["job_id"]),
                             str(item["claim_token"]),
@@ -684,53 +692,7 @@ class AnalysisWorker:
         return True
 
     async def _process(self, item: dict) -> None:
-        analysis_id = str(item["analysis_id"])
-        job_id = str(item["job_id"])
-        claim_token = str(item["claim_token"])
-        try:
-            content = await asyncio.to_thread(
-                Path(str(item["content_path"])).read_text, encoding="utf-8"
-            )
-            response = await self._analyze(
-                item,
-                content,
-            )
-            accepted = await asyncio.to_thread(
-                self.database.complete_analysis,
-                analysis_id=analysis_id,
-                job_id=job_id,
-                result=response.result.model_dump(mode="json"),
-                raw_response=response.raw_response,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                claim_token=claim_token,
-            )
-            if not accepted:
-                logger.warning(
-                    "discarded stale chapter analysis result id=%s", analysis_id
-                )
-        except AnalyzerError as exc:
-            logger.warning("chapter analysis failed id=%s: %s", analysis_id, exc)
-            await asyncio.to_thread(
-                self.database.fail_analysis,
-                analysis_id,
-                job_id,
-                str(exc),
-                claim_token,
-                exc.input_tokens,
-                exc.output_tokens,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("unexpected chapter analysis failure id=%s", analysis_id)
-            await asyncio.to_thread(
-                self.database.fail_analysis,
-                analysis_id,
-                job_id,
-                "处理章节时发生内部错误，请重试",
-                claim_token,
-            )
+        await self.reference_analysis_pipeline.process(item)
 
     async def _process_voice_suggestion(self, item: dict) -> None:
         suggestion_id = str(item["id"])
@@ -2121,11 +2083,9 @@ class AnalysisWorker:
             )
         return self.style_editor, False
 
-    async def _analyze(self, item: dict, content: str):
-        user_id = int(item["user_id"])
-        provider_user_id = stable_provider_user_id(
-            user_id, self.provider_user_secret
-        )
+    async def _analysis_model_for_item(
+        self, item: dict
+    ) -> tuple[BaseAnalyzer, bool]:
         if item.get("credential_source") != "personal":
             if self.analyzer is None or (
                 str(item["provider"]) != self.analyzer.provider
@@ -2133,20 +2093,12 @@ class AnalysisWorker:
                 raise AnalyzerError(
                     "任务所需的服务器模型凭据当前未配置"
                 )
-            return await self.analyzer.analyze(
-                str(item["chapter_title"]), content, provider_user_id
-            )
+            return self.analyzer, False
 
         personal_settings = await self._personal_model_settings(
             item, "reasoning"
         )
-        analyzer = ProviderAnalyzer(personal_settings)
-        try:
-            return await analyzer.analyze(
-                str(item["chapter_title"]), content, provider_user_id
-            )
-        finally:
-            await analyzer.close()
+        return ProviderAnalyzer(personal_settings), True
 
     async def _reply_assistant_chat(
         self,

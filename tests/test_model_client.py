@@ -15,7 +15,7 @@ def make_settings(tmp_path: Path, retries: int = 0) -> Settings:
     return Settings(
         app_name="test",
         app_env="test",
-        secret_key="test-secret",
+        secret_key="test-secret",  # pragma: allowlist secret -- test value
         data_dir=tmp_path,
         database_path=tmp_path / "test.db",
         cookie_secure=False,
@@ -24,7 +24,7 @@ def make_settings(tmp_path: Path, retries: int = 0) -> Settings:
         max_text_chars=1_000_000,
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
-        model_api_key="test-key",
+        model_api_key="test-key",  # pragma: allowlist secret -- test value
         model_base_url="https://api.deepseek.com",
         model_name="deepseek-v4-flash",
         model_thinking=False,
@@ -196,7 +196,7 @@ def test_opencode_go_analyzer_selects_model_protocol(
         settings = replace(
             make_settings(tmp_path),
             model_provider="opencode_go",
-            model_api_key="go-test-key",
+            model_api_key="go-test-key",  # pragma: allowlist secret -- test value
             model_base_url="https://opencode.ai/zen/go/v1",
             model_name=model,
         )
@@ -298,7 +298,7 @@ def test_opencode_go_streaming_protocols_share_callback_contract(
         settings = replace(
             make_settings(tmp_path),
             model_provider="opencode_go",
-            model_api_key="go-test-key",
+            model_api_key="go-test-key",  # pragma: allowlist secret -- test value
             model_base_url="https://opencode.ai/zen/go/v1",
             model_name=model,
         )

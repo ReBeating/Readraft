@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from .config import Settings
 from .context_compiler import compile_active_techniques
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .style_schema import StyleAuditResult, TargetedRewriteResult
 
 
@@ -366,7 +367,7 @@ class ProviderStyleEditor(BaseStyleEditor):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        max_tokens = min(self.settings.model_max_tokens, 8000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = f"{task_name}返回结构不正确"
@@ -383,7 +384,9 @@ class ProviderStyleEditor(BaseStyleEditor):
             total_output += output_tokens
             if reason == "length":
                 last_error = f"模型 {task_name}输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

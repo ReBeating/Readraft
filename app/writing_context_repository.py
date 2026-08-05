@@ -396,6 +396,7 @@ def get_writing_context(
             branch_id=str(chapter["canonical_branch_id"]),
             before_chapter_position=int(chapter["position"]),
             query_terms=retrieval_query_terms,
+            query_concepts=retrieval_query_concepts,
             excluded_chapter_ids=[str(row["chapter_id"]) for row in recent_memory],
         )
         continuity_context = get_continuity_context(

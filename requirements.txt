@@ -1,5 +1,5 @@
 fastapi>=0.140,<0.141
-cryptography>=48.0.1,<50
+cryptography>=50.0.0,<51
 httpx>=0.27,<0.29
 itsdangerous>=2.2,<3
 jinja2>=3.1,<4

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .agent_model import BaseAgentModel
+from .model_budget import optional_output_token_limit
 from .model_client import AnalyzerError
 
 
@@ -44,44 +45,72 @@ class SpecialistTaskPipeline:
         packet: Mapping[str, Any],
         provider_user_id: str,
     ) -> SpecialistTaskResult:
-        turn = await model.native_turn(
-            messages=[
-                {"role": "system", "content": SPECIALIST_TASK_SYSTEM_PROMPT},
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SPECIALIST_TASK_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "专项类型："
+                    + str(kind)
+                    + "\n专项目标："
+                    + str(objective)
+                    + "\n\n<resource_packet>\n"
+                    + json.dumps(packet, ensure_ascii=False, indent=2)
+                    + "\n</resource_packet>"
+                ),
+            },
+        ]
+        model_settings = getattr(model, "settings", None)
+        max_tokens = optional_output_token_limit(
+            getattr(model_settings, "model_max_tokens", 0)
+        )
+        content_parts: list[str] = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+        while True:
+            turn = await model.native_turn(
+                messages=messages,
+                tools=[],
+                provider_user_id=provider_user_id,
+                max_tokens=max_tokens,
+                on_text_delta=None,
+            )
+            total_input_tokens += turn.input_tokens
+            total_output_tokens += turn.output_tokens
+            if turn.tool_calls:
+                raise AnalyzerError(
+                    "专项分析不得调用工具或继续委托",
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+            if turn.content:
+                content_parts.append(turn.content)
+            if turn.finish_reason != "length":
+                break
+            if not turn.content:
+                raise AnalyzerError(
+                    "专项分析被服务商截断，且没有返回可续接的内容",
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+            messages.append(turn.message())
+            messages.append(
                 {
                     "role": "user",
-                    "content": (
-                        "专项类型："
-                        + str(kind)
-                        + "\n专项目标："
-                        + str(objective)
-                        + "\n\n<resource_packet>\n"
-                        + json.dumps(packet, ensure_ascii=False, indent=2)
-                        + "\n</resource_packet>"
-                    ),
-                },
-            ],
-            tools=[],
-            provider_user_id=provider_user_id,
-            max_tokens=4000,
-            on_text_delta=None,
-        )
-        if turn.tool_calls:
-            raise AnalyzerError(
-                "专项分析不得调用工具或继续委托",
-                input_tokens=turn.input_tokens,
-                output_tokens=turn.output_tokens,
+                    "content": "请从截断处继续专项报告，不要重复已有内容。",
+                }
             )
-        content = str(turn.content or "").strip()
+        content = "".join(content_parts).strip()
         if not content:
             raise AnalyzerError(
                 "专项分析没有返回可用结论",
-                input_tokens=turn.input_tokens,
-                output_tokens=turn.output_tokens,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
             )
         return SpecialistTaskResult(
-            content=content[:30_000],
+            content=content,
             provider=model.provider,
             model=model.model,
-            input_tokens=turn.input_tokens,
-            output_tokens=turn.output_tokens,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )

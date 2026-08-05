@@ -174,7 +174,7 @@ class WorkbenchViewBuilder:
                 None,
             )
 
-        conversations = self.assistant_chat_service.list_project_conversations(
+        conversations = self.assistant_chat_service.conversations.list_project(
             user_id=user_id,
             project_id=project_id,
         )
@@ -282,7 +282,7 @@ class WorkbenchViewBuilder:
             chapters=chapters,
             selected_chapter=selected_chapter,
         )
-        conversations = self.assistant_chat_service.list_document_conversations(
+        conversations = self.assistant_chat_service.conversations.list_document(
             user_id=user_id,
             document_id=document_id,
         )
@@ -491,7 +491,7 @@ class WorkbenchViewBuilder:
         conversations: list[dict[str, Any]],
     ) -> Optional[dict[str, Any]]:
         if conversation_id:
-            conversation = self.assistant_chat_service.get_conversation(
+            conversation = self.assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -523,7 +523,7 @@ class WorkbenchViewBuilder:
             )
         if not latest:
             return None
-        return self.assistant_chat_service.get_conversation(
+        return self.assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=str(latest["id"]),
         )
@@ -539,7 +539,7 @@ class WorkbenchViewBuilder:
         conversations: list[dict[str, Any]],
     ) -> Optional[dict[str, Any]]:
         if conversation_id:
-            conversation = self.assistant_chat_service.get_conversation(
+            conversation = self.assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -571,7 +571,7 @@ class WorkbenchViewBuilder:
             )
         if not latest:
             return None
-        return self.assistant_chat_service.get_conversation(
+        return self.assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=str(latest["id"]),
         )

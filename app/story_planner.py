@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .story_planner_schema import StoryPlanProposalSet, StoryPlanningMode
 
 
@@ -392,7 +393,9 @@ class ProviderStoryPlanner(BaseStoryPlanner):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 全书方案输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

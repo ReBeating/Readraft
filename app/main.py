@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, Request, UploadFile, status
+from fastapi import FastAPI, Form, Request, status
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -30,17 +30,16 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.background import BackgroundTask
 
 from .agent_model import build_agent_model
-from .assistant_chat_service import (
-    SETTING_FIELD_LABELS,
-    AssistantChatService,
-)
+from .analysis_repository import AnalysisRepository
+from .analysis_routes import build_analysis_router
+from .assistant_application import SETTING_FIELD_LABELS
+from .assistant_chat_service import AssistantChatService
 from .causal_branch_adoption_schema import CausalBranchTaskPatch
 from .causal_branch_adoption_service import CausalBranchAdoptionService
 from .causal_branch_planner import build_causal_branch_planner
 from .causal_branch_service import CausalBranchSimulationService
 from .causal_suggestion_planner import build_causal_suggestion_planner
 from .causal_suggestion_service import CausalSuggestionService
-from .chapter_splitter import decode_upload, split_chapters
 from .config import Settings
 from .continuity import ContinuityService
 from .credentials import (
@@ -71,6 +70,8 @@ from .model_routing import (
     normalize_quality_mode,
     route_model_task,
 )
+from .import_preview import ImportPreviewStore
+from .import_routes import build_import_router
 from .planning_schema import ChapterTaskCard, SceneBeat
 from .planning_ai import build_chapter_planner
 from .planning_service import PlanningService
@@ -96,15 +97,13 @@ from .story_structure_service import StoryStructureSuggestionService
 from .structure_link_service import StructureLinkService
 from .worker import AnalysisWorker
 from .work_archive import (
-    WORK_ARCHIVE_FORMAT,
     WorkArchiveError,
     create_work_archive,
-    detect_archive_format,
-    import_work_archive,
 )
 from .style_editor import build_style_editor
 from .style_service import StyleService
 from .technique_service import TechniqueService
+from .technique_routes import build_technique_router
 from .template_filters import (
     _chapter_structure_role_label,
     _continuity_issue_label,
@@ -119,6 +118,7 @@ from .template_filters import (
     _reader_request_type_label,
     _reader_scope_label,
     _reader_status_label,
+    _reference_style_axis_label,
     _status_label,
     _story_arc_lifecycle_label,
     _story_arc_type_label,
@@ -138,7 +138,6 @@ from .voice_extraction import build_voice_profile_extractor
 from .version_diff import build_version_diff
 from .work_library import (
     create_main_from_version,
-    create_reading_document_from_chunks,
     create_version_tag,
 )
 from .web_paths import (
@@ -161,7 +160,6 @@ from .web_forms import (
     _split_lines,
     _story_blueprint_from_form,
     _story_plan_lines,
-    _technique_observation_from_form,
 )
 from .workbench_view import (
     POV_OPTIONS,
@@ -188,7 +186,6 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-ALLOWED_EXTENSIONS = {".txt", ".md", ".text"}
 WORK_ARCHIVE_CATEGORY_KEYS = frozenset(key for key, _label in WORK_ARCHIVE_CATEGORIES)
 EDIT_PREFERENCE_CATEGORY_OPTIONS = (
     "diction",
@@ -269,6 +266,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app_settings.validate()
     app_settings.ensure_directories()
     database = Database(app_settings.database_path)
+    analysis_repository = AnalysisRepository(database)
     memory_service = MemoryService(database)
     planning_service = PlanningService(database)
     story_planning_service = StoryPlanningService(database)
@@ -291,6 +289,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     technique_service = TechniqueService(database)
     continuity_service = ContinuityService(database)
     identity_service = MemoryIdentityService(database)
+    import_preview_store = ImportPreviewStore(app_settings.import_previews_dir)
     workbench_view_builder = WorkbenchViewBuilder(
         database=database,
         memory_service=memory_service,
@@ -329,6 +328,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     templates.env.filters["reader_status_label"] = _reader_status_label
     templates.env.filters["impact_item_type_label"] = _impact_item_type_label
     templates.env.filters["technique_dimension_label"] = _technique_dimension_label
+    templates.env.filters["reference_style_axis_label"] = (
+        _reference_style_axis_label
+    )
     templates.env.filters["technique_scope_label"] = _technique_scope_label
     templates.env.filters["technique_usage_label"] = _technique_usage_label
     templates.env.filters["continuity_issue_label"] = _continuity_issue_label
@@ -744,11 +746,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     )
     application.state.settings = app_settings
     application.state.database = database
+    application.state.analysis_repository = analysis_repository
     application.state.structure_link_service = structure_link_service
     application.state.causal_suggestion_service = causal_suggestion_service
     application.state.causal_branch_service = causal_branch_service
     application.state.causal_branch_adoption_service = causal_branch_adoption_service
     application.state.assistant_chat_service = assistant_chat_service
+    application.state.import_preview_store = import_preview_store
     application.state.templates = templates
     application.add_middleware(
         SessionMiddleware,
@@ -767,6 +771,32 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         build_auth_router(
             database=database,
             settings=app_settings,
+            template_context=_template_context,
+            render_template=render_template,
+        )
+    )
+    application.include_router(
+        build_import_router(
+            database=database,
+            settings=app_settings,
+            preview_store=import_preview_store,
+            template_context=_template_context,
+            render_template=render_template,
+        )
+    )
+    application.include_router(
+        build_analysis_router(
+            database=database,
+            settings=app_settings,
+            repository=analysis_repository,
+            technique_service=technique_service,
+            template_context=_template_context,
+            render_template=render_template,
+        )
+    )
+    application.include_router(
+        build_technique_router(
+            service=technique_service,
             template_context=_template_context,
             render_template=render_template,
         )
@@ -1211,7 +1241,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
         verify_csrf(request, csrf)
         try:
-            selected = assistant_chat_service.set_conversation_quality_mode(
+            selected = assistant_chat_service.conversations.set_quality_mode(
                 user_id=int(user["id"]),
                 conversation_id=conversation_id,
                 quality_mode=quality_mode,
@@ -1424,151 +1454,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 imported=imported,
             ),
         )
-
-    @application.get("/import", response_class=HTMLResponse)
-    async def unified_import_page(
-        request: Request,
-        error: Optional[str] = None,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        return render_template(
-            "work_import.html",
-            _template_context(
-                request,
-                user=user,
-                error=error,
-                max_upload_mb=app_settings.max_upload_bytes // 1024 // 1024,
-                max_archive_mb=(app_settings.max_work_archive_bytes // 1024 // 1024),
-            ),
-        )
-
-    @application.post("/import", response_class=HTMLResponse)
-    async def unified_import(
-        request: Request,
-        work_file: UploadFile = File(...),
-        title: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        user_id = int(user["id"])
-        filename = Path(work_file.filename or "untitled.txt").name
-        lower_filename = filename.lower()
-
-        def render_import_error(message: str, status_code: int = 400):
-            return render_template(
-                "work_import.html",
-                _template_context(
-                    request,
-                    user=user,
-                    error=message,
-                    title=title.strip()[:120],
-                    max_upload_mb=(app_settings.max_upload_bytes // 1024 // 1024),
-                    max_archive_mb=(
-                        app_settings.max_work_archive_bytes // 1024 // 1024
-                    ),
-                ),
-                status_code=status_code,
-            )
-
-        if lower_filename.endswith(".zip"):
-            temporary = tempfile.NamedTemporaryFile(
-                prefix="readraft-unified-import-",
-                suffix=".zip",
-                delete=False,
-            )
-            temporary_path = Path(temporary.name)
-            total_bytes = 0
-            imported_work_id = ""
-            try:
-                while True:
-                    chunk = await work_file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total_bytes += len(chunk)
-                    if total_bytes > app_settings.max_work_archive_bytes:
-                        raise WorkArchiveError("作品归档文件超过允许大小")
-                    temporary.write(chunk)
-                temporary.close()
-                if total_bytes == 0:
-                    raise WorkArchiveError("请选择非空的作品归档")
-                archive_format = detect_archive_format(temporary_path)
-                if archive_format != WORK_ARCHIVE_FORMAT:
-                    raise WorkArchiveError("只支持当前版本导出的完整作品归档")
-                imported_work = import_work_archive(
-                    database=database,
-                    novels_dir=app_settings.novels_dir,
-                    documents_dir=app_settings.documents_dir,
-                    user_id=user_id,
-                    archive_path=temporary_path,
-                    max_uncompressed_bytes=(app_settings.max_work_archive_bytes),
-                    max_documents=app_settings.max_documents_per_user,
-                    max_stored_chars=(app_settings.max_stored_chars_per_user),
-                )
-                imported_work_id = imported_work.work_id
-            except (WorkArchiveError, OSError, sqlite3.Error) as exc:
-                logger.warning("unified archive import rejected: %s", exc)
-                return render_import_error(str(exc))
-            finally:
-                temporary.close()
-                temporary_path.unlink(missing_ok=True)
-                await work_file.close()
-            return RedirectResponse(
-                f"/dashboard?imported=true&work={imported_work_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-
-        extension = Path(filename).suffix.lower()
-        if extension not in ALLOWED_EXTENSIONS:
-            await work_file.close()
-            return render_import_error("支持 TXT、Markdown 和 .readraft.zip 作品归档")
-        raw = await work_file.read(app_settings.max_upload_bytes + 1)
-        await work_file.close()
-        if len(raw) > app_settings.max_upload_bytes:
-            return render_import_error(
-                f"文件超过 {app_settings.max_upload_bytes // 1024 // 1024} MB 限制"
-            )
-        if not raw:
-            return render_import_error("文件为空")
-        try:
-            text, encoding = decode_upload(raw)
-            if not text.strip():
-                raise ValueError("文件中没有可导入的正文")
-            if len(text) > app_settings.max_text_chars:
-                raise ValueError(f"正文超过 {app_settings.max_text_chars:,} 字限制")
-            chunks = split_chapters(
-                text,
-                target_chars=app_settings.target_chapter_chars,
-                max_chars=app_settings.max_chapter_chars,
-            )
-            if not chunks:
-                raise ValueError("没有识别到可导入内容")
-            clean_title = (title.strip() or Path(filename).stem)[:120]
-            document_id = create_reading_document_from_chunks(
-                database=database,
-                documents_dir=app_settings.documents_dir,
-                user_id=user_id,
-                title=clean_title,
-                original_filename=filename,
-                source_encoding=encoding,
-                source_text=text,
-                chunks=chunks,
-                max_documents=app_settings.max_documents_per_user,
-                max_stored_chars=app_settings.max_stored_chars_per_user,
-            )
-            return RedirectResponse(
-                f"/documents/{document_id}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        except ValueError as exc:
-            return render_import_error(str(exc))
-        except Exception:
-            logger.exception("failed to import work")
-            return render_import_error("导入失败，请稍后重试", 500)
 
     @application.get("/works/{work_id}")
     async def open_work(request: Request, work_id: str):
@@ -2094,225 +1979,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return render_template(
             "novel_workbench.html",
             _template_context(request, user=user, **context),
-        )
-
-    @application.get("/techniques", response_class=HTMLResponse)
-    async def technique_library(
-        request: Request,
-        error: Optional[str] = None,
-        created: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        cards = technique_service.list_cards(user_id=int(user["id"]))
-        return render_template(
-            "techniques.html",
-            _template_context(
-                request,
-                user=user,
-                cards=cards,
-                error=error,
-                created=created,
-            ),
-        )
-
-    @application.post("/techniques")
-    async def create_manual_technique(
-        request: Request,
-        name: str = Form(...),
-        dimension: str = Form(...),
-        source_location: str = Form("作者手动总结"),
-        observation: str = Form(...),
-        effect: str = Form(...),
-        suitable_for: str = Form(""),
-        unsuitable_for: str = Form(""),
-        execution_rule: str = Form(...),
-        originality_boundary: str = Form(...),
-        author_note: str = Form(""),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            card_id = technique_service.create_manual(
-                user_id=int(user["id"]),
-                observation=_technique_observation_from_form(
-                    name=name,
-                    dimension=dimension,
-                    source_location=source_location,
-                    observation=observation,
-                    effect=effect,
-                    suitable_for=suitable_for,
-                    unsuitable_for=unsuitable_for,
-                    execution_rule=execution_rule,
-                    originality_boundary=originality_boundary,
-                ),
-                author_note=_clean_field(author_note, "作者备注", max_length=2000),
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{card_id}?created=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get("/techniques/{technique_id}", response_class=HTMLResponse)
-    async def technique_card_page(
-        request: Request,
-        technique_id: str,
-        error: Optional[str] = None,
-        saved: bool = False,
-        created: bool = False,
-        bound: bool = False,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        card = technique_service.get_card(
-            user_id=int(user["id"]), technique_id=technique_id
-        )
-        if not card:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        targets = technique_service.binding_targets(user_id=int(user["id"]))
-        return render_template(
-            "technique_card.html",
-            _template_context(
-                request,
-                user=user,
-                card=card,
-                targets=targets,
-                error=error,
-                saved=saved,
-                created=created,
-                bound=bound,
-            ),
-        )
-
-    @application.post("/techniques/{technique_id}")
-    async def update_technique_card(
-        request: Request,
-        technique_id: str,
-        name: str = Form(...),
-        dimension: str = Form(...),
-        source_location: str = Form(...),
-        observation: str = Form(...),
-        effect: str = Form(...),
-        suitable_for: str = Form(""),
-        unsuitable_for: str = Form(""),
-        execution_rule: str = Form(...),
-        originality_boundary: str = Form(...),
-        author_note: str = Form(""),
-        card_status: str = Form("active"),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            updated = technique_service.update_card(
-                user_id=int(user["id"]),
-                technique_id=technique_id,
-                observation=_technique_observation_from_form(
-                    name=name,
-                    dimension=dimension,
-                    source_location=source_location,
-                    observation=observation,
-                    effect=effect,
-                    suitable_for=suitable_for,
-                    unsuitable_for=unsuitable_for,
-                    execution_rule=execution_rule,
-                    originality_boundary=originality_boundary,
-                ),
-                author_note=_clean_field(author_note, "作者备注", max_length=2000),
-                status=card_status,
-            )
-            if not updated:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques/{technique_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/techniques/{technique_id}/bindings")
-    async def bind_technique_card(
-        request: Request,
-        technique_id: str,
-        target: str = Form(...),
-        usage_modes: list[str] = Form(...),
-        author_adaptation: str = Form(""),
-        priority: int = Form(50),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            technique_service.bind(
-                user_id=int(user["id"]),
-                technique_id=technique_id,
-                target=target,
-                usage_modes=usage_modes,
-                author_adaptation=_clean_field(
-                    author_adaptation,
-                    "针对本书的改造",
-                    max_length=1000,
-                ),
-                priority=priority,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques/{technique_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?bound=true",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.post("/technique-bindings/{binding_id}/status")
-    async def set_technique_binding_status(
-        request: Request,
-        binding_id: str,
-        binding_status: str = Form(...),
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            technique_id = technique_service.set_binding_status(
-                user_id=int(user["id"]),
-                binding_id=binding_id,
-                status=binding_status,
-            )
-            if not technique_id:
-                return Response(status_code=status.HTTP_404_NOT_FOUND)
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/techniques?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?saved=true",
-            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     @application.post("/novels/new/blank")
@@ -5914,12 +5580,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         revised_content = (
             source_content[:start_offset] + replacement + source_content[end_offset:]
         )
-        if len(revised_content) > 200_000:
-            return RedirectResponse(
-                f"/style-issues/{candidate['issue_id']}?error="
-                + quote("定点改写后的单章正文超过 200000 字"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
         token = secrets.token_hex(16)
         version_path = source_path.parent / f"style-{token}.txt"
         try:
@@ -6246,8 +5906,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 status_code=status.HTTP_303_SEE_OTHER,
             )
 
-        if len(content) > 200_000:
-            return save_error_response("单章正文不能超过 200000 字")
         try:
             clean_change_summary = _clean_field(
                 change_summary,
@@ -6511,7 +6169,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return Response(status_code=status.HTTP_404_NOT_FOUND)
         clean_chapter_id = chapter_id.strip()
         try:
-            conversation_id = assistant_chat_service.create_conversation(
+            conversation_id = assistant_chat_service.conversations.create(
                 user_id=user_id,
                 scope_type="chapter" if clean_chapter_id else "project",
                 title="新对话",
@@ -6561,7 +6219,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return _login_redirect(request)
         verify_csrf(request, csrf)
         user_id = int(user["id"])
-        target = assistant_chat_service.get_conversation(
+        target = assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=conversation_id,
         )
@@ -6577,7 +6235,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         destination = f"/novels/{project_id}/workbench"
         try:
-            deleted = assistant_chat_service.delete_conversation(
+            deleted = assistant_chat_service.conversations.delete(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -6595,7 +6253,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         return_conversation = None
         if current_conversation_id and current_conversation_id != conversation_id:
-            candidate = assistant_chat_service.get_conversation(
+            candidate = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=current_conversation_id,
             )
@@ -6679,7 +6337,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         try:
             if conversation_id:
-                conversation = assistant_chat_service.get_conversation(
+                conversation = assistant_chat_service.conversations.get(
                     user_id=user_id,
                     conversation_id=conversation_id,
                 )
@@ -6690,7 +6348,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     raise ValueError("对话不存在")
             else:
                 scope_type = "chapter" if novel_chapter_id else "project"
-                conversation_id = assistant_chat_service.create_conversation(
+                conversation_id = assistant_chat_service.conversations.create(
                     user_id=user_id,
                     scope_type=scope_type,
                     title=question,
@@ -6743,7 +6401,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 auto_commit=True,
                 quality_mode=quality_mode,
             )
-            prepared_conversation = assistant_chat_service.get_conversation(
+            prepared_conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -6877,7 +6535,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         except Exception:
             if branch and branch.get("conversation_id"):
                 try:
-                    assistant_chat_service.delete_conversation(
+                    assistant_chat_service.conversations.delete(
                         user_id=user_id,
                         conversation_id=str(branch["conversation_id"]),
                     )
@@ -6907,7 +6565,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         if not source or str(source.get("role") or "") != "user":
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        conversation = assistant_chat_service.get_conversation(
+        conversation = assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=str(source["conversation_id"]),
         )
@@ -6959,7 +6617,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         if not source or str(source.get("role") or "") != "assistant":
             return Response(status_code=status.HTTP_404_NOT_FOUND)
-        conversation = assistant_chat_service.get_conversation(
+        conversation = assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=str(source["conversation_id"]),
         )
@@ -7019,7 +6677,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         )
         return_archive = return_view == "archive" and not clean_chapter_id
         try:
-            conversation_id = assistant_chat_service.create_conversation(
+            conversation_id = assistant_chat_service.conversations.create(
                 user_id=user_id,
                 scope_type=("reference_chapter" if clean_chapter_id else "document"),
                 title="新对话",
@@ -7087,7 +6745,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return_archive = return_view == "archive" and not reference_chapter_id
         try:
             if conversation_id:
-                conversation = assistant_chat_service.get_conversation(
+                conversation = assistant_chat_service.conversations.get(
                     user_id=user_id,
                     conversation_id=conversation_id,
                 )
@@ -7098,7 +6756,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                     raise ValueError("对话不存在")
             else:
                 scope_type = "reference_chapter" if reference_chapter_id else "document"
-                conversation_id = assistant_chat_service.create_conversation(
+                conversation_id = assistant_chat_service.conversations.create(
                     user_id=user_id,
                     scope_type=scope_type,
                     title=question,
@@ -7418,7 +7076,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not message:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
-            conversation = assistant_chat_service.get_conversation(
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
@@ -7462,7 +7120,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not message:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
-            conversation = assistant_chat_service.get_conversation(
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
@@ -7504,7 +7162,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not message:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
-            conversation = assistant_chat_service.get_conversation(
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
@@ -7548,7 +7206,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
             if not message:
                 return Response(status_code=status.HTTP_404_NOT_FOUND)
-            conversation = assistant_chat_service.get_conversation(
+            conversation = assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=str(message["conversation_id"]),
             )
@@ -7736,209 +7394,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return render_template(
             "document.html",
             _template_context(request, user=user, **context),
-        )
-
-    @application.post("/documents/{document_id}/analyze")
-    async def analyze_document(
-        request: Request, document_id: str, csrf: str = Form(...)
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        document = database.get_document(int(user["id"]), document_id)
-        if not document:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        credential = database.get_api_credential_summary(int(user["id"]))
-        analyzer = request.app.state.analyzer
-        if credential:
-            provider = str(credential["provider"])
-            model = str(credential["model"])
-            credential_source = "personal"
-        elif app_settings.model_api_key:
-            provider = analyzer.provider
-            model = analyzer.model
-            credential_source = "default"
-        elif app_settings.uses_test_models:
-            provider = analyzer.provider
-            model = analyzer.model
-            credential_source = "default"
-        else:
-            return RedirectResponse(
-                "/settings/api?error=" + quote("开始分析前，请先配置你的模型服务"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        try:
-            job_id = database.create_job(
-                user_id=int(user["id"]),
-                document_id=document_id,
-                provider=provider,
-                model=model,
-                credential_source=credential_source,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/documents/{document_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.get("/jobs/{job_id}", response_class=HTMLResponse)
-    async def job_page(request: Request, job_id: str, error: Optional[str] = None):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        job = database.get_job(int(user["id"]), job_id)
-        if not job:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        chapters = database.list_chapters(
-            int(user["id"]), str(job["document_id"]), job_id
-        )
-        return render_template(
-            "job.html",
-            _template_context(
-                request, user=user, job=job, chapters=chapters, error=error
-            ),
-        )
-
-    @application.get("/api/jobs/{job_id}")
-    async def job_status(request: Request, job_id: str):
-        user = _current_user(request)
-        if not user:
-            return JSONResponse(
-                {"detail": "未登录"}, status_code=status.HTTP_401_UNAUTHORIZED
-            )
-        job = database.get_job(int(user["id"]), job_id)
-        if not job:
-            return JSONResponse(
-                {"detail": "任务不存在"}, status_code=status.HTTP_404_NOT_FOUND
-            )
-        completed = int(job["completed_chapters"])
-        failed = int(job["failed_chapters"])
-        total = int(job["total_chapters"])
-        return {
-            "id": job_id,
-            "status": job["status"],
-            "completed": completed,
-            "failed": failed,
-            "total": total,
-            "processed": completed + failed,
-            "percent": round((completed + failed) / total * 100, 1) if total else 0,
-            "terminal": job["status"] in {"completed", "partial", "failed"},
-        }
-
-    @application.post("/jobs/{job_id}/retry")
-    async def retry_job(request: Request, job_id: str, csrf: str = Form(...)):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        job = database.get_job(int(user["id"]), job_id)
-        if not job:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        if job.get(
-            "credential_source"
-        ) == "personal" and not database.has_api_credential(int(user["id"])):
-            return RedirectResponse(
-                "/settings/api?error="
-                + quote("重试这个任务前，请先重新配置个人模型凭据"),
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        retried = database.retry_failed(int(user["id"]), job_id)
-        if not retried:
-            return RedirectResponse(
-                f"/jobs/{job_id}?error={quote('当前无法重试；请确认任务已结束且没有其他任务正在运行')}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        request.app.state.worker.wake()
-        return RedirectResponse(
-            f"/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER
-        )
-
-    @application.get("/analyses/{analysis_id}", response_class=HTMLResponse)
-    async def analysis_page(
-        request: Request,
-        analysis_id: str,
-        error: Optional[str] = None,
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        analysis = database.get_analysis(int(user["id"]), analysis_id)
-        if not analysis:
-            return render_template(
-                "not_found.html",
-                _template_context(request, user=user),
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-        result = (
-            json.loads(analysis["result_json"]) if analysis.get("result_json") else None
-        )
-        saved_technique_names = technique_service.list_saved_names_for_analysis(
-            user_id=int(user["id"]), analysis_id=analysis_id
-        )
-        source_text = Path(str(analysis["content_path"])).read_text(encoding="utf-8")
-        return render_template(
-            "analysis.html",
-            _template_context(
-                request,
-                user=user,
-                analysis=analysis,
-                result=result,
-                saved_technique_names=saved_technique_names,
-                source_text=source_text,
-                error=error,
-            ),
-        )
-
-    @application.post("/analyses/{analysis_id}/techniques/{technique_index}")
-    async def save_analysis_technique(
-        request: Request,
-        analysis_id: str,
-        technique_index: int,
-        csrf: str = Form(...),
-    ):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        verify_csrf(request, csrf)
-        try:
-            technique_id, created = technique_service.create_from_analysis(
-                user_id=int(user["id"]),
-                analysis_id=analysis_id,
-                technique_index=technique_index,
-            )
-        except ValueError as exc:
-            return RedirectResponse(
-                f"/analyses/{analysis_id}?error={quote(str(exc))}",
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-        return RedirectResponse(
-            f"/techniques/{technique_id}?"
-            + ("created=true" if created else "saved=true"),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    @application.get("/jobs/{job_id}/export.json")
-    async def export_job(request: Request, job_id: str):
-        user = _current_user(request)
-        if not user:
-            return _login_redirect(request)
-        payload = database.export_job(int(user["id"]), job_id)
-        if not payload:
-            return Response(status_code=status.HTTP_404_NOT_FOUND)
-        filename = f"story-analysis-{job_id[:8]}.json"
-        return Response(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     return application

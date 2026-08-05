@@ -40,16 +40,15 @@ from .structured_settings import FIELD_RULES
 from .technique_schema import TechniqueObservation
 
 
-MAX_RESOURCE_CHARS = 220_000
 MAX_GREP_RESULTS = 100
-MAX_SPECIALIST_PACKET_CHARS = 80_000
-MAX_SPECIALIST_RESOURCE_CHARS = 30_000
 
 
 class GlobArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     pattern: str = Field(default="book/**/*", min_length=1, max_length=500)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
 
 
 class ReadArguments(BaseModel):
@@ -58,6 +57,8 @@ class ReadArguments(BaseModel):
     path: str = Field(min_length=1, max_length=500)
     line_start: int = Field(default=1, ge=1, le=1_000_000)
     line_count: int = Field(default=400, ge=1, le=2_000)
+    char_start: int | None = Field(default=None, ge=1)
+    char_count: int = Field(default=16_000, ge=1, le=48_000)
 
 
 class GrepArguments(BaseModel):
@@ -66,6 +67,7 @@ class GrepArguments(BaseModel):
     pattern: str = Field(min_length=1, max_length=300)
     path: str = Field(default="book", min_length=1, max_length=500)
     include: str = Field(default="", max_length=200)
+    offset: int = Field(default=0, ge=0)
     max_results: int = Field(default=40, ge=1, le=MAX_GREP_RESULTS)
 
 
@@ -75,7 +77,6 @@ class SearchArguments(BaseModel):
     query: str = Field(min_length=2, max_length=500)
     related_concepts: list[str] = Field(
         default_factory=list,
-        max_length=12,
         description=(
             "与查询意思相近的别名、转述或具体线索；由当前模型根据作者问题"
             "补充，用于跨措辞检索，不得添加作者没有暗示的新事实"
@@ -83,6 +84,7 @@ class SearchArguments(BaseModel):
     )
     path: str = Field(default="book", min_length=1, max_length=500)
     include: str = Field(default="", max_length=200)
+    offset: int = Field(default=0, ge=0)
     max_results: int = Field(default=12, ge=1, le=30)
 
 
@@ -90,8 +92,8 @@ class EditArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=500)
-    old_string: str = Field(min_length=1, max_length=120_000)
-    new_string: str = Field(max_length=120_000)
+    old_string: str = Field(min_length=1)
+    new_string: str
     expected_revision: str = Field(min_length=8, max_length=128)
     replace_all: bool = False
     rationale: str = Field(default="按作者要求进行局部修改", max_length=800)
@@ -101,7 +103,7 @@ class WriteArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(min_length=1, max_length=500)
-    content: str = Field(min_length=1, max_length=220_000)
+    content: str = Field(min_length=1)
     expected_revision: str = Field(min_length=3, max_length=128)
     rationale: str = Field(default="按作者要求写入作品资源", max_length=800)
 
@@ -117,8 +119,8 @@ class DeleteArguments(BaseModel):
 class PatchReplacement(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    old_string: str = Field(min_length=1, max_length=120_000)
-    new_string: str = Field(max_length=120_000)
+    old_string: str = Field(min_length=1)
+    new_string: str
     replace_all: bool = False
 
 
@@ -127,16 +129,13 @@ class PatchTarget(BaseModel):
 
     path: str = Field(min_length=1, max_length=500)
     expected_revision: str = Field(min_length=8, max_length=128)
-    replacements: list[PatchReplacement] = Field(
-        min_length=1,
-        max_length=40,
-    )
+    replacements: list[PatchReplacement] = Field(min_length=1)
 
 
 class PatchArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    targets: list[PatchTarget] = Field(min_length=1, max_length=16)
+    targets: list[PatchTarget] = Field(min_length=1)
     rationale: str = Field(default="按作者要求批量修改作品资源", max_length=800)
 
 
@@ -162,6 +161,8 @@ class DiffArguments(BaseModel):
     path_b: str = Field(min_length=1, max_length=500)
     revision_b: str = Field(min_length=64, max_length=64)
     context_lines: int = Field(default=3, ge=0, le=20)
+    line_start: int = Field(default=1, ge=1)
+    line_count: int = Field(default=400, ge=1, le=2_000)
 
 
 class RestoreArguments(BaseModel):
@@ -361,16 +362,10 @@ def _json_content(value: Any) -> str:
 
 
 def _bounded_packet_value(value: Any, max_chars: int) -> Any:
-    if value in (None, "", [], {}):
-        return None
-    serialized = _json_content(value)
-    if len(serialized) <= max_chars:
-        return value
-    return {
-        "truncated": True,
-        "notice": "该部分只保留与本轮写作最接近的前段内容",
-        "json_excerpt": serialized[:max_chars],
-    }
+    """Return complete selected context instead of silently clipping it."""
+
+    del max_chars
+    return None if value in (None, "", [], {}) else value
 
 
 def _safe_virtual_path(value: str) -> str:
@@ -396,8 +391,6 @@ def _read_owned_text(path: str) -> str:
         return ""
     except (OSError, UnicodeError) as exc:
         raise ValueError("无法读取作品资源") from exc
-    if len(value) > MAX_RESOURCE_CHARS:
-        raise ValueError("单个作品资源超过 Agent 可读取上限")
     return value
 
 
@@ -554,12 +547,11 @@ class AgentWorkspace:
         *,
         paths: Sequence[str],
     ) -> WorkspaceToolResult:
-        """Read an explicit, bounded resource set for a non-recursive task."""
+        """Read an explicit resource set for a non-recursive task."""
 
         resources: list[dict[str, Any]] = []
         accessed_sources: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
-        remaining_chars = MAX_SPECIALIST_PACKET_CHARS
         for raw_path in paths:
             path = _safe_virtual_path(raw_path)
             if path in seen_paths:
@@ -568,21 +560,13 @@ class AgentWorkspace:
             resource = self.resources.get(path)
             if resource is None:
                 raise ValueError(f"task 资源不存在：{path}")
-            if remaining_chars <= 0:
-                raise ValueError("task 资源包超过可读取上限，请缩小范围")
-            selected_chars = min(
-                len(resource.content),
-                MAX_SPECIALIST_RESOURCE_CHARS,
-                remaining_chars,
-            )
-            excerpt = resource.content[:selected_chars]
-            truncated = selected_chars < len(resource.content)
+            excerpt = resource.content
             resources.append(
                 {
                     "path": path,
                     "kind": resource.kind,
                     "revision": resource.revision,
-                    "truncated": truncated,
+                    "truncated": False,
                     "content": excerpt,
                 }
             )
@@ -590,13 +574,12 @@ class AgentWorkspace:
             accessed_sources.extend(
                 self._resource_source(resource, excerpt, 1)
             )
-            remaining_chars -= selected_chars
         return WorkspaceToolResult(
             result={
                 "resource_count": len(resources),
                 "resources": resources,
-                "total_chars": (
-                    MAX_SPECIALIST_PACKET_CHARS - remaining_chars
+                "total_chars": sum(
+                    len(item["content"]) for item in resources
                 ),
             },
             accessed_sources=accessed_sources,
@@ -629,6 +612,8 @@ class AgentWorkspace:
                 "# Readraft virtual workspace\n\n"
                 "manuscript 保存正文；settings 保存已确认作品资料；"
                 "analysis 与 notes 是辅助信息；references 永远只读。\n"
+                "参考书的全书文风画像位于 analysis/reference/style-profile.json；"
+                "只有作者明确要求参考文风时才读取，并且只能迁移其中的抽象规则。\n"
                 "只可修改 main 分支，固定 tag/origin 不可写。"
             ),
             kind="manifest",
@@ -1041,18 +1026,51 @@ class AgentWorkspace:
         document_id = str((self.context.get("document") or {}).get("id") or "")
         if not document_id:
             return
+        aggregate_value: dict[str, Any] = {}
+        aggregate_job_id = ""
         with self.database.connection() as connection:
             rows = connection.execute(
                 """
                 SELECT chapter.id, chapter.position, chapter.title,
-                       chapter.content_path
+                       chapter.content_path, analysis.id AS analysis_id,
+                       analysis.result_json
                 FROM chapters chapter
                 JOIN documents document ON document.id=chapter.document_id
+                LEFT JOIN chapter_analyses analysis ON analysis.id=(
+                    SELECT candidate.id
+                    FROM chapter_analyses candidate
+                    JOIN analysis_jobs job ON job.id=candidate.job_id
+                    WHERE candidate.chapter_id=chapter.id
+                      AND candidate.status='completed'
+                      AND job.user_id=?
+                    ORDER BY candidate.finished_at DESC, candidate.rowid DESC
+                    LIMIT 1
+                )
                 WHERE chapter.document_id=? AND document.user_id=?
                 ORDER BY chapter.position
                 """,
-                (document_id, self.user_id),
+                (self.user_id, document_id, self.user_id),
             ).fetchall()
+            aggregate_row = connection.execute(
+                """
+                SELECT id, aggregate_json
+                FROM analysis_jobs
+                WHERE document_id=? AND user_id=?
+                  AND status IN ('completed', 'partial')
+                  AND aggregate_json NOT IN ('', '{}')
+                ORDER BY finished_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (document_id, self.user_id),
+            ).fetchone()
+            if aggregate_row:
+                aggregate_job_id = str(aggregate_row["id"])
+                try:
+                    decoded = json.loads(str(aggregate_row["aggregate_json"]))
+                except (TypeError, ValueError):
+                    decoded = {}
+                if isinstance(decoded, dict):
+                    aggregate_value = decoded
         index_items = []
         for row in rows:
             path = f"book/references/chapters/{int(row['position']):03d}.md"
@@ -1068,9 +1086,30 @@ class AgentWorkspace:
                     "title": str(row["title"]),
                 },
             )
+            analysis_path = ""
+            try:
+                analysis_value = json.loads(str(row["result_json"] or "{}"))
+            except (TypeError, ValueError):
+                analysis_value = {}
+            if row["analysis_id"] and analysis_value:
+                analysis_path = (
+                    f"book/analysis/reference/{int(row['position']):03d}.json"
+                )
+                self._add(
+                    analysis_path,
+                    _json_content(analysis_value),
+                    kind="analysis",
+                    source_id=f"analysis:{row['analysis_id']}",
+                    metadata={
+                        "chapter_id": str(row["id"]),
+                        "position": int(row["position"]),
+                        "title": str(row["title"]),
+                    },
+                )
             index_items.append(
                 {
                     "path": path,
+                    "analysis_path": analysis_path,
                     "chapter_id": str(row["id"]),
                     "position": int(row["position"]),
                     "title": str(row["title"]),
@@ -1081,6 +1120,21 @@ class AgentWorkspace:
             _json_content(index_items),
             kind="reference_index",
         )
+        if aggregate_value:
+            self._add(
+                "book/analysis/reference/book-profile.json",
+                _json_content(aggregate_value),
+                kind="analysis",
+                source_id=f"analysis-job:{aggregate_job_id}",
+            )
+            style_profile = aggregate_value.get("style_profile")
+            if isinstance(style_profile, Mapping):
+                self._add(
+                    "book/analysis/reference/style-profile.json",
+                    _json_content(style_profile),
+                    kind="analysis",
+                    source_id=f"analysis-job:{aggregate_job_id}",
+                )
 
     def _add_analysis_and_notes(self) -> None:
         if self.project_id:
@@ -1168,28 +1222,31 @@ class AgentWorkspace:
                         ),
                     ),
                 ).fetchall()
-            history_lines = [
-                json.dumps(
+            history_index: list[dict[str, Any]] = []
+            for sequence, row in enumerate(rows, start=1):
+                content = str(row["content"] or "")
+                path = (
+                    "book/notes/conversation-history/"
+                    f"{sequence:06d}-{str(row['role'])}.md"
+                )
+                self._add(
+                    path,
+                    content,
+                    kind="note",
+                )
+                history_index.append(
                     {
+                        "path": path,
                         "id": str(row["id"]),
                         "role": str(row["role"]),
                         "created_at": str(row["created_at"]),
-                        "content": str(row["content"] or "")[:20_000],
-                    },
-                    ensure_ascii=False,
+                        "char_count": len(content),
+                    }
                 )
-                for row in rows
-            ]
-            history_content = "\n".join(history_lines)
-            if len(history_content) > 200_000:
-                history_content = (
-                    '{"notice":"较早消息已截断，请缩小检索关键词"}\n'
-                    + history_content[-199_000:]
-                )
-            if history_content:
+            if history_index:
                 self._add(
-                    "book/notes/conversation-history.jsonl",
-                    history_content,
+                    "book/notes/conversation-history/index.json",
+                    _json_content(history_index),
                     kind="note",
                 )
         linked = self.context.get("linked_source") or {}
@@ -1220,6 +1277,13 @@ class AgentWorkspace:
                         _json_content(raw["analysis"]),
                         kind="analysis",
                     )
+            style_profile = linked.get("style_profile")
+            if isinstance(style_profile, Mapping):
+                self._add(
+                    "book/analysis/reference/style-profile.json",
+                    _json_content(style_profile),
+                    kind="analysis",
+                )
 
     def _add_technique_library(self) -> None:
         with self.database.connection() as connection:
@@ -1236,7 +1300,6 @@ class AgentWorkspace:
                 WHERE card.user_id=?
                 ORDER BY CASE card.status WHEN 'active' THEN 0 ELSE 1 END,
                          card.updated_at DESC, card.rowid DESC
-                LIMIT 200
                 """,
                 (self.user_id,),
             ).fetchall()
@@ -1295,8 +1358,16 @@ class AgentWorkspace:
             )
             if fnmatch.fnmatchcase(resource.path, pattern)
         ]
+        page = matches[arguments.offset : arguments.offset + arguments.limit]
         return WorkspaceToolResult(
-            result={"pattern": pattern, "matches": matches[:500]}
+            result={
+                "pattern": pattern,
+                "offset": arguments.offset,
+                "limit": arguments.limit,
+                "total": len(matches),
+                "has_more": arguments.offset + len(page) < len(matches),
+                "matches": page,
+            }
         )
 
     def _resource_source(
@@ -1323,6 +1394,31 @@ class AgentWorkspace:
         resource = self.resources.get(path)
         if resource is None:
             raise ValueError("作品资源不存在，请先用 glob 查看准确路径")
+        if arguments.char_start is not None:
+            start = arguments.char_start - 1
+            selected_text = resource.content[
+                start : start + arguments.char_count
+            ]
+            actual_line_start = resource.content.count("\n", 0, start) + 1
+            result = {
+                "path": path,
+                "kind": resource.kind,
+                "writable": resource.writable,
+                "revision": resource.revision,
+                "mode": "characters",
+                "char_start": arguments.char_start,
+                "char_end": arguments.char_start + max(0, len(selected_text) - 1),
+                "total_chars": len(resource.content),
+                "has_more": start + len(selected_text) < len(resource.content),
+                "content": selected_text,
+            }
+            self.accessed_paths.add(path)
+            return WorkspaceToolResult(
+                result=result,
+                accessed_sources=self._resource_source(
+                    resource, selected_text, actual_line_start
+                ),
+            )
         lines = resource.content.splitlines()
         start = arguments.line_start - 1
         selected = lines[start : start + arguments.line_count]
@@ -1354,8 +1450,9 @@ class AgentWorkspace:
             expression = re.compile(arguments.pattern)
         except re.error as exc:
             raise ValueError(f"检索表达式无效：{exc}") from exc
-        matches: list[dict[str, Any]] = []
-        accessed: list[dict[str, Any]] = []
+        all_matches: list[
+            tuple[WorkspaceResource, int, str, int, int, int]
+        ] = []
         for resource in sorted(
             self.resources.values(), key=lambda item: item.path
         ):
@@ -1367,35 +1464,69 @@ class AgentWorkspace:
                 resource.path, arguments.include
             ):
                 continue
-            resource_matched = False
-            for line_number, line in enumerate(
-                resource.content.splitlines(), start=1
+            line_char_start = 0
+            for line_number, raw_line in enumerate(
+                resource.content.splitlines(keepends=True), start=1
             ):
-                if not expression.search(line):
+                line = raw_line.rstrip("\r\n")
+                found = expression.search(line)
+                if not found:
+                    line_char_start += len(raw_line)
                     continue
-                matches.append(
-                    {
+                excerpt_start = max(0, found.start() - 400)
+                excerpt_end = min(len(line), found.end() + 800)
+                all_matches.append(
+                    (
+                        resource,
+                        line_number,
+                        line[excerpt_start:excerpt_end],
+                        line_char_start + excerpt_start + 1,
+                        line_char_start + found.start() + 1,
+                        len(line),
+                    )
+                )
+                line_char_start += len(raw_line)
+        selected = all_matches[
+            arguments.offset : arguments.offset + arguments.max_results
+        ]
+        matches: list[dict[str, Any]] = []
+        accessed: list[dict[str, Any]] = []
+        for (
+            resource,
+            line_number,
+            excerpt,
+            excerpt_char_start,
+            match_char_start,
+            line_char_count,
+        ) in selected:
+            matches.append(
+                {
+                    "path": resource.path,
+                    "line": line_number,
+                    "text": excerpt,
+                    "excerpt_char_start": excerpt_char_start,
+                    "match_char_start": match_char_start,
+                    "line_char_count": line_char_count,
+                    "read_hint": {
                         "path": resource.path,
-                        "line": line_number,
-                        "text": line[:1_200],
-                    }
-                )
-                resource_matched = True
-                if len(matches) >= arguments.max_results:
-                    break
-            if resource_matched:
-                self.accessed_paths.add(resource.path)
-                accessed.extend(
-                    self._resource_source(resource, resource.content, 1)
-                )
-            if len(matches) >= arguments.max_results:
-                break
+                        "char_start": excerpt_char_start,
+                    },
+                }
+            )
+            self.accessed_paths.add(resource.path)
+            accessed.extend(
+                self._resource_source(resource, excerpt, line_number)
+            )
         return WorkspaceToolResult(
             result={
                 "pattern": arguments.pattern,
                 "path": root,
+                "offset": arguments.offset,
                 "matches": matches,
-                "matched_count": len(matches),
+                "matched_count": len(all_matches),
+                "has_more": (
+                    arguments.offset + len(matches) < len(all_matches)
+                ),
             },
             accessed_sources=accessed,
         )
@@ -1423,7 +1554,6 @@ class AgentWorkspace:
             raise ValueError("查询没有可检索的有效概念")
 
         candidates: list[tuple[WorkspaceResource, int, str, set[str]]] = []
-        truncated_corpus = False
         searchable = [
             resource
             for resource in sorted(
@@ -1458,14 +1588,9 @@ class AgentWorkspace:
                 terms = set(build_search_terms([chunk], max_terms=2_048))
                 if terms.intersection(weights):
                     candidates.append((resource, start, chunk, terms))
-                if len(candidates) >= 8_000:
-                    truncated_corpus = True
-                    break
                 if end >= len(content):
                     break
                 start = max(start + 1, end - 180)
-            if truncated_corpus:
-                break
 
         if not candidates:
             return WorkspaceToolResult(
@@ -1475,7 +1600,6 @@ class AgentWorkspace:
                     "related_concepts": related,
                     "matches": [],
                     "matched_count": 0,
-                    "corpus_truncated": truncated_corpus,
                 }
             )
         document_frequency: dict[str, int] = {term: 0 for term in weights}
@@ -1516,11 +1640,10 @@ class AgentWorkspace:
 
         matches: list[dict[str, Any]] = []
         accessed: list[dict[str, Any]] = []
-        per_path: dict[str, int] = {}
-        for score, resource, start, chunk, matched in scored:
-            if per_path.get(resource.path, 0) >= 3:
-                continue
-            per_path[resource.path] = per_path.get(resource.path, 0) + 1
+        selected_scored = scored[
+            arguments.offset : arguments.offset + arguments.max_results
+        ]
+        for score, resource, start, chunk, matched in selected_scored:
             anchor = -1
             for needle in [arguments.query, *related, *matched]:
                 anchor = chunk.casefold().find(str(needle).casefold())
@@ -1545,16 +1668,17 @@ class AgentWorkspace:
             accessed.extend(
                 self._resource_source(resource, excerpt, line_start)
             )
-            if len(matches) >= arguments.max_results:
-                break
         return WorkspaceToolResult(
             result={
                 "query": arguments.query,
                 "engine": "model_expanded_sparse_cjk",
                 "related_concepts": related,
+                "offset": arguments.offset,
                 "matches": matches,
-                "matched_count": len(matches),
-                "corpus_truncated": truncated_corpus,
+                "matched_count": len(scored),
+                "has_more": (
+                    arguments.offset + len(matches) < len(scored)
+                ),
                 "notice": (
                     "这是模型扩展概念加本地稀疏排序，不是外部 embedding；"
                     "请 read 命中资源核对原文。"
@@ -1592,17 +1716,23 @@ class AgentWorkspace:
                 lineterm="",
             )
         )
-        rendered = "\n".join(lines)
-        truncated = len(rendered) > 60_000
-        if truncated:
-            rendered = rendered[:60_000]
+        start = arguments.line_start - 1
+        selected_lines = lines[start : start + arguments.line_count]
+        rendered = "\n".join(selected_lines)
+        has_more = start + len(selected_lines) < len(lines)
         self.accessed_paths.update({path_a, path_b})
         return WorkspaceToolResult(
             result={
                 "path_a": path_a,
                 "path_b": path_b,
                 "different": bool(lines),
-                "truncated": truncated,
+                "line_start": arguments.line_start,
+                "line_end": (
+                    arguments.line_start + max(0, len(selected_lines) - 1)
+                ),
+                "total_lines": len(lines),
+                "has_more": has_more,
+                "truncated": has_more,
                 "diff": rendered,
             },
             accessed_sources=[
@@ -1767,8 +1897,6 @@ class AgentWorkspace:
                 )
             if content == resource.content:
                 raise ValueError(f"patch 没有改变目标内容：{path}")
-            if len(content) > MAX_RESOURCE_CHARS:
-                raise ValueError(f"patch 后资源超过长度上限：{path}")
             staged.append((resource, content, len(target.replacements)))
 
         original_contents = {
@@ -2450,13 +2578,9 @@ class AgentWorkspace:
                 active_techniques, 5_000
             ),
             "previous_chapter_tail": (
-                previous_excerpt[-12_000:]
-                if previous_excerpt
-                else (
-                    previous.content[-12_000:]
-                    if previous is not None
-                    else ""
-                )
+                previous.content
+                if previous is not None
+                else previous_excerpt
             ),
             "supporting_resources": supporting,
         }

@@ -20,7 +20,7 @@ class AssistantCitationProposal(BaseModel):
 class AssistantDraftProposal(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    content: str = Field(min_length=1, max_length=60_000)
+    content: str = Field(min_length=1)
     rationale: str = Field(min_length=2, max_length=800)
 
 
@@ -108,14 +108,10 @@ class ChapterDraftAuditResult(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     verdict: Literal["pass", "revised"]
-    issues: list[ChapterDraftAuditIssue] = Field(
-        default_factory=list,
-        max_length=12,
-    )
+    issues: list[ChapterDraftAuditIssue] = Field(default_factory=list)
     revised_content: Optional[str] = Field(
         default=None,
         min_length=1,
-        max_length=60_000,
     )
     summary: str = Field(min_length=2, max_length=1200)
 
@@ -142,7 +138,7 @@ class AssistantArchiveRuleProposal(BaseModel):
         )
     )
     title: str = Field(default="", max_length=120)
-    content: str = Field(min_length=2, max_length=6000)
+    content: str = Field(min_length=2)
 
 
 SettingFieldValue = str | int | list[str]
@@ -305,7 +301,6 @@ class AssistantSettingsPatch(BaseModel):
     archive_rules: Optional[list[AssistantArchiveRuleProposal]] = Field(
         default=None,
         min_length=1,
-        max_length=30,
         description=(
             "无法准确放入上述全局字段的具体作品资料。每条必须归入作品概览、"
             "世界、人物、剧情与结构、叙事与文风之一"
@@ -314,7 +309,6 @@ class AssistantSettingsPatch(BaseModel):
     structured_edits: Optional[list[AssistantStructuredSettingEdit]] = Field(
         default=None,
         min_length=1,
-        max_length=30,
         description=(
             "对具体资料对象的可确认局部编辑。已存在的人物、世界资料、"
             "关系、蓝图、剧情线和文风必须优先使用这里，不得退化成"
@@ -370,9 +364,9 @@ class AssistantChapterEdit(BaseModel):
     chapter_id: str = Field(min_length=1, max_length=64)
     expected_revision: str = Field(min_length=64, max_length=64)
     title: Optional[str] = Field(default=None, max_length=200)
-    outline: Optional[str] = Field(default=None, max_length=6000)
-    key_points: Optional[str] = Field(default=None, max_length=6000)
-    position: Optional[int] = Field(default=None, ge=1, le=10_000)
+    outline: Optional[str] = None
+    key_points: Optional[str] = None
+    position: Optional[int] = Field(default=None, ge=1)
     delete: Optional[bool] = None
 
     @model_validator(mode="after")
@@ -395,7 +389,7 @@ class AssistantChapterEdit(BaseModel):
 class AssistantChapterPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    edits: list[AssistantChapterEdit] = Field(min_length=1, max_length=40)
+    edits: list[AssistantChapterEdit] = Field(min_length=1)
 
     @model_validator(mode="after")
     def ensure_unique_chapters(self) -> "AssistantChapterPatch":
@@ -420,7 +414,7 @@ class AssistantNoteEdit(BaseModel):
     note_id: Optional[str] = Field(default=None, max_length=64)
     expected_revision: str = Field(min_length=3, max_length=128)
     title: Optional[str] = Field(default=None, max_length=200)
-    content: Optional[str] = Field(default=None, max_length=120_000)
+    content: Optional[str] = None
     rationale: str = Field(default="", max_length=800)
 
     @model_validator(mode="after")
@@ -448,7 +442,7 @@ class AssistantNoteEdit(BaseModel):
 class AssistantNotePatch(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    edits: list[AssistantNoteEdit] = Field(min_length=1, max_length=24)
+    edits: list[AssistantNoteEdit] = Field(min_length=1)
 
     @model_validator(mode="after")
     def ensure_unique_notes(self) -> "AssistantNotePatch":
@@ -484,10 +478,7 @@ class AssistantTechniqueCardProposal(BaseModel):
 class AssistantTechniquePatch(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    cards: list[AssistantTechniqueCardProposal] = Field(
-        min_length=1,
-        max_length=8,
-    )
+    cards: list[AssistantTechniqueCardProposal] = Field(min_length=1)
 
     @model_validator(mode="after")
     def ensure_unique_cards(self) -> "AssistantTechniquePatch":
@@ -505,20 +496,18 @@ class AssistantChapterWorkflowResult(BaseModel):
 
     workflow_id: str = Field(min_length=1, max_length=64)
     status: Literal["completed", "paused"]
-    total_count: int = Field(ge=1, le=12)
-    completed_count: int = Field(ge=0, le=12)
-    chapter_ids: list[str] = Field(default_factory=list, max_length=12)
-    version_ids: list[str] = Field(default_factory=list, max_length=12)
-    error: str = Field(default="", max_length=2000)
+    total_count: int = Field(ge=1)
+    completed_count: int = Field(ge=0)
+    chapter_ids: list[str] = Field(default_factory=list)
+    version_ids: list[str] = Field(default_factory=list)
+    error: str = ""
 
 
 class AssistantChatResult(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    answer: str = Field(min_length=1, max_length=30_000)
-    citations: list[AssistantCitationProposal] = Field(
-        default_factory=list, max_length=8
-    )
+    answer: str = Field(min_length=1)
+    citations: list[AssistantCitationProposal] = Field(default_factory=list)
     draft: Optional[AssistantDraftProposal] = None
     settings_patch: Optional[AssistantSettingsPatch] = None
     story_plan: Optional[AssistantStoryPlanProposal] = None

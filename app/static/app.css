@@ -1216,6 +1216,27 @@ select:focus {
   white-space: pre-wrap;
 }
 
+.analysis-evidence-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.analysis-evidence-links a {
+  color: var(--accent, #28644f);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.source-panel mark {
+  padding: 0 2px;
+  color: inherit;
+  background: #f2d97a;
+  border-radius: 3px;
+}
+
 .project-card .book-content > p {
   display: -webkit-box;
   overflow: hidden;

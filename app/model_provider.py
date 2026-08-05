@@ -326,7 +326,7 @@ def build_chat_payload(
     settings: "Settings",
     messages: Iterable[Mapping[str, Any]],
     provider_user_id: str,
-    max_tokens: int,
+    max_tokens: int | None,
     json_object: bool,
     temperature: Optional[float],
     tools: Iterable[Mapping[str, Any]] | None = None,
@@ -366,9 +366,10 @@ def build_chat_payload(
     payload: Dict[str, Any] = {
         "model": settings.model_name,
         "messages": prepared_messages,
-        provider.max_tokens_field: max_tokens,
         "stream": False,
     }
+    if max_tokens is not None and int(max_tokens) > 0:
+        payload[provider.max_tokens_field] = int(max_tokens)
     if json_object:
         payload["response_format"] = {"type": "json_object"}
     prepared_tools = [dict(tool) for tool in (tools or [])]

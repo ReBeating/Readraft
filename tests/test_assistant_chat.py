@@ -39,11 +39,8 @@ from app.agent_model import (
     _unresolved_repetition_findings,
     compose_native_agent_system_prompt,
 )
-from app.assistant_chat_service import (
-    MAX_USER_MESSAGE_CHARS,
-    AssistantChatService,
-    _author_explicitly_requested_deletion,
-)
+from app.assistant_application import _author_explicitly_requested_deletion
+from app.assistant_chat_service import AssistantChatService
 from app.assistant_chat_schema import (
     AssistantDraftProposal,
     ChapterDraftAuditIssue,
@@ -411,6 +408,34 @@ class NativeSpecialistModel(MockAgentModel):
         )
 
 
+class ScriptedLengthThenStopModel(MockAgentModel):
+    def __init__(self):
+        self.requests = []
+
+    async def native_turn(self, **kwargs):
+        self.requests.append(
+            {
+                **kwargs,
+                "messages": [dict(item) for item in kwargs["messages"]],
+            }
+        )
+        first = len(self.requests) == 1
+        content = "前半段。" if first else "后半段。"
+        callback = kwargs.get("on_text_delta")
+        if callback is not None:
+            callback_result = callback(content)
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
+        return AssistantModelTurn(
+            content=content,
+            reasoning="",
+            tool_calls=(),
+            finish_reason="length" if first else "stop",
+            input_tokens=5,
+            output_tokens=3,
+        )
+
+
 class NativeProseModel(MockAgentModel):
     provider = "prose-provider"
     model = "prose-model"
@@ -560,6 +585,66 @@ def test_deepseek_native_turn_sends_real_tools_and_normalizes_call(tmp_path):
         "path": "book/settings/core.json"
     }
     assert turn.input_tokens == 21
+
+
+def test_native_turn_preserves_length_stop_and_discards_partial_tool_json(
+    tmp_path,
+):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            "content": "我会先读取相关章节。",
+                            "tool_calls": [
+                                {
+                                    "id": "partial-call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "arguments": '{"path":"book/manuscript',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+            },
+        )
+
+    async def scenario():
+        settings = replace(
+            make_settings(tmp_path),
+            model_api_key="key",  # pragma: allowlist secret -- test value
+            model_max_tokens=0,
+        )
+        model = ProviderAgentModel(
+            settings, transport=httpx.MockTransport(handler)
+        )
+        try:
+            return await model.native_turn(
+                messages=[{"role": "user", "content": "继续处理"}],
+                tools=[],
+                provider_user_id="user-1",
+                max_tokens=None,
+            )
+        finally:
+            await model.close()
+
+    turn = asyncio.run(scenario())
+
+    assert "max_tokens" not in seen["payload"]
+    assert turn.finish_reason == "length"
+    assert turn.content == "我会先读取相关章节。"
+    assert turn.tool_calls == ()
 
 
 
@@ -1151,6 +1236,53 @@ def seed_novel(
     return user_id, project_id, chapter_id, version_id, content
 
 
+def test_native_agent_continues_a_provider_length_stop(tmp_path: Path):
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    user_id, project_id, chapter_id, _version_id, _content = seed_novel(
+        database, tmp_path
+    )
+    service = AssistantChatService(
+        database, tmp_path / "novels", tmp_path / "documents"
+    )
+    conversation_id = service.conversations.create(
+        user_id=user_id,
+        scope_type="chapter",
+        title="续接测试",
+        project_id=project_id,
+        novel_chapter_id=chapter_id,
+    )
+    message_id = service.queue_message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        question="只讨论这一章的开场，不要修改。",
+        provider="mock",
+        model="length-test-model",
+        credential_source="default",
+        agent_role="advisor",
+    )
+    claimed = service.claim_next_message()
+    assert claimed and claimed["id"] == message_id
+    model = ScriptedLengthThenStopModel()
+    streamed = []
+
+    response = asyncio.run(
+        AssistantAgentOrchestrator(service).run(
+            model=model,
+            item=claimed,
+            payload=service.build_job_payload(claimed),
+            provider_user_id="u_test",
+            on_answer_update=lambda value: streamed.append(value),
+        )
+    )
+
+    assert response.result.answer == "前半段。后半段。"
+    assert len(model.requests) == 2
+    assert all(item["max_tokens"] is None for item in model.requests)
+    assert model.requests[1]["messages"][-1]["role"] == "user"
+    assert streamed == ["前半段。", "前半段。后半段。"]
+
+
 def test_native_agent_loop_round_trips_tool_results_and_edits_workspace(
     tmp_path: Path,
 ):
@@ -1162,7 +1294,7 @@ def test_native_agent_loop_round_trips_tool_results_and_edits_workspace(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="局部修订",
@@ -1222,7 +1354,7 @@ def test_native_agent_task_is_bounded_read_only_and_non_recursive(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="连续性核对",
@@ -1283,7 +1415,7 @@ def test_native_agent_delegates_long_chapter_text_to_plain_prose_pipeline(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="重写第一章",
@@ -1369,7 +1501,7 @@ def test_low_quality_native_prose_skips_second_pass_audit(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="快速续写",
@@ -1422,14 +1554,14 @@ def test_chat_message_length_uses_only_a_high_server_safety_limit(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="长篇资料讨论",
         project_id=project_id,
     )
 
-    long_question = "海" * 8_001
+    long_question = "海" * 100_001
     message_id = service.queue_message(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -1440,24 +1572,12 @@ def test_chat_message_length_uses_only_a_high_server_safety_limit(
         agent_role="advisor",
     )
     queued = service.get_message(user_id=user_id, message_id=message_id)
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert queued
     assert conversation
     assert conversation["messages"][0]["content"] == long_question
-
-    with pytest.raises(ValueError, match="100,000"):
-        service.queue_message(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            question="海" * (MAX_USER_MESSAGE_CHARS + 1),
-            provider="mock",
-            model="mock-creative-chat",
-            credential_source="default",
-            agent_role="advisor",
-        )
-
 
 def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(
     tmp_path: Path,
@@ -1490,19 +1610,19 @@ def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="模式测试",
         project_id=project_id,
     )
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert conversation and conversation["quality_mode"] == "max"
 
     assert (
-        service.set_conversation_quality_mode(
+        service.conversations.set_quality_mode(
             user_id=user_id,
             conversation_id=conversation_id,
             quality_mode="standard",
@@ -1521,7 +1641,7 @@ def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(
     claimed = service.claim_next_message()
     assert claimed and claimed["id"] == message_id
     assert claimed["quality_mode"] == "low"
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert conversation and conversation["quality_mode"] == "low"
@@ -1532,13 +1652,13 @@ def test_conversation_remembers_quality_mode_and_new_chat_inherits_it(
         == "low"
     )
 
-    inherited_id = service.create_conversation(
+    inherited_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="新对话",
         project_id=project_id,
     )
-    inherited = service.get_conversation(
+    inherited = service.conversations.get(
         user_id=user_id, conversation_id=inherited_id
     )
     assert inherited and inherited["quality_mode"] == "low"
@@ -1555,7 +1675,7 @@ def test_long_conversation_keeps_memory_and_searches_complete_history(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="长期构思",
@@ -1605,7 +1725,7 @@ def test_long_conversation_keeps_memory_and_searches_complete_history(
         payload["context"]["conversation_memory"]
     )
     assert payload["context"]["conversation_history_search_available"] is True
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id,
         conversation_id=conversation_id,
     )
@@ -1644,7 +1764,7 @@ def test_project_writing_request_creates_blank_chapter_and_draft(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="开始创作",
@@ -1664,7 +1784,7 @@ def test_project_writing_request_creates_blank_chapter_and_draft(
 
     chapters = database.list_novel_chapters(user_id, project_id)
     assert chapters == []
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert conversation["scope_type"] == "project"
@@ -1696,7 +1816,7 @@ def test_project_writing_request_creates_blank_chapter_and_draft(
     assert len(chapters) == 1
     assert chapters[0]["title"] == ""
     chapter_id = str(chapters[0]["id"])
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert conversation["scope_type"] == "chapter"
@@ -1724,7 +1844,7 @@ def test_new_chapter_request_creates_next_chapter_without_touching_previous(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="继续写下一章",
@@ -1763,7 +1883,7 @@ def test_new_chapter_request_creates_next_chapter_without_touching_previous(
     assert len(chapters) == 2
     assert [int(item["position"]) for item in chapters] == [1, 2]
     next_chapter_id = str(chapters[1]["id"])
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert conversation["scope_type"] == "chapter"
@@ -1818,7 +1938,7 @@ def test_writer_can_create_then_compose_next_chapter_in_one_agent_run(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="自主创建下一章",
@@ -1862,7 +1982,7 @@ def test_writer_can_create_then_compose_next_chapter_in_one_agent_run(
     created = chapters[1]
     assert created["title"] == "第二章 灯塔"
     assert created["outline"].startswith("林岚抵达灯塔")
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id,
         conversation_id=conversation_id,
     )
@@ -1904,7 +2024,7 @@ def test_unwritten_project_script_can_create_first_chapter_directly(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="导入剧本素材",
@@ -1921,7 +2041,7 @@ def test_unwritten_project_script_can_create_first_chapter_directly(
     )
 
     assert database.list_novel_chapters(user_id, project_id) == []
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert conversation["scope_type"] == "project"
@@ -1976,7 +2096,7 @@ def test_quote_bound_edit_saves_full_draft_without_changing_canon(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="检查这一句",
@@ -2014,7 +2134,7 @@ def test_quote_bound_edit_saves_full_draft_without_changing_canon(
         response=response,
     )
 
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assistant_message = conversation["messages"][-1]
@@ -2059,7 +2179,7 @@ def test_quote_offsets_are_normalized_against_verified_source(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="浏览器选区兼容",
@@ -2088,7 +2208,7 @@ def test_quote_offsets_are_normalized_against_verified_source(
             ).hexdigest(),
         },
     )
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     user_message = conversation["messages"][0]
@@ -2107,7 +2227,7 @@ def test_quote_line_endings_are_normalized_from_browser_form(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="表单换行兼容",
@@ -2147,7 +2267,7 @@ def test_quote_line_endings_are_normalized_from_browser_form(
             ).hexdigest(),
         },
     )
-    message = service.get_conversation(
+    message = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )["messages"][0]
     assert message["id"] != message_id
@@ -2163,7 +2283,7 @@ def test_chat_rejects_stale_or_cross_scope_quote(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="检查引用",
@@ -2194,7 +2314,7 @@ def test_chat_rejects_stale_or_cross_scope_quote(tmp_path: Path):
         "other-chat-user", hash_password("password-123")
     )
     assert (
-        service.get_conversation(
+        service.conversations.get(
             user_id=other_user, conversation_id=conversation_id
         )
         is None
@@ -2211,7 +2331,7 @@ def test_advisor_is_read_only_for_text_edit(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="只讨论这句话",
@@ -2277,7 +2397,7 @@ def test_project_chat_proposes_and_applies_settings_candidate(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="讨论新书",
@@ -2350,7 +2470,7 @@ def test_project_chat_directly_applies_settings_by_default(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="直接整理新书",
@@ -2419,7 +2539,7 @@ def test_explicit_discussion_only_never_writes_settings(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="只讨论",
@@ -2481,7 +2601,7 @@ def test_settings_candidate_creates_structured_character_card(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="整理人物",
@@ -2611,7 +2731,7 @@ def test_project_chat_proposes_and_applies_versioned_story_plan(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="规划全书",
@@ -2686,7 +2806,7 @@ def test_project_chat_directly_applies_story_plan_by_default(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="直接规划全书",
@@ -2739,7 +2859,7 @@ def test_writer_creates_candidate_without_overwriting_canon(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="续写这一章",
@@ -2805,7 +2925,7 @@ def test_writer_auto_commits_working_copy_and_can_revert(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="自动续写",
@@ -2881,7 +3001,7 @@ def test_editor_auto_commits_validated_selection(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="自动局部修改",
@@ -2976,7 +3096,7 @@ def test_reference_chapter_chat_uses_source_but_cannot_create_draft(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="reference_chapter",
         title="拆解信息释放",
@@ -3205,7 +3325,7 @@ def test_novel_chat_web_flow_and_draft_action(tmp_path: Path):
         assert candidate["head_version_id"] == candidate["id"]
 
         spare_conversation_id = (
-            application.state.assistant_chat_service.create_conversation(
+            application.state.assistant_chat_service.conversations.create(
                 user_id=int(user["id"]),
                 scope_type="chapter",
                 title="待删除对话",
@@ -3233,7 +3353,7 @@ def test_novel_chat_web_flow_and_draft_action(tmp_path: Path):
             "location"
         ]
         assert (
-            application.state.assistant_chat_service.get_conversation(
+            application.state.assistant_chat_service.conversations.get(
                 user_id=int(user["id"]),
                 conversation_id=spare_conversation_id,
             )
@@ -3259,7 +3379,7 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="讨论第二章",
@@ -3288,7 +3408,7 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
 
     complete_turn("先讨论这一章的悬念入口。")
     complete_turn("把第二个方案说得更具体。")
-    original = service.get_conversation(
+    original = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert original
@@ -3310,7 +3430,7 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
         message_id=str(original["messages"][2]["id"]),
         replacement_question="把第三个方案说得更具体。",
     )
-    edited_conversation = service.get_conversation(
+    edited_conversation = service.conversations.get(
         user_id=user_id,
         conversation_id=str(edited["conversation_id"]),
     )
@@ -3332,7 +3452,7 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
     assert regenerated["question"] == original["messages"][2]["content"]
     assert regenerated["conversation_id"] != edited["conversation_id"]
 
-    unchanged = service.get_conversation(
+    unchanged = service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert unchanged
@@ -3345,18 +3465,18 @@ def test_edit_and_regenerate_create_branches_without_mutating_history(
         )
         == version_count
     )
-    assert service.delete_conversation(
+    assert service.conversations.delete(
         user_id=user_id,
         conversation_id=str(edited["conversation_id"]),
     )
     assert (
-        service.get_conversation(
+        service.conversations.get(
             user_id=user_id,
             conversation_id=str(edited["conversation_id"]),
         )
         is None
     )
-    assert service.get_conversation(
+    assert service.conversations.get(
         user_id=user_id, conversation_id=conversation_id
     )
     assert (
@@ -3378,7 +3498,7 @@ def test_queued_assistant_message_can_be_cancelled(tmp_path: Path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="取消测试",
@@ -3423,7 +3543,7 @@ def test_running_assistant_message_cancellation_is_a_terminal_event(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="运行中取消",
@@ -3476,7 +3596,7 @@ def test_expired_agent_lease_recovers_and_closes_running_tools(
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="租约恢复",

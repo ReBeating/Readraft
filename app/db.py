@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional
 from urllib.parse import quote
 
 from .chapter_splitter import ChapterChunk
+from .document_repository import DocumentRepository
 from .continuity import replay_canonical_state
 from .json_support import load_json as _load_json
 from .memory_identity import (
@@ -171,6 +172,7 @@ CREATE TABLE IF NOT EXISTS documents (
     source_encoding TEXT NOT NULL,
     char_count INTEGER NOT NULL,
     split_strategy TEXT NOT NULL,
+    source_hash TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'ready',
     created_at TEXT NOT NULL
 );
@@ -187,6 +189,10 @@ CREATE TABLE IF NOT EXISTS chapters (
     source_end INTEGER NOT NULL,
     part_number INTEGER NOT NULL DEFAULT 1,
     part_count INTEGER NOT NULL DEFAULT 1,
+    split_confidence REAL NOT NULL DEFAULT 1.0,
+    split_reason TEXT NOT NULL DEFAULT '',
+    title_source TEXT NOT NULL DEFAULT 'detected',
+    content_hash TEXT NOT NULL DEFAULT '',
     UNIQUE(document_id, position)
 );
 
@@ -203,6 +209,8 @@ CREATE TABLE IF NOT EXISTS analysis_jobs (
     failed_chapters INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
+    schema_version TEXT NOT NULL DEFAULT '3.0',
+    aggregate_json TEXT NOT NULL DEFAULT '{}',
     error TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
@@ -219,12 +227,42 @@ CREATE TABLE IF NOT EXISTS chapter_analyses (
     raw_response TEXT,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT '3.0',
     error TEXT,
     started_at TEXT,
     finished_at TEXT,
     claim_token TEXT,
     lease_expires_at TEXT,
     UNIQUE(job_id, chapter_id)
+);
+
+CREATE TABLE IF NOT EXISTS chapter_analysis_layers (
+    analysis_id TEXT NOT NULL REFERENCES chapter_analyses(id) ON DELETE CASCADE,
+    layer TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    result_json TEXT,
+    raw_response TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    cache_hit INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    PRIMARY KEY(analysis_id, layer)
+);
+
+CREATE TABLE IF NOT EXISTS chapter_analysis_cache (
+    content_hash TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    layer TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    PRIMARY KEY(content_hash, schema_version, layer, provider, model)
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_user_created
@@ -477,6 +515,11 @@ def _attach_work_version(
 class Database:
     def __init__(self, path: Path):
         self.path = path
+        self.document_repository = DocumentRepository(
+            self,
+            attach_work_version=_attach_work_version,
+            now=utc_now,
+        )
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -4760,662 +4803,39 @@ class Database:
         story_memory_snapshots: Optional[Iterable[Mapping[str, Any]]] = None,
         source_head_snapshots: Optional[Iterable[Mapping[str, Any]]] = None,
     ) -> str:
-        document_id = source_path.parent.name
-        chunk_list = list(chunks)
-        path_list = list(chapter_paths)
-        memory_snapshot_list = list(story_memory_snapshots or [])
-        source_head_snapshot_list = list(source_head_snapshots or [])
-        if len(chunk_list) != len(path_list):
-            raise ValueError("章节与文件数量不一致")
-
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            usage = connection.execute(
-                """
-                SELECT COUNT(*) AS document_count,
-                       COALESCE(SUM(char_count), 0) AS stored_chars
-                FROM documents WHERE user_id=?
-                """,
-                (user_id,),
-            ).fetchone()
-            if (
-                max_documents is not None
-                and int(usage["document_count"] or 0) >= max_documents
-            ):
-                connection.rollback()
-                raise ValueError(f"每个账号最多保存 {max_documents} 本文档")
-            if (
-                max_stored_chars is not None
-                and int(usage["stored_chars"] or 0) + text_length > max_stored_chars
-            ):
-                connection.rollback()
-                raise ValueError(f"账号累计正文不能超过 {max_stored_chars:,} 字")
-            connection.execute(
-                """
-                INSERT INTO documents(
-                    id, user_id, title, original_filename, source_path,
-                    source_encoding, char_count, split_strategy, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id,
-                    user_id,
-                    title,
-                    original_filename,
-                    str(source_path),
-                    source_encoding,
-                    text_length,
-                    "heading+smart-fallback-v1",
-                    utc_now(),
-                ),
-            )
-            chapter_ids: Dict[int, str] = {}
-            for position, (chunk, content_path) in enumerate(
-                zip(chunk_list, path_list), start=1
-            ):
-                chapter_id = uuid.uuid4().hex
-                chapter_ids[position] = chapter_id
-                connection.execute(
-                    """
-                    INSERT INTO chapters(
-                        id, document_id, position, title, kind, content_path,
-                        char_count, source_start, source_end, part_number, part_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        chapter_id,
-                        document_id,
-                        position,
-                        chunk.title,
-                        chunk.kind,
-                        str(content_path),
-                        len(chunk.text),
-                        chunk.source_start,
-                        chunk.source_end,
-                        chunk.part_number,
-                        chunk.part_count,
-                    ),
-                )
-            _, work_version_id = _attach_work_version(
-                connection,
-                user_id=user_id,
-                title=title,
-                ref_type="tag",
-                ref_name=ref_name,
-                label=version_label,
-                intent=intent,
-                document_id=document_id,
-                work_id=work_id,
-                base_version_id=base_version_id,
-                content_hash=content_hash,
-                creative_snapshot=creative_snapshot,
-                origin="imported",
-            )
-            for source_snapshot in source_head_snapshot_list:
-                try:
-                    chapter_position = int(
-                        source_snapshot["chapter_position"]
-                    )
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise ValueError("Tag 章节清单缺少有效位置") from exc
-                document_chapter_id = chapter_ids.get(chapter_position)
-                source_chapter_id = str(
-                    source_snapshot.get("source_chapter_id") or ""
-                ).strip()
-                source_version_id = str(
-                    source_snapshot.get("source_version_id") or ""
-                ).strip()
-                snapshot_hash = str(
-                    source_snapshot.get("content_hash") or ""
-                ).strip()
-                if not document_chapter_id or not source_chapter_id:
-                    raise ValueError("Tag 章节清单指向不存在的章节")
-                if not snapshot_hash:
-                    raise ValueError("Tag 章节清单缺少正文校验值")
-                chunk_hash = hashlib.sha256(
-                    chunk_list[chapter_position - 1].text.encode("utf-8")
-                ).hexdigest()
-                if chunk_hash != snapshot_hash:
-                    raise ValueError("Tag 章节清单与正文快照不一致")
-                if source_version_id:
-                    source = connection.execute(
-                        """
-                        SELECT 1
-                        FROM novel_chapter_versions version
-                        WHERE version.id=? AND version.chapter_id=?
-                        """,
-                        (source_version_id, source_chapter_id),
-                    ).fetchone()
-                    if not source:
-                        raise ValueError("Tag 来源 HEAD 已不存在")
-                connection.execute(
-                    """
-                    INSERT INTO work_tag_chapter_heads(
-                        work_version_id, document_chapter_id,
-                        source_chapter_id, source_version_id,
-                        position, content_hash
-                    ) VALUES (?, ?, ?, NULLIF(?, ''), ?, ?)
-                    """,
-                    (
-                        work_version_id,
-                        document_chapter_id,
-                        source_chapter_id,
-                        source_version_id,
-                        chapter_position,
-                        snapshot_hash,
-                    ),
-                )
-            for snapshot in memory_snapshot_list:
-                try:
-                    chapter_position = int(snapshot["chapter_position"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise ValueError("故事记忆快照缺少有效章节位置") from exc
-                document_chapter_id = chapter_ids.get(chapter_position)
-                if not document_chapter_id:
-                    raise ValueError("故事记忆快照指向不存在的章节")
-                payload = snapshot.get("payload")
-                keywords = snapshot.get("keywords") or []
-                summary = str(snapshot.get("summary") or "").strip()
-                snapshot_hash = str(snapshot.get("content_hash") or "").strip()
-                if (
-                    not isinstance(payload, Mapping)
-                    or not isinstance(keywords, list)
-                    or not summary
-                    or not snapshot_hash
-                ):
-                    raise ValueError("故事记忆快照内容不完整")
-                connection.execute(
-                    """
-                    INSERT INTO work_version_story_memories(
-                        id, work_version_id, document_chapter_id,
-                        content_hash, summary, keywords_json,
-                        payload_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        uuid.uuid4().hex,
-                        work_version_id,
-                        document_chapter_id,
-                        snapshot_hash,
-                        summary,
-                        json.dumps(keywords, ensure_ascii=False),
-                        json.dumps(dict(payload), ensure_ascii=False),
-                        utc_now(),
-                    ),
-                )
-            connection.commit()
-        return document_id
+        return self.document_repository.create(
+            user_id=user_id,
+            title=title,
+            original_filename=original_filename,
+            source_path=source_path,
+            source_encoding=source_encoding,
+            text_length=text_length,
+            chunks=chunks,
+            chapter_paths=chapter_paths,
+            max_documents=max_documents,
+            max_stored_chars=max_stored_chars,
+            work_id=work_id,
+            base_version_id=base_version_id,
+            ref_name=ref_name,
+            version_label=version_label,
+            intent=intent,
+            content_hash=content_hash,
+            creative_snapshot=creative_snapshot,
+            story_memory_snapshots=story_memory_snapshots,
+            source_head_snapshots=source_head_snapshots,
+        )
 
     def list_documents(self, user_id: int) -> List[Dict[str, Any]]:
-        with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT d.*,
-                    (SELECT COUNT(*) FROM chapters c WHERE c.document_id=d.id)
-                        AS chapter_count,
-                    (SELECT j.id FROM analysis_jobs j WHERE j.document_id=d.id
-                        ORDER BY j.created_at DESC LIMIT 1) AS latest_job_id,
-                    (SELECT j.status FROM analysis_jobs j WHERE j.document_id=d.id
-                        ORDER BY j.created_at DESC LIMIT 1) AS latest_job_status,
-                    (SELECT j.completed_chapters FROM analysis_jobs j
-                        WHERE j.document_id=d.id ORDER BY j.created_at DESC LIMIT 1)
-                        AS completed_chapters
-                FROM documents d
-                WHERE d.user_id=?
-                ORDER BY d.created_at DESC
-                """,
-                (user_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self.document_repository.list(user_id)
 
-    def get_document(self, user_id: int, document_id: str) -> Optional[Dict[str, Any]]:
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT d.*,
-                    (SELECT COUNT(*) FROM chapters c WHERE c.document_id=d.id)
-                        AS chapter_count,
-                    (SELECT j.id FROM analysis_jobs j WHERE j.document_id=d.id
-                        ORDER BY j.created_at DESC LIMIT 1) AS latest_job_id,
-                    (SELECT j.status FROM analysis_jobs j WHERE j.document_id=d.id
-                        ORDER BY j.created_at DESC LIMIT 1) AS latest_job_status
-                FROM documents d
-                WHERE d.id=? AND d.user_id=?
-                """,
-                (document_id, user_id),
-            ).fetchone()
-        return dict(row) if row else None
+    def get_document(
+        self, user_id: int, document_id: str
+    ) -> Optional[Dict[str, Any]]:
+        return self.document_repository.get(user_id, document_id)
 
     def list_chapters(
         self, user_id: int, document_id: str, job_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        params: List[Any] = [user_id, document_id]
-        analysis_join = ""
-        analysis_fields = (
-            "NULL AS analysis_id, NULL AS analysis_status, NULL AS result_json"
+        return self.document_repository.list_chapters(
+            user_id, document_id, job_id
         )
-        if job_id:
-            analysis_join = (
-                "LEFT JOIN chapter_analyses a ON a.chapter_id=c.id AND a.job_id=?"
-            )
-            analysis_fields = (
-                "a.id AS analysis_id, a.status AS analysis_status, a.result_json"
-            )
-            params = [job_id, user_id, document_id]
-        with self.connection() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT c.*, {analysis_fields}
-                FROM chapters c
-                JOIN documents d ON d.id=c.document_id
-                {analysis_join}
-                WHERE d.user_id=? AND d.id=?
-                ORDER BY c.position
-                """,
-                params,
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def create_job(
-        self,
-        *,
-        user_id: int,
-        document_id: str,
-        provider: str,
-        model: str,
-        credential_source: str = "default",
-    ) -> str:
-        if credential_source not in {"default", "personal"}:
-            raise ValueError("不支持的 API 凭据来源")
-        job_id = uuid.uuid4().hex
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if credential_source == "personal":
-                credential = connection.execute(
-                    """
-                    SELECT 1 FROM api_credentials
-                    WHERE user_id=? AND provider=?
-                    """,
-                    (user_id, provider),
-                ).fetchone()
-                if not credential:
-                    connection.rollback()
-                    raise ValueError("所选模型服务 API Key 或凭据不存在，请重新配置")
-            active = connection.execute(
-                """
-                SELECT id FROM analysis_jobs
-                WHERE document_id=? AND user_id=? AND status IN ('queued', 'running')
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                (document_id, user_id),
-            ).fetchone()
-            if active:
-                connection.rollback()
-                return str(active["id"])
-            other_active = connection.execute(
-                """
-                SELECT 1
-                WHERE EXISTS(
-                    SELECT 1 FROM analysis_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM generation_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                )
-                """,
-                (user_id, user_id),
-            ).fetchone()
-            if other_active:
-                connection.rollback()
-                raise ValueError("你已有一个 AI 任务正在排队或运行，请等待其完成")
-            chapters = connection.execute(
-                """
-                SELECT c.id FROM chapters c
-                JOIN documents d ON d.id=c.document_id
-                WHERE c.document_id=? AND d.user_id=?
-                ORDER BY c.position
-                """,
-                (document_id, user_id),
-            ).fetchall()
-            if not chapters:
-                connection.rollback()
-                raise ValueError("文档没有可分析章节")
-            connection.execute(
-                """
-                INSERT INTO analysis_jobs(
-                    id, document_id, user_id, provider, model, credential_source,
-                    status, total_chapters, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-                """,
-                (
-                    job_id,
-                    document_id,
-                    user_id,
-                    provider,
-                    model,
-                    credential_source,
-                    len(chapters),
-                    utc_now(),
-                ),
-            )
-            for chapter in chapters:
-                connection.execute(
-                    """
-                    INSERT INTO chapter_analyses(id, job_id, chapter_id, status)
-                    VALUES (?, ?, ?, 'queued')
-                    """,
-                    (uuid.uuid4().hex, job_id, chapter["id"]),
-                )
-            connection.commit()
-        return job_id
-
-    def get_job(self, user_id: int, job_id: str) -> Optional[Dict[str, Any]]:
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT j.*, d.title AS document_title
-                FROM analysis_jobs j
-                JOIN documents d ON d.id=j.document_id
-                WHERE j.id=? AND j.user_id=?
-                """,
-                (job_id, user_id),
-            ).fetchone()
-        return dict(row) if row else None
-
-    def claim_next_analysis(self) -> Optional[Dict[str, Any]]:
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            now = utc_now()
-            connection.execute(
-                """
-                UPDATE chapter_analyses
-                SET status='queued', started_at=NULL, claim_token=NULL,
-                    lease_expires_at=NULL,
-                    error='上一次处理租约已过期，已自动重新排队'
-                WHERE status='running' AND lease_expires_at IS NOT NULL
-                    AND lease_expires_at<=?
-                """,
-                (now,),
-            )
-            row = connection.execute(
-                """
-                SELECT a.id AS analysis_id, a.job_id, a.chapter_id, a.attempts,
-                       c.title AS chapter_title, c.content_path, c.position,
-                       j.user_id, j.document_id, j.provider, j.model,
-                       j.credential_source
-                FROM chapter_analyses a
-                JOIN analysis_jobs j ON j.id=a.job_id
-                JOIN chapters c ON c.id=a.chapter_id
-                WHERE a.status='queued' AND j.status IN ('queued', 'running')
-                ORDER BY j.created_at, c.position
-                LIMIT 1
-                """
-            ).fetchone()
-            if not row:
-                connection.commit()
-                return None
-            claim_token = uuid.uuid4().hex
-            cursor = connection.execute(
-                """
-                UPDATE chapter_analyses
-                SET status='running', attempts=attempts+1, started_at=?, error=NULL,
-                    claim_token=?, lease_expires_at=?
-                WHERE id=? AND status='queued'
-                """,
-                (
-                    now,
-                    claim_token,
-                    utc_after(2 * 60 * 60),
-                    row["analysis_id"],
-                ),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                return None
-            connection.execute(
-                """
-                UPDATE analysis_jobs
-                SET status='running', started_at=COALESCE(started_at, ?), error=NULL
-                WHERE id=?
-                """,
-                (now, row["job_id"]),
-            )
-            connection.commit()
-            claimed = dict(row)
-            claimed["claim_token"] = claim_token
-            return claimed
-
-    def release_claim(
-        self, analysis_id: str, job_id: str, claim_token: str, error: str
-    ) -> bool:
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                UPDATE chapter_analyses
-                SET status='queued', started_at=NULL, claim_token=NULL,
-                    lease_expires_at=NULL, error=?
-                WHERE id=? AND job_id=? AND status='running' AND claim_token=?
-                """,
-                (error[:2000], analysis_id, job_id, claim_token),
-            )
-            connection.commit()
-            return cursor.rowcount == 1
-
-    def _refresh_job(self, connection: sqlite3.Connection, job_id: str) -> None:
-        counts = connection.execute(
-            """
-            SELECT
-                SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
-                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
-                SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS active,
-                COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                COALESCE(SUM(output_tokens), 0) AS output_tokens
-            FROM chapter_analyses WHERE job_id=?
-            """,
-            (job_id,),
-        ).fetchone()
-        completed = int(counts["completed"] or 0)
-        failed = int(counts["failed"] or 0)
-        active = int(counts["active"] or 0)
-        if active:
-            status = "running"
-            finished_at = None
-        elif failed and completed:
-            status = "partial"
-            finished_at = utc_now()
-        elif failed:
-            status = "failed"
-            finished_at = utc_now()
-        else:
-            status = "completed"
-            finished_at = utc_now()
-        connection.execute(
-            """
-            UPDATE analysis_jobs
-            SET status=?, completed_chapters=?, failed_chapters=?,
-                input_tokens=?, output_tokens=?, finished_at=?
-            WHERE id=?
-            """,
-            (
-                status,
-                completed,
-                failed,
-                int(counts["input_tokens"] or 0),
-                int(counts["output_tokens"] or 0),
-                finished_at,
-                job_id,
-            ),
-        )
-
-    def complete_analysis(
-        self,
-        *,
-        analysis_id: str,
-        job_id: str,
-        result: Mapping[str, Any],
-        raw_response: str,
-        input_tokens: int,
-        output_tokens: int,
-        claim_token: str,
-    ) -> bool:
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                UPDATE chapter_analyses
-                SET status='completed', result_json=?, raw_response=?,
-                    input_tokens=?, output_tokens=?, error=NULL, finished_at=?,
-                    claim_token=NULL, lease_expires_at=NULL
-                WHERE id=? AND job_id=? AND status='running' AND claim_token=?
-                """,
-                (
-                    json.dumps(result, ensure_ascii=False),
-                    raw_response,
-                    input_tokens,
-                    output_tokens,
-                    utc_now(),
-                    analysis_id,
-                    job_id,
-                    claim_token,
-                ),
-            )
-            if cursor.rowcount == 1:
-                self._refresh_job(connection, job_id)
-            connection.commit()
-            return cursor.rowcount == 1
-
-    def fail_analysis(
-        self,
-        analysis_id: str,
-        job_id: str,
-        error: str,
-        claim_token: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-    ) -> bool:
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                UPDATE chapter_analyses
-                SET status='failed', error=?, input_tokens=?, output_tokens=?,
-                    finished_at=?, claim_token=NULL, lease_expires_at=NULL
-                WHERE id=? AND job_id=? AND status='running' AND claim_token=?
-                """,
-                (
-                    error[:2000],
-                    input_tokens,
-                    output_tokens,
-                    utc_now(),
-                    analysis_id,
-                    job_id,
-                    claim_token,
-                ),
-            )
-            if cursor.rowcount == 1:
-                self._refresh_job(connection, job_id)
-            connection.commit()
-            return cursor.rowcount == 1
-
-    def retry_failed(self, user_id: int, job_id: str) -> bool:
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            owner = connection.execute(
-                "SELECT id, status FROM analysis_jobs WHERE id=? AND user_id=?",
-                (job_id, user_id),
-            ).fetchone()
-            if not owner or owner["status"] not in {"partial", "failed"}:
-                connection.rollback()
-                return False
-            other_active = connection.execute(
-                """
-                SELECT 1
-                WHERE EXISTS(
-                    SELECT 1 FROM analysis_jobs
-                    WHERE user_id=? AND id<>?
-                        AND status IN ('queued', 'running')
-                ) OR EXISTS(
-                    SELECT 1 FROM generation_jobs
-                    WHERE user_id=? AND status IN ('queued', 'running')
-                )
-                """,
-                (user_id, job_id, user_id),
-            ).fetchone()
-            if other_active:
-                connection.rollback()
-                return False
-            cursor = connection.execute(
-                """
-                UPDATE chapter_analyses
-                SET status='queued', error=NULL, started_at=NULL, finished_at=NULL,
-                    claim_token=NULL, lease_expires_at=NULL
-                WHERE job_id=? AND status='failed'
-                """,
-                (job_id,),
-            )
-            if cursor.rowcount:
-                connection.execute(
-                    """
-                    UPDATE analysis_jobs
-                    SET status='queued', failed_chapters=0, error=NULL, finished_at=NULL
-                    WHERE id=?
-                    """,
-                    (job_id,),
-                )
-            connection.commit()
-            return bool(cursor.rowcount)
-
-    def get_analysis(self, user_id: int, analysis_id: str) -> Optional[Dict[str, Any]]:
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT a.*, c.title AS chapter_title, c.position, c.char_count,
-                       c.content_path, d.title AS document_title, d.id AS document_id,
-                       j.model, j.provider
-                FROM chapter_analyses a
-                JOIN chapters c ON c.id=a.chapter_id
-                JOIN analysis_jobs j ON j.id=a.job_id
-                JOIN documents d ON d.id=j.document_id
-                WHERE a.id=? AND j.user_id=?
-                """,
-                (analysis_id, user_id),
-            ).fetchone()
-        return dict(row) if row else None
-
-    def export_job(self, user_id: int, job_id: str) -> Optional[Dict[str, Any]]:
-        job = self.get_job(user_id, job_id)
-        if not job:
-            return None
-        chapters = self.list_chapters(user_id, job["document_id"], job_id)
-        exported = []
-        for chapter in chapters:
-            result = (
-                json.loads(chapter["result_json"])
-                if chapter.get("result_json")
-                else None
-            )
-            exported.append(
-                {
-                    "position": chapter["position"],
-                    "title": chapter["title"],
-                    "status": chapter["analysis_status"],
-                    "analysis": result,
-                }
-            )
-        return {
-            "schema_version": "1.0",
-            "document": {
-                "id": job["document_id"],
-                "title": job["document_title"],
-            },
-            "job": {
-                "id": job["id"],
-                "provider": job["provider"],
-                "model": job["model"],
-                "status": job["status"],
-                "created_at": job["created_at"],
-                "finished_at": job["finished_at"],
-            },
-            "chapters": exported,
-        }

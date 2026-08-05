@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}{{ analysis.chapter_title }} · 拆解结果{% endblock %}
 {% block content %}
+  {% macro evidence_links(spans) -%}
+    {% if spans %}
+      <span class="analysis-evidence-links">
+        {% for span in spans %}
+          <a href="?evidence={{ span.start }}:{{ span.end }}#analysis-source">证据 {{ loop.index }}</a>
+        {% endfor %}
+      </span>
+    {% endif %}
+  {%- endmacro %}
   <section class="page-heading split-heading">
     <div>
       <a class="back-link" href="/jobs/{{ analysis.job_id }}">← 返回任务</a>
@@ -19,12 +28,28 @@
         <p>{{ result.summary }}</p>
       </article>
 
+      {% if layers.structure %}
+        <article class="card analysis-block wide">
+          <div class="section-heading"><h2>结构测量</h2><span>确定性</span></div>
+          <div class="progress-stats">
+            <span>{{ layers.structure.char_count }} 字符</span>
+            <span>{{ layers.structure.paragraph_count }} 段</span>
+            <span>{{ layers.structure.sentence_count }} 句</span>
+            <span>平均句长 {{ layers.structure.average_sentence_chars }}</span>
+            <span>句长波动 {{ layers.structure.sentence_length_stddev }}</span>
+            <span>平均段长 {{ layers.structure.average_paragraph_chars }}</span>
+            <span>对话占比 {{ (layers.structure.dialogue_ratio * 100)|round(1) }}%</span>
+          </div>
+        </article>
+      {% endif %}
+
       <article class="card analysis-block">
         <div class="section-heading"><h2>人物</h2><span>{{ result.characters|length }}</span></div>
         {% for item in result.characters %}
           <div class="result-item">
             <strong>{{ item.name }}</strong><span class="tag">{{ item.role }}</span>
             <p>{{ item.development }}</p>
+            {% if layers.facts %}{{ evidence_links(layers.facts.characters[loop.index0].evidence) }}{% endif %}
           </div>
         {% else %}<p class="muted">本章未识别到明确人物。</p>{% endfor %}
       </article>
@@ -36,6 +61,7 @@
             <strong>{{ item.location }}</strong><span class="tag">{{ item.time }}</span>
             <p>{{ item.summary }}</p>
             <small>{{ item.participants|join(" · ") }}</small>
+            {% if layers.facts %}{{ evidence_links(layers.facts.scenes[loop.index0].evidence) }}{% endif %}
           </div>
         {% else %}<p class="muted">本章未识别到独立场景。</p>{% endfor %}
       </article>
@@ -45,6 +71,7 @@
         <div class="timeline">
           {% for item in result.key_events %}
             <div class="timeline-item"><span>{{ loop.index }}</span><div><strong>{{ item.event }}</strong><p>{{ item.impact }}</p></div></div>
+            {% if layers.facts %}{{ evidence_links(layers.facts.events[loop.index0].evidence) }}{% endif %}
           {% else %}<p class="muted">本章未识别到关键事件。</p>{% endfor %}
         </div>
       </article>
@@ -53,6 +80,7 @@
         <div class="section-heading"><h2>伏笔与回收</h2><span>{{ result.foreshadowing|length }}</span></div>
         {% for item in result.foreshadowing %}
           <div class="result-item"><span class="tag accent">{{ item.type }}</span><strong>{{ item.clue }}</strong><p>{{ item.interpretation }}</p></div>
+          {% if layers.facts %}{{ evidence_links(layers.facts.foreshadowing[loop.index0].evidence) }}{% endif %}
         {% else %}<p class="muted">本章未识别到可靠的伏笔或回收。</p>{% endfor %}
       </article>
 
@@ -60,6 +88,7 @@
         <div class="section-heading"><h2>冲突</h2><span>{{ result.conflicts|length }}</span></div>
         {% for item in result.conflicts %}
           <div class="result-item"><strong>{{ item.parties|join(" × ") }}</strong><span class="tag">{{ item.status }}</span><p>{{ item.description }}</p></div>
+          {% if layers.narrative %}{{ evidence_links(layers.narrative.conflicts[loop.index0].evidence) }}{% endif %}
         {% else %}<p class="muted">本章未识别到明确冲突。</p>{% endfor %}
       </article>
 
@@ -68,6 +97,51 @@
           <span class="section-kicker">{{ result.ending_hook.type }}</span>
           <h2>结尾钩子</h2>
           <p>{{ result.ending_hook.content }}</p>
+          {% if layers.narrative %}{{ evidence_links(layers.narrative.ending_hook.evidence) }}{% endif %}
+        </article>
+      {% endif %}
+
+      {% if layers.narrative %}
+        <article class="card analysis-block wide">
+          <div class="section-heading"><h2>叙事运行</h2><span>证据化判断</span></div>
+          {% for group in [
+            ('场景功能', layers.narrative.scene_functions),
+            ('关系变化', layers.narrative.relationship_changes),
+            ('信息释放', layers.narrative.information_release),
+            ('节奏', layers.narrative.pacing)
+          ] %}
+            {% if group[1] %}
+              <h3>{{ group[0] }}</h3>
+              {% for item in group[1] %}
+                <div class="result-item">
+                  <strong>{{ item.label }}</strong><p>{{ item.analysis }}</p>
+                  {{ evidence_links(item.evidence) }}
+                </div>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+        </article>
+      {% endif %}
+
+      {% if layers.style %}
+        <article class="card analysis-block wide">
+          <div class="section-heading">
+            <h2>文风证据</h2>
+            <span>{{ layers.style.observations|length }} 个维度</span>
+          </div>
+          <p class="muted">这里只描述写法机制。后续写作使用抽象规则，不复制参考书的原句、意象、专有名词或具体情节。</p>
+          {% for item in layers.style.observations %}
+            <div class="result-item">
+              <span class="tag">{{ item.axis|reference_style_axis_label }}</span>
+              <strong>{{ item.value }}</strong>
+              <p><b>判断</b>{{ item.analysis }}</p>
+              <p><b>可执行规则</b>{{ item.execution_rule }}</p>
+              <p class="originality-boundary"><b>原创性边界</b>{{ item.originality_boundary }}</p>
+              {{ evidence_links(item.evidence) }}
+            </div>
+          {% else %}
+            <p class="muted">本章没有证据足够稳定的文风判断。</p>
+          {% endfor %}
         </article>
       {% endif %}
 
@@ -92,6 +166,7 @@
                 <p><b>为什么有效</b>{{ item.effect }}</p>
                 <p><b>可执行规则</b>{{ item.execution_rule }}</p>
                 <p class="originality-boundary"><b>原创性边界</b>{{ item.originality_boundary }}</p>
+                {% if layers.techniques %}{{ evidence_links(layers.techniques.techniques[loop.index0].evidence) }}{% endif %}
                 {% if item.name in saved_technique_names %}
                   <span class="status completed">已保存到技法库</span>
                 {% else %}
@@ -112,8 +187,12 @@
     <div class="alert error">{{ analysis.error or "本章尚无分析结果" }}</div>
   {% endif %}
 
-  <details class="source-panel">
+  <details class="source-panel" id="analysis-source"{% if evidence_parts %} open{% endif %}>
     <summary>查看本章原文</summary>
-    <pre>{{ source_text }}</pre>
+    {% if evidence_parts %}
+      <pre>{{ evidence_parts[0] }}<mark>{{ evidence_parts[1] }}</mark>{{ evidence_parts[2] }}</pre>
+    {% else %}
+      <pre>{{ source_text }}</pre>
+    {% endif %}
   </details>
 {% endblock %}

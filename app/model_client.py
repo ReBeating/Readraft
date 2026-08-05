@@ -14,7 +14,22 @@ import httpx
 from pydantic import ValidationError
 
 from .analysis_schema import ANALYSIS_JSON_EXAMPLE, ChapterAnalysis
+from .reference_analysis_prompts import build_layer_messages
+from .reference_analysis_schema import (
+    LAYER_MODELS,
+    FactEvent,
+    FactsLayer,
+    NarrativeLayer,
+    NarrativeObservation,
+    StyleLayer,
+    StyleObservation,
+    TechniquesLayer,
+    EvidencedTechnique,
+    EvidenceSpan,
+    validate_evidence,
+)
 from .config import Settings
+from .model_budget import expanded_output_token_limit
 from .model_provider import (
     ProviderConfigError,
     build_chat_payload,
@@ -82,6 +97,15 @@ class AnalysisResponse:
     output_tokens: int
 
 
+@dataclass(frozen=True)
+class LayerAnalysisResponse:
+    layer: str
+    result: Mapping[str, Any]
+    raw_response: str
+    input_tokens: int
+    output_tokens: int
+
+
 class BaseAnalyzer:
     provider = "unknown"
     model = "unknown"
@@ -93,6 +117,16 @@ class BaseAnalyzer:
 
     async def close(self) -> None:
         return None
+
+    async def analyze_layer(
+        self,
+        layer: str,
+        chapter_title: str,
+        chapter_text: str,
+        provider_user_id: str,
+        prior_layers: Mapping[str, Mapping[str, Any]],
+    ) -> LayerAnalysisResponse:
+        raise NotImplementedError
 
 
 class MockAnalyzer(BaseAnalyzer):
@@ -154,6 +188,89 @@ class MockAnalyzer(BaseAnalyzer):
         await asyncio.sleep(0)
         return AnalysisResponse(
             result=result,
+            raw_response=raw,
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+    async def analyze_layer(
+        self,
+        layer: str,
+        chapter_title: str,
+        chapter_text: str,
+        provider_user_id: str,
+        prior_layers: Mapping[str, Mapping[str, Any]],
+    ) -> LayerAnalysisResponse:
+        del chapter_title, provider_user_id, prior_layers
+        stripped = chapter_text.strip()
+        quote = stripped[: min(80, len(stripped))] or "空"
+        start = chapter_text.find(quote) if stripped else 0
+        evidence = EvidenceSpan(start=max(0, start), end=max(0, start) + len(quote), quote=quote)
+        summary = re.sub(r"\s+", " ", stripped)[:220].strip(" ，。")
+        if len(summary) < 10:
+            summary = "本章正文较短，暂时只能确认有限的情节事实。"
+        if layer == "facts":
+            result = FactsLayer(
+                summary=summary,
+                events=(
+                    [FactEvent(event=summary[:200], impact="形成后续情节状态", evidence=[evidence])]
+                    if stripped
+                    else []
+                ),
+            )
+        elif layer == "narrative":
+            result = NarrativeLayer(
+                pacing=(
+                    [NarrativeObservation(label="单一推进段", analysis="本段集中推进一个可识别的情节动作。", evidence=[evidence])]
+                    if stripped
+                    else []
+                )
+            )
+        elif layer == "style":
+            result = StyleLayer(
+                observations=(
+                    [
+                        StyleObservation(
+                            axis="information_flow",
+                            value="先呈现后果，再补充解释",
+                            analysis="本段先呈现可感知的变化，再让解释跟随行动出现。",
+                            execution_rule="先让信息造成可观察的后果，再在后续叙事节拍补充来源。",
+                            originality_boundary="不得复用原文人名、物件、事件、意象或措辞。",
+                            evidence=[evidence],
+                        )
+                    ]
+                    if stripped
+                    else []
+                )
+            )
+        elif layer == "techniques":
+            result = TechniquesLayer(
+                techniques=(
+                    [
+                        EvidencedTechnique(
+                            name="让信息先影响行动、再补充解释",
+                            dimension="information",
+                            source_location="本章主要推进段",
+                            observation="关键信息先改变人物行动，相关解释留在后续节点展开。",
+                            effect="读者先看到后果，因而带着一个具体问题继续阅读。",
+                            suitable_for=["悬疑线索首次出现"],
+                            unsuitable_for=["必须立即说明规则的场景"],
+                            execution_rule="先让信息改变目标或代价，再补充来源，并留下可核对的问题。",
+                            originality_boundary="只迁移信息顺序，不复用原文人名、物件、事件或措辞。",
+                            evidence=[evidence],
+                        )
+                    ]
+                    if stripped
+                    else []
+                )
+            )
+        else:
+            raise AnalyzerError(f"不支持的分析层：{layer}")
+        raw = result.model_dump_json()
+        await asyncio.sleep(0)
+        return LayerAnalysisResponse(
+            layer=layer,
+            result=result.model_dump(mode="json"),
             raw_response=raw,
             input_tokens=0,
             output_tokens=0,
@@ -221,7 +338,7 @@ class ProviderAnalyzer(BaseAnalyzer):
         self,
         messages: List[Mapping[str, Any]],
         provider_user_id: str,
-        max_tokens: int,
+        max_tokens: int | None,
         *,
         json_object: bool = True,
         temperature: float | None = 0.2,
@@ -656,7 +773,9 @@ class ProviderAnalyzer(BaseAnalyzer):
 
             if finish_reason == "length":
                 last_error = f"{self._provider_spec.label} 输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if format_attempt == 0:
                     continue
                 raise AnalyzerError(
@@ -739,6 +858,112 @@ class ProviderAnalyzer(BaseAnalyzer):
                         },
                     ]
                     continue
+        raise AnalyzerError(
+            last_error,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+        )
+
+    async def analyze_layer(
+        self,
+        layer: str,
+        chapter_title: str,
+        chapter_text: str,
+        provider_user_id: str,
+        prior_layers: Mapping[str, Mapping[str, Any]],
+    ) -> LayerAnalysisResponse:
+        model_class = LAYER_MODELS.get(layer)
+        if model_class is None:
+            raise AnalyzerError(f"不支持的分析层：{layer}")
+        messages = build_layer_messages(
+            layer=layer,
+            chapter_title=chapter_title,
+            chapter_text=chapter_text,
+            prior_layers=prior_layers,
+        )
+        total_input_tokens = 0
+        total_output_tokens = 0
+        last_error = "未知结构错误"
+        max_tokens = self.settings.model_max_tokens
+        for format_attempt in range(2):
+            body = await self._post(
+                self._payload(
+                    messages,
+                    provider_user_id,
+                    max_tokens,
+                    temperature=0.1,
+                )
+            )
+            try:
+                content, finish_reason, input_tokens, output_tokens = self._extract(
+                    body, self._provider_spec.label
+                )
+            except AnalyzerError as exc:
+                total_input_tokens += exc.input_tokens
+                total_output_tokens += exc.output_tokens
+                last_error = str(exc)
+                if format_attempt == 0:
+                    continue
+                raise AnalyzerError(
+                    last_error,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                ) from exc
+            total_input_tokens += input_tokens
+            total_output_tokens += output_tokens
+            if finish_reason == "length":
+                last_error = f"{self._provider_spec.label} 输出被截断"
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
+            elif finish_reason != "stop":
+                last_error = (
+                    f"{self._provider_spec.label} 返回了未支持的结束原因："
+                    f"{finish_reason or 'empty'}"
+                )
+            elif not content:
+                last_error = f"{self._provider_spec.label} 返回了空内容"
+            else:
+                try:
+                    parsed = model_class.model_validate_json(content)
+                    result = parsed.model_dump(mode="json")
+                    evidence_count = validate_evidence(result, chapter_text)
+                    if evidence_count == 0 and any(
+                        value
+                        for value in result.values()
+                        if isinstance(value, list)
+                    ):
+                        raise ValueError("分析结果缺少可核对的正文证据")
+                    return LayerAnalysisResponse(
+                        layer=layer,
+                        result=result,
+                        raw_response=content,
+                        input_tokens=total_input_tokens,
+                        output_tokens=total_output_tokens,
+                    )
+                except (ValidationError, ValueError) as exc:
+                    if isinstance(exc, ValidationError):
+                        detail = "; ".join(
+                            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                            for error in exc.errors()[:8]
+                        )
+                    else:
+                        detail = str(exc)
+                    last_error = f"{self._provider_spec.label} {layer} 层校验失败：{detail}"
+            if format_attempt == 0:
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一次结果未通过校验。请重新输出完整 JSON object；"
+                            "所有证据 quote 必须逐字来自 source_segments，偏移必须精确。\n"
+                            f"错误：{last_error}"
+                        ),
+                    },
+                ]
+                continue
         raise AnalyzerError(
             last_error,
             input_tokens=total_input_tokens,

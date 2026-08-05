@@ -14,6 +14,7 @@ from .context_compiler import (
     compile_story_plan_context,
 )
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .planning_schema import (
     ChapterTaskCard,
     SceneBeatPlan,
@@ -416,7 +417,9 @@ class ProviderChapterPlanner(BaseChapterPlanner):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 章节规划输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":
@@ -552,7 +555,9 @@ class ProviderChapterPlanner(BaseChapterPlanner):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 场景拆解输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

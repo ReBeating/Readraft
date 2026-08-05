@@ -4,9 +4,9 @@ import sqlite3
 import uuid
 from typing import Any, Iterable, Mapping, Optional
 
-from .analysis_schema import ChapterAnalysis
+from .analysis_repository import AnalysisRepository
 from .db import Database, utc_now
-from .json_support import dump_json, load_json_list
+from .json_support import dump_json, load_json_dict, load_json_list
 from .technique_schema import TechniqueObservation
 
 
@@ -46,6 +46,7 @@ def _binding_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
 class TechniqueService:
     def __init__(self, database: Database):
         self.database = database
+        self.analysis_repository = AnalysisRepository(database)
 
     def count_cards(self, *, user_id: int) -> int:
         with self.database.connection() as connection:
@@ -66,18 +67,20 @@ class TechniqueService:
         analysis_id: str,
         technique_index: int,
     ) -> tuple[str, bool]:
-        analysis = self.database.get_analysis(user_id, analysis_id)
+        analysis = self.analysis_repository.get_analysis(user_id, analysis_id)
         if not analysis or str(analysis.get("status")) != "completed":
             raise ValueError("拆文分析不存在或尚未完成")
+        payload = load_json_dict(analysis.get("result_json"))
         try:
-            result = ChapterAnalysis.model_validate_json(
-                str(analysis.get("result_json") or "{}")
-            )
-        except ValueError as exc:
+            techniques = [
+                TechniqueObservation.model_validate(item)
+                for item in payload.get("techniques") or []
+            ]
+        except (TypeError, ValueError) as exc:
             raise ValueError("拆文结果结构不完整，请重新分析") from exc
-        if technique_index < 0 or technique_index >= len(result.techniques):
+        if technique_index < 0 or technique_index >= len(techniques):
             raise ValueError("技法建议不存在")
-        observation = result.techniques[technique_index]
+        observation = techniques[technique_index]
         card_id = uuid.uuid4().hex
         now = utc_now()
         with self.database.connection() as connection:

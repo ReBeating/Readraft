@@ -13,7 +13,9 @@ def make_settings(tmp_path: Path, model: str) -> Settings:
     return Settings(
         app_name="test",
         app_env="test",
-        secret_key="test-secret-long-enough",
+        secret_key=(
+            "test-secret-long-enough"  # pragma: allowlist secret -- test value
+        ),
         data_dir=tmp_path,
         database_path=tmp_path / "test.db",
         cookie_secure=False,
@@ -23,7 +25,7 @@ def make_settings(tmp_path: Path, model: str) -> Settings:
         target_chapter_chars=10_000,
         max_chapter_chars=30_000,
         model_provider="opencode_go",
-        model_api_key="go-key",
+        model_api_key="go-key",  # pragma: allowlist secret -- test value
         model_base_url="https://opencode.ai/zen/go/v1",
         model_name=model,
         model_thinking=False,
@@ -153,6 +155,18 @@ def test_opencode_go_responses_request_and_response_are_normalized(tmp_path):
     }
 
 
+def test_responses_automatic_mode_omits_output_limit(tmp_path):
+    settings = make_settings(tmp_path, "gpt-5.6-luna")
+    payload = canonical_payload()
+    payload["model"] = settings.model_name
+    payload.pop("max_tokens")
+
+    prepared = prepare_model_request(settings, payload)
+
+    assert prepared.endpoint == "responses"
+    assert "max_output_tokens" not in prepared.payload
+
+
 def test_opencode_go_anthropic_request_and_response_are_normalized(tmp_path):
     settings = replace(
         make_settings(tmp_path, "qwen3.7-plus"),
@@ -187,6 +201,18 @@ def test_opencode_go_anthropic_request_and_response_are_normalized(tmp_path):
         '{"ok":true}'
     )
     assert normalized["choices"][0]["finish_reason"] == "stop"
+
+
+def test_anthropic_automatic_mode_uses_protocol_required_capacity(tmp_path):
+    settings = make_settings(tmp_path, "qwen3.7-plus")
+    payload = canonical_payload()
+    payload["model"] = settings.model_name
+    payload.pop("max_tokens")
+
+    prepared = prepare_model_request(settings, payload)
+
+    assert prepared.endpoint == "messages"
+    assert prepared.payload["max_tokens"] == 64_000
 
 
 def test_mixed_protocol_stream_events_become_common_deltas():

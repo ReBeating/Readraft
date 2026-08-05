@@ -81,4 +81,4 @@ def test_compile_conversation_context_separates_recent_turns_from_memory():
     assert "旧收音机" in rendered_memory
     assert state["source_message_count"] == 4
     assert "search_conversation_history" not in rendered_memory
-    assert "book/notes/conversation-history.jsonl" in rendered_memory
+    assert "book/notes/conversation-history/" in rendered_memory

@@ -170,16 +170,22 @@ def test_worker_uses_owning_users_decrypted_api_key(tmp_path, monkeypatch):
             cipher,
             poll_seconds=0.01,
         )
-        return await worker._analyze(
+        analyzer, close_analyzer = await worker._analysis_model_for_item(
             {
                 "user_id": user_id,
                 "provider": "deepseek",
                 "model": "deepseek-v4-pro",
                 "credential_source": "personal",
                 "chapter_title": "第一章",
-            },
-            "这是用于测试的章节正文。",
+            }
         )
+        try:
+            return await analyzer.analyze(
+                "第一章", "这是用于测试的章节正文。", "test-user"
+            )
+        finally:
+            if close_analyzer:
+                await analyzer.close()
 
     response = asyncio.run(scenario())
     assert response.result.chapter_title == "第一章"
@@ -252,7 +258,7 @@ def test_chat_worker_uses_owning_users_decrypted_api_key(
             point_of_view="第三人称限知",
             target_chapter_chars=3000,
         )
-        conversation_id = worker.assistant_chat_service.create_conversation(
+        conversation_id = worker.assistant_chat_service.conversations.create(
             user_id=user_id,
             scope_type="project",
             title="讨论开场",

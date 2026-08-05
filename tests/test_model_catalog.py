@@ -120,7 +120,7 @@ def test_fetch_opencode_go_models_uses_official_catalog_endpoint():
     models = asyncio.run(
         fetch_models(
             provider_id="opencode_go",
-            api_key="go-test-key",
+            api_key="go-test-key",  # pragma: allowlist secret -- test value
             transport=httpx.MockTransport(handler),
         )
     )

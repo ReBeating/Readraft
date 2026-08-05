@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .story_structure_schema import StoryStructureProposalSet
 
 
@@ -391,7 +392,7 @@ class ProviderStoryStructurePlanner(BaseStoryStructurePlanner):
                 ),
             },
         ]
-        max_tokens = max(self.settings.model_max_tokens, 12_000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "模型 滚动结构方案返回结构不正确"
@@ -408,7 +409,9 @@ class ProviderStoryStructurePlanner(BaseStoryStructurePlanner):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 滚动结构方案输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

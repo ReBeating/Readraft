@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 from .voice_schema import VoiceProfileSuggestion
 
 
@@ -193,7 +194,7 @@ class ProviderVoiceProfileExtractor(BaseVoiceProfileExtractor):
                 ),
             },
         ]
-        max_tokens = min(self.settings.model_max_tokens, 7000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "作品声纹建议返回结构不正确"
@@ -210,7 +211,9 @@ class ProviderVoiceProfileExtractor(BaseVoiceProfileExtractor):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 作品声纹提取输出被截断"
-                max_tokens = min(max_tokens * 2, 20_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

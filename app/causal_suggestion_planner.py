@@ -14,6 +14,7 @@ from .causal_suggestion_schema import (
 )
 from .config import Settings
 from .model_client import AnalyzerError, ProviderAnalyzer
+from .model_budget import expanded_output_token_limit
 
 
 DEFAULT_CAUSAL_REVIEW_CONTEXT_BUDGET = 90_000
@@ -629,7 +630,7 @@ class ProviderCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
                 ),
             },
         ]
-        max_tokens = max(self.settings.model_max_tokens, 7000)
+        max_tokens = self.settings.model_max_tokens
         total_input = 0
         total_output = 0
         last_error = "模型 因果建议返回结构不正确"
@@ -648,7 +649,9 @@ class ProviderCausalSuggestionPlanner(BaseCausalSuggestionPlanner):
             total_output += output_tokens
             if reason == "length":
                 last_error = "模型 因果建议输出被截断"
-                max_tokens = min(max_tokens * 2, 14_000)
+                max_tokens = expanded_output_token_limit(
+                    max_tokens, observed_output_tokens=output_tokens
+                )
                 if attempt == 0:
                     continue
             elif reason == "insufficient_system_resource":

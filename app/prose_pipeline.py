@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from .agent_model import BaseAgentModel
 from .model_client import AnalyzerError
+from .model_budget import optional_output_token_limit
 from .prose_craft import (
     PROSE_WRITING_SYSTEM_PROMPT,
     compose_craft_brief,
@@ -40,56 +41,89 @@ class ProseDraftPipeline:
             raw_modules = select_prose_craft_modules(prepared_packet)
             prepared_packet["craft_modules"] = raw_modules
         craft_brief = compose_craft_brief(raw_modules)
-        target_chars = max(
-            80, int(prepared_packet.get("target_chars") or 3000)
+        model_settings = getattr(model, "settings", None)
+        max_tokens = optional_output_token_limit(
+            getattr(model_settings, "model_max_tokens", 0)
         )
-        max_tokens = min(20_000, max(4_000, target_chars * 2 + 2_000))
-        turn = await model.native_turn(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        PROSE_WRITING_SYSTEM_PROMPT
-                        + "\n\n"
-                        + craft_brief
-                    ),
-                },
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": PROSE_WRITING_SYSTEM_PROMPT + "\n\n" + craft_brief,
+            },
+            {
+                "role": "user",
+                "content": (
+                    "请按照下面的 writing_packet 创作正文。只返回正文：\n"
+                    "<writing_packet>\n"
+                    + json.dumps(
+                        prepared_packet,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n</writing_packet>"
+                ),
+            },
+        ]
+        content_parts: list[str] = []
+        total_input_tokens = 0
+        total_output_tokens = 0
+        while True:
+            streamed_part = ""
+
+            def relay_delta(delta: str) -> Awaitable[None] | None:
+                nonlocal streamed_part
+                streamed_part += delta
+                if on_text_delta is None:
+                    return None
+                return on_text_delta("".join(content_parts) + streamed_part)
+
+            turn = await model.native_turn(
+                messages=messages,
+                tools=[],
+                provider_user_id=provider_user_id,
+                max_tokens=max_tokens,
+                on_text_delta=(relay_delta if on_text_delta is not None else None),
+            )
+            total_input_tokens += turn.input_tokens
+            total_output_tokens += turn.output_tokens
+            if turn.tool_calls:
+                raise AnalyzerError(
+                    "正文模型返回了不应出现的工具调用",
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+            if turn.content:
+                content_parts.append(turn.content)
+            if turn.finish_reason != "length":
+                break
+            if not turn.content:
+                raise AnalyzerError(
+                    "正文被服务商截断，且没有返回可续接的内容",
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                )
+            messages.append(turn.message())
+            messages.append(
                 {
                     "role": "user",
                     "content": (
-                        "请按照下面的 writing_packet 创作正文。只返回正文：\n"
-                        "<writing_packet>\n"
-                        + json.dumps(
-                            prepared_packet,
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                        + "\n</writing_packet>"
+                        "正文被服务商的单次输出边界截断。请紧接最后一句继续，"
+                        "只输出后续正文，不要重写、概括或重复已经返回的部分。"
                     ),
-                },
-            ],
-            tools=[],
-            provider_user_id=provider_user_id,
-            max_tokens=max_tokens,
-            on_text_delta=on_text_delta,
-        )
-        if turn.tool_calls:
-            raise AnalyzerError(
-                "正文模型返回了不应出现的工具调用",
-                input_tokens=turn.input_tokens,
-                output_tokens=turn.output_tokens,
+                }
             )
-        content = self._clean_content(turn.content)
+
+        content = self._clean_content("".join(content_parts))
         if not content:
             raise AnalyzerError(
                 "正文模型没有返回可保存的正文",
-                input_tokens=turn.input_tokens,
-                output_tokens=turn.output_tokens,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
             )
         return ProseGenerationResult(
             content=content,
-            input_tokens=turn.input_tokens,
-            output_tokens=turn.output_tokens,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
             provider=model.provider,
             model=model.model,
             craft_modules=tuple(

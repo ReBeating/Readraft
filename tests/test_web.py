@@ -48,6 +48,20 @@ def csrf_from(html: str) -> str:
     return match.group(1)
 
 
+def commit_text_import(client: TestClient, response):
+    assert response.status_code == 303
+    preview_url = response.headers["location"]
+    assert preview_url.startswith("/import/previews/")
+    preview = client.get(preview_url)
+    assert preview.status_code == 200
+    assert "检查分章" in preview.text
+    return client.post(
+        preview_url + "/commit",
+        data={"csrf": csrf_from(preview.text)},
+        follow_redirects=False,
+    )
+
+
 def project_id_from_workbench(path: str) -> str:
     assert path.startswith("/novels/")
     assert "/workbench" in path
@@ -106,6 +120,7 @@ def test_development_without_shared_key_never_uses_test_models(tmp_path):
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         document_url = imported.headers["location"]
         document = client.get(document_url)
@@ -254,6 +269,7 @@ def test_full_mock_workflow(tmp_path):
             },
             follow_redirects=False,
         )
+        response = commit_text_import(client, response)
         assert response.status_code == 303
         document_url = response.headers["location"]
 
@@ -280,11 +296,13 @@ def test_full_mock_workflow(tmp_path):
         job_page = client.get(job_url)
         assert job_page.status_code == 200
         assert "已完成" in job_page.text
+        assert "全书文风画像" in job_page.text
         analysis_match = re.search(r'href="/analyses/([^"]+)"', job_page.text)
         assert analysis_match
         analysis_page = client.get(f"/analyses/{analysis_match.group(1)}")
         assert analysis_page.status_code == 200
         assert "章节摘要" in analysis_page.text
+        assert "文风证据" in analysis_page.text
         export = client.get(f"/jobs/{job_id}/export.json")
         assert export.status_code == 200
         assert len(export.json()["chapters"]) == 2
@@ -400,6 +418,7 @@ def test_analysis_technique_card_can_bind_to_project(tmp_path):
             },
             follow_redirects=False,
         )
+        response = commit_text_import(client, response)
         document_url = response.headers["location"]
         document_page = client.get(document_url)
         response = client.post(
@@ -1795,14 +1814,14 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         project_dir = tmp_path / "novels" / str(user_id) / project_id
         assert project_dir.is_dir()
         conversation_id = (
-            application.state.assistant_chat_service.create_conversation(
+            application.state.assistant_chat_service.conversations.create(
                 user_id=user_id,
                 scope_type="project",
                 title="删除作品前的讨论",
                 project_id=project_id,
             )
         )
-        assert application.state.assistant_chat_service.get_conversation(
+        assert application.state.assistant_chat_service.conversations.get(
             user_id=user_id,
             conversation_id=conversation_id,
         )
@@ -1842,7 +1861,7 @@ def test_dashboard_can_delete_owned_novel_and_files(tmp_path):
         assert "作品已删除" in deleted_dashboard.text
         assert database.get_novel_project(user_id, project_id) is None
         assert (
-            application.state.assistant_chat_service.get_conversation(
+            application.state.assistant_chat_service.conversations.get(
                 user_id=user_id,
                 conversation_id=conversation_id,
             )
@@ -2006,6 +2025,7 @@ def test_import_creates_readonly_source_then_one_editable_main(
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         assert imported.headers["location"].startswith("/documents/")
         reader = client.get(imported.headers["location"])
@@ -2220,6 +2240,7 @@ def test_imported_source_can_create_main_and_fixed_tag(tmp_path):
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         assert imported.headers["location"].startswith("/documents/")
         source_reader = client.get(imported.headers["location"])
@@ -2371,6 +2392,7 @@ def test_dashboard_resumes_each_version_at_its_last_chapter(tmp_path):
             },
             follow_redirects=False,
         )
+        imported = commit_text_import(client, imported)
         assert imported.status_code == 303
         document_id = imported.headers["location"].split(
             "/documents/", 1

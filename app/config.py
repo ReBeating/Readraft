@@ -59,8 +59,8 @@ class Settings:
     model_read_timeout_seconds: int
     model_max_retries: int
     worker_poll_seconds: float = 1.0
-    max_documents_per_user: int = 50
-    max_stored_chars_per_user: int = 20_000_000
+    max_documents_per_user: int | None = None
+    max_stored_chars_per_user: int | None = None
     credential_encryption_key: str | None = None
     model_adapter_prompt: str = ""
     model_provider: str = "deepseek"
@@ -78,6 +78,10 @@ class Settings:
     @property
     def novels_dir(self) -> Path:
         return self.data_dir / "novels"
+
+    @property
+    def import_previews_dir(self) -> Path:
+        return self.data_dir / "import-previews"
 
     @property
     def uses_test_models(self) -> bool:
@@ -138,13 +142,17 @@ class Settings:
             # not expose deployment-wide switches that can weaken every task.
             model_thinking=False,
             model_reasoning_effort="high",
-            model_max_tokens=_as_int("MODEL_MAX_TOKENS", 5_000),
+            # 0 means automatic: do not impose an application-level output
+            # ceiling when the selected provider protocol allows omission.
+            model_max_tokens=_as_int("MODEL_MAX_TOKENS", 0),
             model_connect_timeout_seconds=_as_int("MODEL_CONNECT_TIMEOUT_SECONDS", 10),
             model_read_timeout_seconds=_as_int("MODEL_READ_TIMEOUT_SECONDS", 300),
             model_max_retries=_as_int("MODEL_MAX_RETRIES", 3),
-            max_documents_per_user=_as_int("APP_MAX_DOCUMENTS_PER_USER", 50),
-            max_stored_chars_per_user=_as_int(
-                "APP_MAX_STORED_CHARS_PER_USER", 20_000_000
+            max_documents_per_user=(
+                _as_int("APP_MAX_DOCUMENTS_PER_USER", 0) or None
+            ),
+            max_stored_chars_per_user=(
+                _as_int("APP_MAX_STORED_CHARS_PER_USER", 0) or None
             ),
             credential_encryption_key=(
                 os.getenv("APP_CREDENTIAL_ENCRYPTION_KEY") or None
@@ -181,8 +189,6 @@ class Settings:
             "APP_MAX_TEXT_CHARS": self.max_text_chars,
             "APP_TARGET_CHAPTER_CHARS": self.target_chapter_chars,
             "APP_MAX_CHAPTER_CHARS": self.max_chapter_chars,
-            "APP_MAX_DOCUMENTS_PER_USER": self.max_documents_per_user,
-            "APP_MAX_STORED_CHARS_PER_USER": self.max_stored_chars_per_user,
             "APP_MAX_WORK_ARCHIVE_BYTES": self.max_work_archive_bytes,
             "APP_CHAPTER_EDIT_BUFFER_MAX_CHARS": (
                 self.chapter_edit_buffer_max_chars
@@ -191,19 +197,25 @@ class Settings:
                 self.max_edit_buffer_chars_per_user
             ),
             "APP_EDIT_BUFFER_RETENTION_DAYS": self.edit_buffer_retention_days,
-            "MODEL_MAX_TOKENS": self.model_max_tokens,
             "MODEL_CONNECT_TIMEOUT_SECONDS": self.model_connect_timeout_seconds,
             "MODEL_READ_TIMEOUT_SECONDS": self.model_read_timeout_seconds,
         }
         for name, value in positive_values.items():
             if value <= 0:
                 raise ValueError(f"{name} 必须大于 0")
+        optional_positive_values = {
+            "APP_MAX_DOCUMENTS_PER_USER": self.max_documents_per_user,
+            "APP_MAX_STORED_CHARS_PER_USER": self.max_stored_chars_per_user,
+        }
+        for name, value in optional_positive_values.items():
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} 必须留空、设为 0，或大于 0")
         if self.target_chapter_chars > self.max_chapter_chars:
             raise ValueError("APP_TARGET_CHAPTER_CHARS 不能大于 APP_MAX_CHAPTER_CHARS")
         if not 0 <= self.model_max_retries <= 8:
             raise ValueError("MODEL_MAX_RETRIES 必须在 0–8 之间")
-        if not 256 <= self.model_max_tokens <= 20_000:
-            raise ValueError("MODEL_MAX_TOKENS 必须在 256–20000 之间")
+        if self.model_max_tokens < 0 or 0 < self.model_max_tokens < 256:
+            raise ValueError("MODEL_MAX_TOKENS 必须为 0（自动）或至少 256")
         if self.model_reasoning_effort not in {"high", "max"}:
             raise ValueError("MODEL_REASONING_EFFORT 目前仅支持 high 或 max")
         if not self.model_name.strip():
@@ -213,8 +225,6 @@ class Settings:
         provider = get_provider(self.model_provider)
         if self.model_thinking and not provider.capabilities.thinking:
             raise ValueError(f"{provider.label} 暂不支持 Readraft 的思考模式")
-        if len(self.model_adapter_prompt) > 20_000:
-            raise ValueError("MODEL_ADAPTER_PROMPT 不能超过 20000 个字符")
         if len(self.credential_secret) < 16:
             raise ValueError("API 凭据加密密钥至少需要 16 个字符")
         normalized_base_url = normalize_provider_base_url(
@@ -247,11 +257,13 @@ class Settings:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         self.novels_dir.mkdir(parents=True, exist_ok=True)
+        self.import_previews_dir.mkdir(parents=True, exist_ok=True)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         for directory in {
             self.data_dir,
             self.documents_dir,
             self.novels_dir,
+            self.import_previews_dir,
             self.database_path.parent,
         }:
             directory.chmod(0o700)

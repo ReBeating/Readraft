@@ -942,7 +942,7 @@ class StructuredSettingsEditor:
             "external_goal": "",
             "internal_need": "",
             "central_conflict": "",
-            "secret": "",
+            "secret": "",  # pragma: allowlist secret -- schema field
             "traits": "",
             "speech_style": "",
             "background": "",
@@ -950,7 +950,7 @@ class StructuredSettingsEditor:
             "character_arc": "",
         }
         storage_fields = {
-            "secret": "hidden_fact",
+            "secret": "hidden_fact",  # pragma: allowlist secret -- schema map
         }
         if action == "create":
             values = {**defaults, **changes}

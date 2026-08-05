@@ -18,10 +18,10 @@ class ComposeArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     path: str = Field(min_length=1, max_length=500)
-    instruction: str = Field(min_length=2, max_length=6000)
+    instruction: str = Field(min_length=2)
     expected_revision: str = Field(min_length=8, max_length=128)
     mode: Literal["replace", "append"] = "replace"
-    target_chars: int | None = Field(default=None, ge=80, le=20_000)
+    target_chars: int | None = Field(default=None, ge=80)
 
 
 class CreateArguments(BaseModel):
@@ -29,8 +29,8 @@ class CreateArguments(BaseModel):
 
     resource: Literal["chapter"] = "chapter"
     title: str = Field(default="", max_length=200)
-    outline: str = Field(default="", max_length=6000)
-    key_points: str = Field(default="", max_length=6000)
+    outline: str = ""
+    key_points: str = ""
 
 
 class TaskArguments(BaseModel):
@@ -44,27 +44,24 @@ class TaskArguments(BaseModel):
         "style",
         "research",
     ] = "general"
-    objective: str = Field(min_length=2, max_length=2000)
-    paths: list[str] = Field(min_length=1, max_length=12)
+    objective: str = Field(min_length=2)
+    paths: list[str] = Field(min_length=1)
 
 
 class SeriesChapterSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: str = Field(default="", max_length=200)
-    outline: str = Field(default="", max_length=6000)
-    key_points: str = Field(default="", max_length=6000)
-    instruction: str = Field(min_length=2, max_length=6000)
-    target_chars: int | None = Field(default=None, ge=500, le=20_000)
+    outline: str = ""
+    key_points: str = ""
+    instruction: str = Field(min_length=2)
+    target_chars: int | None = Field(default=None, ge=500)
 
 
 class SeriesArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    chapters: list[SeriesChapterSpec] = Field(
-        default_factory=list,
-        max_length=12,
-    )
+    chapters: list[SeriesChapterSpec] = Field(default_factory=list)
     resume_latest: bool = False
 
     @model_validator(mode="after")
@@ -105,7 +102,7 @@ AGENT_ACTION_SPECS: dict[str, AgentCallableSpec] = {
         label="委托专项分析",
         description=(
             "把一个边界明确的只读分析委托给专项 Agent。调用者必须先确定"
-            "目标并提供最多 12 个准确资源路径；专项 Agent 只能阅读这些资源，"
+            "目标并提供准确资源路径；专项 Agent 只能阅读这些资源，"
             "不能调用工具、修改作品或继续委托。适合连续性、结构、人物、文风"
             "和资料核对；简单问题直接自行处理。"
         ),
@@ -118,7 +115,7 @@ AGENT_ACTION_SPECS: dict[str, AgentCallableSpec] = {
         label="连续创作多章",
         description=(
             "仅在作者明确要求连续创作多章时使用。首次传入按顺序排列的章节"
-            "目标（最多 12 章）；服务端逐章创建、生成和独立提交，任一章失败"
+            "目标；服务端逐章创建、生成和独立提交，任一章失败"
             "会暂停并保留已完成章节。之后传 resume_latest=true 从失败断点继续，"
             "不会重写已完成章节。单章任务继续使用 create/compose。"
         ),

@@ -132,8 +132,8 @@ class AssistantContextMixin:
             .replace("\r", "\n")
         )
         supplied_hash = str(quote.get("content_hash") or "")
-        if not quote_text or len(quote_text) > 6_000:
-            raise ValueError("引用文字需在 1–6,000 个字符之间")
+        if not quote_text:
+            raise ValueError("引用文字不能为空")
         if start < 0 or end <= start:
             raise ValueError("引用位置无效")
         if source_type == "novel_version":
@@ -345,7 +345,7 @@ class AssistantContextMixin:
                 settings_prerequisite
             ),
         }
-        return {"context": context, "sources": sources[:12]}
+        return {"context": context, "sources": sources}
 
     def _build_linked_work_context(
         self, *, user_id: int, project_id: str
@@ -374,7 +374,6 @@ class AssistantContextMixin:
                 )
                 WHERE target.project_id=?
                 ORDER BY c.position
-                LIMIT 120
                 """,
                 (user_id, project_id),
             ).fetchall()
@@ -388,10 +387,23 @@ class AssistantContextMixin:
                   ON entry.work_id=version.work_id
                 WHERE version.project_id=?
                 ORDER BY entry.updated_at DESC
-                LIMIT 80
                 """,
                 (project_id,),
             ).fetchall()
+            aggregate_row = None
+            if linked_rows:
+                aggregate_row = connection.execute(
+                    """
+                    SELECT aggregate_json
+                    FROM analysis_jobs
+                    WHERE document_id=? AND user_id=?
+                      AND status IN ('completed', 'partial')
+                      AND aggregate_json NOT IN ('', '{}')
+                    ORDER BY finished_at DESC, created_at DESC
+                    LIMIT 1
+                    """,
+                    (str(linked_rows[0]["document_id"]), user_id),
+                ).fetchone()
         linked_source = None
         if linked_rows:
             excerpt_ids = {
@@ -405,6 +417,13 @@ class AssistantContextMixin:
                     "这是不可变的来源文本及其描述性分析。改写或续写时可"
                     "参考事实与结构，但不得把分析观察自动当成作者确认的"
                     "创作规则。"
+                ),
+                "style_profile": (
+                    _load_json(aggregate_row["aggregate_json"], {}).get(
+                        "style_profile"
+                    )
+                    if aggregate_row
+                    else None
                 ),
                 "chapters": [
                     {
@@ -554,7 +573,7 @@ class AssistantContextMixin:
                 """
                 SELECT name, role, traits, background, character_arc
                 FROM novel_characters
-                WHERE project_id=? ORDER BY position LIMIT 40
+                WHERE project_id=? ORDER BY position
                 """,
                 (project_id,),
             ).fetchall()
@@ -563,7 +582,7 @@ class AssistantContextMixin:
                 SELECT id, position, title, outline, key_points, status,
                        head_version_id
                 FROM novel_chapters
-                WHERE project_id=? ORDER BY position LIMIT 120
+                WHERE project_id=? ORDER BY position
                 """,
                 (project_id,),
             ).fetchall()
@@ -713,7 +732,6 @@ class AssistantContextMixin:
                 )
                 WHERE c.document_id=?
                 ORDER BY c.position
-                LIMIT 300
                 """,
                 (user_id, document_id),
             ).fetchall()
@@ -728,7 +746,6 @@ class AssistantContextMixin:
                 JOIN works work ON work.id=version.work_id
                 WHERE version.document_id=? AND work.user_id=?
                 ORDER BY entry.updated_at DESC
-                LIMIT 120
                 """,
                 (document_id, user_id),
             ).fetchall()
@@ -762,7 +779,7 @@ class AssistantContextMixin:
                             f"拆书分析 · 第 {row['position']} 章"
                             f"《{row['title']}》"
                         ),
-                        "text": analysis_text[:8_000],
+                        "text": analysis_text,
                         "base_offset": 0,
                         "url": f"/analyses/{row['analysis_id']}",
                         "document_id": document_id,
@@ -782,7 +799,7 @@ class AssistantContextMixin:
                             f"参考书第 {row['position']} 章"
                             f"《{row['title']}》"
                         ),
-                        "text": text[:30_000],
+                        "text": text,
                         "base_offset": 0,
                         "url": (
                             f"/documents/{document_id}/chapters/"

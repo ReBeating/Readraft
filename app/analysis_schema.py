@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -60,6 +60,9 @@ class EndingHook(StrictModel):
 
 
 class ChapterAnalysis(StrictModel):
+    schema_version: str = "1.0"
+    content_hash: str = ""
+    chapter_position: Optional[int] = None
     chapter_title: str = Field(min_length=1, max_length=100)
     summary: str = Field(min_length=10, max_length=500)
     characters: List[Character] = Field(max_length=12)
@@ -71,6 +74,8 @@ class ChapterAnalysis(StrictModel):
     techniques: List[TechniqueObservation] = Field(
         default_factory=list, max_length=6
     )
+    style_traits: List[Dict[str, Any]] = Field(default_factory=list)
+    layers: Dict[str, Any] = Field(default_factory=dict)
 
 
 ANALYSIS_JSON_EXAMPLE = {

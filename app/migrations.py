@@ -4611,6 +4611,203 @@ def _backfill_tag_chapter_manifests_v55(
             )
 
 
+def _import_boundary_metadata_v56(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    """Persist the exact import source and the reviewed split decisions."""
+
+    del applied_at
+    _add_column(
+        connection,
+        "documents",
+        "source_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "chapters",
+        "split_confidence",
+        "REAL NOT NULL DEFAULT 1.0",
+    )
+    _add_column(
+        connection,
+        "chapters",
+        "split_reason",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "chapters",
+        "title_source",
+        "TEXT NOT NULL DEFAULT 'detected'",
+    )
+    _add_column(
+        connection,
+        "chapters",
+        "content_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    documents = connection.execute(
+        "SELECT id, source_path FROM documents WHERE source_hash=''"
+    ).fetchall()
+    for document in documents:
+        try:
+            digest = hashlib.sha256(
+                Path(str(document["source_path"])).read_bytes()
+            ).hexdigest()
+        except OSError:
+            continue
+        connection.execute(
+            "UPDATE documents SET source_hash=? WHERE id=?",
+            (digest, str(document["id"])),
+        )
+    chapters = connection.execute(
+        "SELECT id, content_path FROM chapters WHERE content_hash=''"
+    ).fetchall()
+    for chapter in chapters:
+        try:
+            digest = hashlib.sha256(
+                Path(str(chapter["content_path"])).read_bytes()
+            ).hexdigest()
+        except OSError:
+            continue
+        connection.execute(
+            """
+            UPDATE chapters
+            SET content_hash=?, split_reason=CASE
+                WHEN split_reason='' THEN '旧版本导入边界' ELSE split_reason END
+            WHERE id=?
+            """,
+            (digest, str(chapter["id"])),
+        )
+
+
+def _layered_reference_analysis_v57(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    _add_column(
+        connection,
+        "analysis_jobs",
+        "schema_version",
+        "TEXT NOT NULL DEFAULT '1.0'",
+    )
+    _add_column(
+        connection,
+        "analysis_jobs",
+        "aggregate_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    _add_column(
+        connection,
+        "chapter_analyses",
+        "content_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column(
+        connection,
+        "chapter_analyses",
+        "schema_version",
+        "TEXT NOT NULL DEFAULT '1.0'",
+    )
+    _execute_statements(
+        connection,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS chapter_analysis_layers (
+                analysis_id TEXT NOT NULL
+                    REFERENCES chapter_analyses(id) ON DELETE CASCADE,
+                layer TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                result_json TEXT,
+                raw_response TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                cache_hit INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                PRIMARY KEY(analysis_id, layer)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS chapter_analysis_cache (
+                content_hash TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                layer TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                PRIMARY KEY(
+                    content_hash, schema_version, layer, provider, model
+                )
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_analysis_layers_status
+            ON chapter_analysis_layers(status, layer)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_analysis_cache_used
+            ON chapter_analysis_cache(last_used_at)
+            """,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE chapter_analyses
+        SET content_hash=COALESCE(
+            NULLIF(content_hash, ''),
+            (SELECT c.content_hash FROM chapters c
+             WHERE c.id=chapter_analyses.chapter_id),
+            ''
+        )
+        """
+    )
+    # Existing completed analyses remain exportable as schema 1.0 records.
+    # New jobs are explicitly created as 2.0 and never enter this legacy set.
+    connection.execute(
+        """
+        UPDATE analysis_jobs
+        SET aggregate_json=COALESCE(NULLIF(aggregate_json, ''), '{}')
+        """
+    )
+
+
+def _reference_style_analysis_v58(
+    connection: sqlite3.Connection, applied_at: str
+) -> None:
+    del applied_at
+    # Preserve completed 2.0 analyses as immutable historical results. Only
+    # resumable jobs gain the new style layer and 3.0 contract.
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO chapter_analysis_layers(
+            analysis_id, layer, status
+        )
+        SELECT id, 'style', 'queued'
+        FROM chapter_analyses
+        WHERE status IN ('queued', 'running', 'failed')
+        """
+    )
+    connection.execute(
+        """
+        UPDATE chapter_analyses
+        SET schema_version='3.0'
+        WHERE status IN ('queued', 'running', 'failed')
+        """
+    )
+    connection.execute(
+        """
+        UPDATE analysis_jobs
+        SET schema_version='3.0'
+        WHERE status IN ('queued', 'running', 'partial', 'failed')
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "core_memory_v1", _core_memory_v1),
     Migration(2, "planning_v2", _planning_v2),
@@ -4846,6 +5043,21 @@ MIGRATIONS = (
         55,
         "backfill_tag_chapter_manifests_v55",
         _backfill_tag_chapter_manifests_v55,
+    ),
+    Migration(
+        56,
+        "import_boundary_metadata_v56",
+        _import_boundary_metadata_v56,
+    ),
+    Migration(
+        57,
+        "layered_reference_analysis_v57",
+        _layered_reference_analysis_v57,
+    ),
+    Migration(
+        58,
+        "reference_style_analysis_v58",
+        _reference_style_analysis_v58,
     ),
 )
 

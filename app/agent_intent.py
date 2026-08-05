@@ -34,7 +34,7 @@ class AssistantIntentDecision(BaseModel):
             "draft_new_chapter",
             "revise_prose",
         ]
-    ] = Field(default_factory=list, max_length=4)
+    ] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     target_chapter_id: Optional[str] = Field(
         default=None, min_length=1, max_length=80

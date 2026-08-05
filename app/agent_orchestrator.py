@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import re
 import time
@@ -40,6 +41,7 @@ from .assistant_chat_schema import (
 )
 from .assistant_chat_service import AssistantChatService
 from .model_client import AnalyzerError
+from .model_budget import optional_output_token_limit
 from .prose_pipeline import ProseDraftPipeline
 
 
@@ -50,10 +52,10 @@ class AssistantAgentOrchestrator:
         *,
         web_search: WebSearchCallable | None = None,
         web_fetch: WebFetchCallable | None = None,
-        max_model_turns: int = 32,
+        max_model_turns: int | None = None,
     ):
-        if not 2 <= max_model_turns <= 64:
-            raise ValueError("Agent Loop 故障保护轮次必须在 2–64 之间")
+        if max_model_turns is not None and max_model_turns < 2:
+            raise ValueError("显式 Agent 轮次边界必须至少为 2")
         self.service = service
         self.max_model_turns = max_model_turns
         self.web_search = web_search
@@ -343,7 +345,7 @@ class AssistantAgentOrchestrator:
         )
         task_envelope = {
             "author_request": str(payload.get("question") or ""),
-            "selected_quote": str(payload.get("selected_quote") or "")[:8000],
+            "selected_quote": str(payload.get("selected_quote") or ""),
             "scope": str(context.get("scope") or ""),
             "intent_hint": str(dispatch.get("intent") or ""),
             "current_writable_resources": writable_paths,
@@ -374,10 +376,10 @@ class AssistantAgentOrchestrator:
         chapter_workflow_result: AssistantChapterWorkflowResult | None = None
 
         model_settings = getattr(model, "settings", None)
-        configured_max_tokens = int(
-            getattr(model_settings, "model_max_tokens", 5000) or 5000
+        max_tokens = optional_output_token_limit(
+            getattr(model_settings, "model_max_tokens", 0)
         )
-        max_tokens = min(max(configured_max_tokens, 3000), 8000)
+        continued_answer = ""
 
         def mutation_satisfied() -> bool:
             intent = str(dispatch.get("intent") or "")
@@ -426,7 +428,6 @@ class AssistantAgentOrchestrator:
                     )
                 else:
                     clean_answer = "这轮处理已经结束，但没有产生可展示的文本。"
-            clean_answer = clean_answer[:30_000]
             return AssistantChatResponse(
                 result=AssistantChatResult(
                     answer=clean_answer,
@@ -451,22 +452,17 @@ class AssistantAgentOrchestrator:
                 agent_trace=trace,
             )
 
-        def bounded_result(result: Mapping[str, Any]) -> dict[str, Any]:
-            prepared = dict(result)
-            serialized = json.dumps(
-                prepared,
-                ensure_ascii=False,
-                default=str,
-            )
-            if len(serialized) <= 60_000:
-                return prepared
-            return {
-                "truncated": True,
-                "notice": "工具结果过长，只返回前 60000 个字符",
-                "content": serialized[:60_000],
-            }
+        def prepare_tool_result(result: Mapping[str, Any]) -> dict[str, Any]:
+            # Individual read/search tools paginate their own result sets.
+            # Do not silently serialize-and-cut a valid tool response here.
+            return dict(result)
 
-        for model_turn_index in range(1, self.max_model_turns + 1):
+        for model_turn_index in itertools.count(1):
+            if (
+                self.max_model_turns is not None
+                and model_turn_index > self.max_model_turns
+            ):
+                break
             await runtime.checkpoint()
             await runtime.transition(
                 AgentRunPhase.MODEL,
@@ -493,7 +489,9 @@ class AssistantAgentOrchestrator:
                 streamed_text += delta
                 if on_answer_update is None:
                     return
-                callback_result = on_answer_update(streamed_text)
+                callback_result = on_answer_update(
+                    continued_answer + streamed_text
+                )
                 if asyncio.iscoroutine(callback_result):
                     await callback_result
 
@@ -538,6 +536,26 @@ class AssistantAgentOrchestrator:
                     ensure_ascii=False,
                 )
             )
+
+            if turn.finish_reason == "length":
+                if not turn.content.strip():
+                    raise AnalyzerError(
+                        "模型输出被服务商截断，且没有返回可续接的内容",
+                        input_tokens=turn.input_tokens,
+                        output_tokens=turn.output_tokens,
+                    )
+                continued_answer += turn.content
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一段响应被服务商的输出边界截断。请从截断处继续，"
+                            "不要重复已经返回的文字；如果原本准备调用工具，请改为"
+                            "发起一个参数完整的新工具调用。"
+                        ),
+                    }
+                )
+                continue
 
             if not turn.tool_calls:
                 if not mutation_satisfied() and not reminder_sent:
@@ -585,8 +603,11 @@ class AssistantAgentOrchestrator:
                     output_tokens=turn.output_tokens,
                     latency_ms=latency_ms,
                 )
-                final_answer = turn.content
+                final_answer = continued_answer + turn.content
                 return build_response(final_answer)
+
+            # A completed tool call supersedes any incomplete answer preamble.
+            continued_answer = ""
 
             if force_final:
                 raise AnalyzerError(
@@ -1390,7 +1411,7 @@ class AssistantAgentOrchestrator:
                             call.name,
                             call.arguments,
                         )
-                    result = bounded_result(execution.result)
+                    result = prepare_tool_result(execution.result)
                     self.service.finish_tool_call(
                         call_id=call_record_id,
                         message_id=str(item["id"]),
@@ -1571,7 +1592,7 @@ class AssistantAgentOrchestrator:
                 messages=messages,
                 tools=[],
                 provider_user_id=provider_user_id,
-                max_tokens=min(max_tokens, 4000),
+                max_tokens=max_tokens,
                 on_text_delta=None,
             )
             total_input_tokens += turn.input_tokens

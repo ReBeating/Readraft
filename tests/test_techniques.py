@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.analysis_schema import ANALYSIS_JSON_EXAMPLE
 from app.chapter_splitter import split_chapters
+from app.analysis_repository import AnalysisRepository
 from app.config import Settings
 from app.context_compiler import compile_active_techniques
 from app.db import Database
@@ -264,21 +265,19 @@ def test_analysis_observation_can_be_saved_once_with_source_trace(
         chunks=chunks,
         chapter_paths=paths,
     )
-    job_id = database.create_job(
+    analyses = AnalysisRepository(database)
+    job_id = analyses.create_job(
         user_id=user_id,
         document_id=document_id,
         provider="mock",
         model="mock",
     )
-    claimed = database.claim_next_analysis()
+    claimed = analyses.claim_next()
     payload = dict(ANALYSIS_JSON_EXAMPLE)
-    assert database.complete_analysis(
+    assert analyses.complete(
         analysis_id=str(claimed["analysis_id"]),
         job_id=job_id,
         result=payload,
-        raw_response="{}",
-        input_tokens=0,
-        output_tokens=0,
         claim_token=str(claimed["claim_token"]),
     )
     service = TechniqueService(database)

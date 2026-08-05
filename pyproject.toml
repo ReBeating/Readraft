@@ -35,6 +35,8 @@ dependencies = [
 readraft-backup = "app.backup:main"
 readraft-doctor = "app.doctor:main"
 readraft-model-smoke = "app.model_smoke:main"
+readraft-writing-benchmark = "app.writing_benchmark:main"
+readraft-retrieval-benchmark = "app.retrieval_benchmark:main"
 
 [project.urls]
 Homepage = "https://github.com/ReBeating/Readraft"
@@ -45,7 +47,7 @@ Issues = "https://github.com/ReBeating/Readraft/issues"
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["templates/*.html", "static/*"]
+app = ["templates/*.html", "static/*", "benchmark_cases/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

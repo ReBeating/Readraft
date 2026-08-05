@@ -16,10 +16,15 @@ from app.agent_capabilities import (
     RUN_BOUNDED_TASK,
 )
 from app.agent_actions import ComposeArguments, available_agent_actions
-from app.agent_workspace import AgentWorkspace
+from app.agent_workspace import AgentWorkspace, WriteArguments
+from app.analysis_repository import AnalysisRepository
 from app.chapter_splitter import split_chapters
 from app.assistant_chat_service import AssistantChatService
-from app.assistant_chat_schema import AssistantChatResponse, AssistantChatResult
+from app.assistant_chat_schema import (
+    AssistantChatResponse,
+    AssistantChatResult,
+    AssistantDraftProposal,
+)
 from app.db import Database
 from app.security import hash_password
 
@@ -108,6 +113,26 @@ def seed_workspace(tmp_path: Path) -> tuple[Database, int, dict]:
     return database, user_id, context
 
 
+def test_agent_content_payloads_have_no_product_length_ceiling() -> None:
+    long_text = "长" * 230_001
+
+    compose = ComposeArguments(
+        path="book/manuscript/chapters/001.md",
+        instruction=long_text,
+        expected_revision="revision",
+    )
+    writing = WriteArguments(
+        path="book/notes/author/long.md",
+        content=long_text,
+        expected_revision="new",
+    )
+    draft = AssistantDraftProposal(content=long_text, rationale="完整正文")
+
+    assert compose.instruction == long_text
+    assert writing.content == long_text
+    assert draft.content == long_text
+
+
 def test_workspace_tools_and_agent_actions_have_separate_registries(tmp_path):
     database, user_id, context = seed_workspace(tmp_path)
     workspace = AgentWorkspace(
@@ -187,7 +212,7 @@ def test_workspace_reads_main_head_instead_of_mutable_chapter_cache(tmp_path):
     assert "过期正文缓存" not in reading.result["content"]
 
 
-def test_specialist_task_packet_only_contains_explicit_bounded_resources(
+def test_specialist_task_packet_only_contains_explicit_resources(
     tmp_path,
 ):
     database, user_id, context = seed_workspace(tmp_path)
@@ -323,7 +348,7 @@ def test_completed_chapter_patch_atomically_updates_metadata_and_order(
         tmp_path / "novels",
         tmp_path / "documents",
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="调整章节顺序",
@@ -431,7 +456,7 @@ def test_explicit_chapter_delete_rebinds_conversation_and_keeps_recovery(
         novels_dir,
         tmp_path / "documents",
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="删除章节",
@@ -498,7 +523,7 @@ def test_explicit_chapter_delete_rebinds_conversation_and_keeps_recovery(
     assert (recovery / "files" / "content.txt").read_text(
         encoding="utf-8"
     ) == "这一章将被删除。"
-    conversation = service.get_conversation(
+    conversation = service.conversations.get(
         user_id=user_id,
         conversation_id=conversation_id,
     )
@@ -545,7 +570,7 @@ def test_author_requested_note_is_persisted_and_returns_to_workspace(tmp_path):
         tmp_path / "novels",
         tmp_path / "documents",
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="保存构思",
@@ -656,7 +681,7 @@ def test_history_diff_and_restore_create_new_working_version(tmp_path):
         tmp_path / "novels",
         tmp_path / "documents",
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="恢复版本",
@@ -843,12 +868,66 @@ def test_reference_evidence_can_be_saved_as_a_technique_card(tmp_path):
         chapter_paths=chapter_paths,
     )
     chapter = database.list_chapters(user_id, document_id)[0]
+    analysis_repository = AnalysisRepository(database)
+    analysis_job_id = analysis_repository.create_job(
+        user_id=user_id,
+        document_id=document_id,
+        provider="mock",
+        model="mock",
+    )
+    with database.connection() as connection:
+        connection.execute(
+            """
+            UPDATE chapter_analyses
+            SET status='completed', result_json=?,
+                finished_at='2026-01-01T00:00:00+00:00'
+            WHERE job_id=?
+            """,
+            (
+                json.dumps(
+                    {"summary": "先给声音后给光线的延迟揭示"},
+                    ensure_ascii=False,
+                ),
+                analysis_job_id,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE analysis_jobs
+            SET status='completed', completed_chapters=total_chapters,
+                finished_at='2026-01-01T00:00:00+00:00',
+                aggregate_json=?
+            WHERE id=?
+            """,
+            (
+                json.dumps(
+                    {
+                        "style_profile": {
+                            "analyzed_chapters": 1,
+                            "scope_note": "只迁移抽象写法。",
+                            "quantitative": {"dialogue_ratio": 0.1},
+                            "traits": [
+                                {
+                                    "axis": "information_flow",
+                                    "value": "延迟揭示",
+                                    "execution_rule": "先呈现后果再解释来源。",
+                                    "originality_boundary": "不得复用具体情节。",
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                analysis_job_id,
+            ),
+        )
+        connection.commit()
     service = AssistantChatService(
         database,
         tmp_path / "novels",
         tmp_path / "documents",
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="reference_chapter",
         title="提炼技法",
@@ -879,6 +958,14 @@ def test_reference_evidence_can_be_saved_as_a_technique_card(tmp_path):
     )
     reference_path = "book/references/chapters/001.md"
     reference = workspace.execute_tool("read", {"path": reference_path})
+    reference_analysis = workspace.execute_tool(
+        "read", {"path": "book/analysis/reference/001.json"}
+    )
+    assert "延迟揭示" in reference_analysis.result["content"]
+    style_profile = workspace.execute_tool(
+        "read", {"path": "book/analysis/reference/style-profile.json"}
+    )
+    assert "先呈现后果再解释来源" in style_profile.result["content"]
     execution = workspace.execute_tool(
         "write",
         {
@@ -948,7 +1035,7 @@ def test_multi_chapter_workflow_resumes_without_rewriting_completed_items(
         tmp_path / "novels",
         tmp_path / "documents",
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="project",
         title="连续写作",
@@ -1355,7 +1442,7 @@ def test_workspace_can_search_full_conversation_history(tmp_path):
     service = AssistantChatService(
         database, tmp_path / "novels", tmp_path / "documents"
     )
-    conversation_id = service.create_conversation(
+    conversation_id = service.conversations.create(
         user_id=user_id,
         scope_type="chapter",
         title="长期创作讨论",
@@ -1373,7 +1460,10 @@ def test_workspace_can_search_full_conversation_history(tmp_path):
                 (
                     "old-message",
                     conversation_id,
-                    "以后灯塔钥匙必须一直由林岚保管。",
+                    (
+                        "前情" * 11_000
+                        + "以后灯塔钥匙必须一直由林岚保管。"
+                    ),
                     "2026-01-01T00:00:00+00:00",
                 ),
                 (
@@ -1406,15 +1496,22 @@ def test_workspace_can_search_full_conversation_history(tmp_path):
         },
     )
 
-    assert result.result["matches"] == [
-        {
-            "path": "book/notes/conversation-history.jsonl",
-            "line": 1,
-            "text": result.result["matches"][0]["text"],
-        }
-    ]
+    assert len(result.result["matches"]) == 1
+    assert result.result["matches"][0]["path"] == (
+        "book/notes/conversation-history/000001-user.md"
+    )
     assert "林岚保管" in result.result["matches"][0]["text"]
-    assert "current-message" not in result.result["matches"][0]["text"]
+    assert result.result["matches"][0]["match_char_start"] > 20_000
+    assert result.result["has_more"] is False
+    reading = workspace.execute_tool(
+        "read",
+        {
+            **result.result["matches"][0]["read_hint"],
+            "char_count": 2_000,
+        },
+    )
+    assert reading.result["mode"] == "characters"
+    assert "林岚保管" in reading.result["content"]
 
 
 def test_chapter_writing_packet_compiles_scene_style_and_story_contracts(
@@ -1460,6 +1557,21 @@ def test_chapter_writing_packet_compiles_scene_style_and_story_contracts(
             "active_techniques": [
                 {"name": "延迟揭示", "instruction": "先给事实再推断"}
             ],
+            "linked_source": {
+                "style_profile": {
+                    "analyzed_chapters": 8,
+                    "traits": [
+                        {
+                            "axis": "sentence_rhythm",
+                            "value": "压力升高时缩短句子",
+                            "coverage": 0.75,
+                            "execution_rule": "冲突升级后缩短动作句。",
+                            "originality_boundary": "不得复用原句或意象。",
+                        }
+                    ],
+                },
+                "chapters": [],
+            },
         }
     )
     workspace = AgentWorkspace(
@@ -1470,6 +1582,9 @@ def test_chapter_writing_packet_compiles_scene_style_and_story_contracts(
     )
     path = "book/manuscript/chapters/001.md"
     reading = workspace.execute_tool("read", {"path": path})
+    workspace.execute_tool(
+        "read", {"path": "book/analysis/reference/style-profile.json"}
+    )
 
     packet = workspace.build_chapter_writing_packet(
         path=path,
@@ -1502,3 +1617,4 @@ def test_chapter_writing_packet_compiles_scene_style_and_story_contracts(
     }
     assert "book/settings/core.json" in support_paths
     assert "book/analysis/story-state.json" in support_paths
+    assert "book/analysis/reference/style-profile.json" in support_paths

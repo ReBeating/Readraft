@@ -218,6 +218,23 @@ def _technique_dimension_label(value: str) -> str:
     }.get(value, value)
 
 
+def _reference_style_axis_label(value: str) -> str:
+    return {
+        "point_of_view": "叙事视角",
+        "narrative_distance": "叙事距离",
+        "sentence_rhythm": "句子节奏",
+        "paragraph_rhythm": "段落节奏",
+        "dialogue": "对话组织",
+        "description": "描写策略",
+        "information_flow": "信息流",
+        "emotion": "情绪传达",
+        "diction": "用词语域",
+        "figurative_language": "修辞与意象",
+        "transition": "转场方式",
+        "scene_entry_exit": "场景出入",
+    }.get(value, value)
+
+
 def _technique_scope_label(value: str) -> str:
     return {
         "project": "全书",
